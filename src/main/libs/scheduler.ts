@@ -1,13 +1,13 @@
 import { BrowserWindow } from 'electron';
 import { ScheduledTaskStore, ScheduledTask, ScheduledTaskRun, Schedule, NotifyPlatform } from '../scheduledTaskStore';
 import type { CoworkStore } from '../coworkStore';
-import type { CoworkRunner } from './coworkRunner';
+import type { CoworkRuntime } from './agentEngine/types';
 import type { IMGatewayManager } from '../im/imGatewayManager';
 
 interface SchedulerDeps {
   scheduledTaskStore: ScheduledTaskStore;
   coworkStore: CoworkStore;
-  getCoworkRunner: () => CoworkRunner;
+  getCoworkRuntime: () => CoworkRuntime;
   getIMGatewayManager?: () => IMGatewayManager | null;
   getSkillsPrompt?: () => Promise<string | null>;
 }
@@ -15,7 +15,7 @@ interface SchedulerDeps {
 export class Scheduler {
   private store: ScheduledTaskStore;
   private coworkStore: CoworkStore;
-  private getCoworkRunner: () => CoworkRunner;
+  private getCoworkRuntime: () => CoworkRuntime;
   private getIMGatewayManager: (() => IMGatewayManager | null) | null;
   private getSkillsPrompt: (() => Promise<string | null>) | null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -30,7 +30,7 @@ export class Scheduler {
   constructor(deps: SchedulerDeps) {
     this.store = deps.scheduledTaskStore;
     this.coworkStore = deps.coworkStore;
-    this.getCoworkRunner = deps.getCoworkRunner;
+    this.getCoworkRuntime = deps.getCoworkRuntime;
     this.getIMGatewayManager = deps.getIMGatewayManager ?? null;
     this.getSkillsPrompt = deps.getSkillsPrompt ?? null;
   }
@@ -242,8 +242,8 @@ export class Scheduler {
 
     // Start the session with normal permission flow (no auto-approve).
     this.taskSessionIds.set(task.id, session.id);
-    const runner = this.getCoworkRunner();
-    await runner.startSession(session.id, task.prompt, {
+    const runtime = this.getCoworkRuntime();
+    await runtime.startSession(session.id, task.prompt, {
       skipInitialUserMessage: true,
       confirmationMode: 'text',
     });
@@ -298,7 +298,7 @@ export class Scheduler {
       const sessionId = this.taskSessionIds.get(taskId);
       if (sessionId) {
         try {
-          this.getCoworkRunner().stopSession(sessionId);
+          this.getCoworkRuntime().stopSession(sessionId);
         } catch (err) {
           console.warn(`[Scheduler] Failed to stop cowork session for task ${taskId}:`, err);
         }

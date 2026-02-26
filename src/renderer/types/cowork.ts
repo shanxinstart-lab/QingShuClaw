@@ -6,6 +6,7 @@ export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result
 
 // Cowork execution mode
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
+export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
 
 // Cowork message metadata
 export interface CoworkMessageMetadata {
@@ -52,6 +53,7 @@ export interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: CoworkExecutionMode;
+  agentEngine: CoworkAgentEngine;
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
   memoryLlmJudgeEnabled: boolean;
@@ -63,6 +65,7 @@ export type CoworkConfigUpdate = Partial<Pick<
   CoworkConfig,
   | 'workingDirectory'
   | 'executionMode'
+  | 'agentEngine'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'
   | 'memoryLlmJudgeEnabled'
@@ -93,6 +96,22 @@ export type CoworkSandboxProgress = {
   percent?: number;
   url?: string;
 };
+
+export type OpenClawEnginePhase =
+  | 'not_installed'
+  | 'installing'
+  | 'ready'
+  | 'starting'
+  | 'running'
+  | 'error';
+
+export interface OpenClawEngineStatus {
+  phase: OpenClawEnginePhase;
+  version: string | null;
+  progressPercent?: number;
+  message?: string;
+  canRetry: boolean;
+}
 
 export type CoworkUserMemoryStatus = 'created' | 'stale' | 'deleted';
 

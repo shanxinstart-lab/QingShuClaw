@@ -16,7 +16,7 @@ import ComposeIcon from '../icons/ComposeIcon';
 import WindowTitleBar from '../window/WindowTitleBar';
 import { QuickActionBar, PromptPanel } from '../quick-actions';
 import type { SettingsOpenOptions } from '../Settings';
-import type { CoworkSession } from '../../types/cowork';
+import type { CoworkSession, OpenClawEngineStatus } from '../../types/cowork';
 
 export interface CoworkViewProps {
   onRequestAppSettings?: (options?: SettingsOpenOptions) => void;
@@ -31,6 +31,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const dispatch = useDispatch();
   const isMac = window.electron.platform === 'darwin';
   const [isInitialized, setIsInitialized] = useState(false);
+  const [openClawStatus, setOpenClawStatus] = useState<OpenClawEngineStatus | null>(null);
   // Track if we're starting a session to prevent duplicate submissions
   const isStartingRef = useRef(false);
   // Track pending start request so stop can cancel delayed startup.
@@ -44,6 +45,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     isStreaming,
     config,
   } = useSelector((state: RootState) => state.cowork);
+  const isOpenClawEngine = config.agentEngine !== 'yd_cowork';
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
@@ -65,9 +67,39 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     return `${baseNotice} (${error})`;
   };
 
+  const resolveEngineStatusText = (status: OpenClawEngineStatus): string => {
+    if (status.message?.trim()) {
+      return status.message.trim();
+    }
+    switch (status.phase) {
+      case 'not_installed':
+        return i18nService.t('coworkOpenClawNotInstalledNotice');
+      case 'installing':
+        return i18nService.t('coworkOpenClawInstalling');
+      case 'ready':
+        return i18nService.t('coworkOpenClawReadyNotice');
+      case 'starting':
+        return 'AI 引擎正在启动网关...';
+      case 'error':
+        return 'AI 引擎初始化失败，请前往设置页重试安装。';
+      case 'running':
+      default:
+        return 'AI 引擎已就绪。';
+    }
+  };
+
+  const isOpenClawReadyForSession = (status: OpenClawEngineStatus | null): boolean => {
+    if (!status) return false;
+    return status.phase === 'running' || status.phase === 'ready';
+  };
+
   useEffect(() => {
     const init = async () => {
       await coworkService.init();
+      const initialEngineStatus = await coworkService.getOpenClawEngineStatus();
+      if (initialEngineStatus) {
+        setOpenClawStatus(initialEngineStatus);
+      }
       // Load quick actions with localization
       try {
         quickActionService.initialize();
@@ -91,6 +123,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     };
     init();
 
+    const unsubscribeOpenClawStatus = coworkService.onOpenClawEngineStatus((status) => {
+      setOpenClawStatus(status);
+    });
+
     // Subscribe to language changes to reload quick actions
     const unsubscribe = quickActionService.subscribe(async () => {
       try {
@@ -103,10 +139,15 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
     return () => {
       unsubscribe();
+      unsubscribeOpenClawStatus();
     };
   }, [dispatch]);
 
   const handleStartSession = async (prompt: string, skillPrompt?: string) => {
+    if (isOpenClawEngine && openClawStatus && !isOpenClawReadyForSession(openClawStatus)) {
+      return;
+    }
+
     // Prevent duplicate submissions
     if (isStartingRef.current) return;
     isStartingRef.current = true;
@@ -221,6 +262,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
   const handleContinueSession = async (prompt: string, skillPrompt?: string) => {
     if (!currentSession) return;
+    if (isOpenClawEngine && openClawStatus && !isOpenClawReadyForSession(openClawStatus)) return;
 
     // Capture active skill IDs before clearing
     const sessionSkillIds = [...activeSkillIds];
@@ -321,6 +363,17 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     );
   }
 
+  const shouldShowEngineStatus = Boolean(isOpenClawEngine && openClawStatus && openClawStatus.phase !== 'running');
+  const isEngineError = openClawStatus?.phase === 'error';
+  const shouldShowGoToSettingsInstall = openClawStatus
+    ? (openClawStatus.phase === 'not_installed'
+      || openClawStatus.phase === 'installing'
+      || openClawStatus.phase === 'error')
+    : false;
+  const isEngineReady = isOpenClawEngine
+    ? isOpenClawReadyForSession(openClawStatus)
+    : true;
+
   // When there's a current session, show the session detail view
   if (currentSession) {
     return (
@@ -385,12 +438,41 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
           {/* Prompt Input Area - Large version with folder selector */}
           <div className="space-y-3">
+            {shouldShowEngineStatus && openClawStatus && (
+              <div className={`rounded-xl border px-4 py-3 ${isEngineError
+                ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300'
+                : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300'}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm">
+                    {resolveEngineStatusText(openClawStatus)}
+                    {typeof openClawStatus.progressPercent === 'number' && (
+                      <span className="ml-2 text-xs opacity-80">
+                        {Math.max(0, Math.min(100, Math.round(openClawStatus.progressPercent)))}%
+                      </span>
+                    )}
+                  </div>
+                  {shouldShowGoToSettingsInstall && (
+                    <button
+                      type="button"
+                      onClick={() => onRequestAppSettings?.({ initialTab: 'coworkAgentEngine' })}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${isEngineError
+                        ? 'bg-red-600 text-white hover:bg-red-700'
+                        : 'bg-amber-600 text-white hover:bg-amber-700'}`}
+                    >
+                      {i18nService.t('coworkOpenClawGoToSettingsInstall')}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="shadow-glow-accent rounded-2xl">
               <CoworkPromptInput
                 ref={promptInputRef}
                 onSubmit={handleStartSession}
                 onStop={handleStopSession}
                 isStreaming={isStreaming}
+                disabled={!isEngineReady}
                 placeholder={i18nService.t('coworkPlaceholder')}
                 size="large"
                 workingDirectory={config.workingDirectory}

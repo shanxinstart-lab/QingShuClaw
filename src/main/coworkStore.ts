@@ -296,6 +296,16 @@ function shouldAutoDeleteMemoryText(text: string): boolean {
 export type CoworkSessionStatus = 'idle' | 'running' | 'completed' | 'error';
 export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'system';
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
+export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
+
+const COWORK_AGENT_ENGINE = 'yd_cowork';
+
+function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
+  if (value === COWORK_AGENT_ENGINE || value === 'openclaw') {
+    return value;
+  }
+  return COWORK_AGENT_ENGINE;
+}
 
 export interface CoworkMessageMetadata {
   toolName?: string;
@@ -393,6 +403,7 @@ export interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: CoworkExecutionMode;
+  agentEngine: CoworkAgentEngine;
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
   memoryLlmJudgeEnabled: boolean;
@@ -404,6 +415,7 @@ export type CoworkConfigUpdate = Partial<Pick<
   CoworkConfig,
   | 'workingDirectory'
   | 'executionMode'
+  | 'agentEngine'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'
   | 'memoryLlmJudgeEnabled'
@@ -804,6 +816,7 @@ export class CoworkStore {
 
     const workingDirRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['workingDirectory']);
     const executionModeRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['executionMode']);
+    const agentEngineRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['agentEngine']);
     const memoryEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryEnabled']);
     const memoryImplicitUpdateEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryImplicitUpdateEnabled']);
     const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
@@ -812,11 +825,13 @@ export class CoworkStore {
 
     const normalizedExecutionMode =
       executionModeRow?.value === 'container' ? 'sandbox' : (executionModeRow?.value as CoworkExecutionMode);
+    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(agentEngineRow?.value);
 
     return {
       workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),
       systemPrompt: getDefaultSystemPrompt(),
       executionMode: normalizedExecutionMode || 'local',
+      agentEngine: normalizedAgentEngine,
       memoryEnabled: parseBooleanConfig(memoryEnabledRow?.value, DEFAULT_MEMORY_ENABLED),
       memoryImplicitUpdateEnabled: parseBooleanConfig(
         memoryImplicitUpdateEnabledRow?.value,
@@ -852,6 +867,17 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [config.executionMode, now]);
+    }
+
+    if (config.agentEngine !== undefined) {
+      const normalizedAgentEngine = normalizeCoworkAgentEngineValue(config.agentEngine);
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('agentEngine', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [normalizedAgentEngine, now]);
     }
 
     if (config.memoryEnabled !== undefined) {

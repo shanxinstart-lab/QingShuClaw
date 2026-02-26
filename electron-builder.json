@@ -35,6 +35,20 @@
       "filter": [
         "**/*"
       ]
+    },
+    {
+      "from": "resources/openclaw-bootstrap",
+      "to": "openclaw-bootstrap",
+      "filter": [
+        "**/*"
+      ]
+    },
+    {
+      "from": "resources/node-runtime",
+      "to": "node-runtime",
+      "filter": [
+        "**/*"
+      ]
     }
   ],
   "mac": {

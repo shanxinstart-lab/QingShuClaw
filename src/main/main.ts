@@ -6,6 +6,12 @@ import os from 'os';
 import { SqliteStore } from './sqliteStore';
 import { CoworkStore } from './coworkStore';
 import { CoworkRunner } from './libs/coworkRunner';
+import {
+  ClaudeRuntimeAdapter,
+  CoworkEngineRouter,
+  OpenClawRuntimeAdapter,
+  type CoworkAgentEngine,
+} from './libs/agentEngine';
 import { SkillManager } from './skillManager';
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { getCurrentApiConfig, resolveCurrentApiConfig, setStoreGetter } from './libs/claudeSettings';
@@ -13,6 +19,8 @@ import { saveCoworkApiConfig } from './libs/coworkConfigStore';
 import { generateSessionTitle } from './libs/coworkUtil';
 import { ensureSandboxReady, getSandboxStatus, onSandboxProgress } from './libs/coworkSandboxRuntime';
 import { startCoworkOpenAICompatProxy, stopCoworkOpenAICompatProxy, setScheduledTaskDeps } from './libs/coworkOpenAICompatProxy';
+import { OpenClawEngineManager, type OpenClawEngineStatus } from './libs/openclawEngineManager';
+import { OpenClawConfigSync } from './libs/openclawConfigSync';
 import { IMGatewayManager, IMPlatform, IMGatewayConfig } from './im';
 import { APP_NAME } from './appConstants';
 import { getSkillServiceManager } from './skillServices';
@@ -37,6 +45,7 @@ const IPC_MAX_DEPTH = 5;
 const IPC_MAX_KEYS = 80;
 const IPC_MAX_ITEMS = 40;
 const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const ENGINE_NOT_READY_CODE = 'ENGINE_NOT_READY';
 const MIME_EXTENSION_MAP: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',
@@ -497,11 +506,19 @@ process.on('unhandledRejection', (error) => {
 let store: SqliteStore | null = null;
 let coworkStore: CoworkStore | null = null;
 let coworkRunner: CoworkRunner | null = null;
+let claudeRuntimeAdapter: ClaudeRuntimeAdapter | null = null;
+let openClawRuntimeAdapter: OpenClawRuntimeAdapter | null = null;
+let coworkEngineRouter: CoworkEngineRouter | null = null;
 let skillManager: SkillManager | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let scheduledTaskStore: ScheduledTaskStore | null = null;
 let scheduler: Scheduler | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
+let openClawEngineManager: OpenClawEngineManager | null = null;
+let openClawConfigSync: OpenClawConfigSync | null = null;
+let openClawBootstrapPromise: Promise<OpenClawEngineStatus> | null = null;
+let openClawStatusForwarderBound = false;
+let coworkRuntimeForwarderBound = false;
 
 const initStore = async (): Promise<SqliteStore> => {
   if (!storeInitPromise) {
@@ -520,6 +537,95 @@ const getStore = (): SqliteStore => {
   return store;
 };
 
+const getOpenClawEngineManager = (): OpenClawEngineManager => {
+  if (!openClawEngineManager) {
+    openClawEngineManager = new OpenClawEngineManager();
+  }
+  return openClawEngineManager;
+};
+
+const forwardOpenClawStatus = (status: OpenClawEngineStatus): void => {
+  const windows = BrowserWindow.getAllWindows();
+  windows.forEach((win) => {
+    if (win.isDestroyed()) return;
+    try {
+      win.webContents.send('openclaw:engine:onProgress', status);
+    } catch (error) {
+      console.error('Failed to forward OpenClaw engine status:', error);
+    }
+  });
+};
+
+const bindOpenClawStatusForwarder = (): void => {
+  if (openClawStatusForwarderBound) return;
+  const manager = getOpenClawEngineManager();
+  manager.on('status', (status) => {
+    forwardOpenClawStatus(status);
+  });
+  openClawStatusForwarderBound = true;
+  forwardOpenClawStatus(manager.getStatus());
+};
+
+const getEngineNotReadyResponse = (status: OpenClawEngineStatus) => {
+  const fallbackMessage = 'AI engine is initializing. Please try again in a moment.';
+  return {
+    success: false,
+    code: ENGINE_NOT_READY_CODE,
+    error: status.message || fallbackMessage,
+    engineStatus: status,
+  };
+};
+
+const bootstrapOpenClawEngine = async (options: { forceReinstall?: boolean; reason?: string } = {}) => {
+  if (openClawBootstrapPromise) {
+    return openClawBootstrapPromise;
+  }
+
+  const manager = getOpenClawEngineManager();
+  bindOpenClawStatusForwarder();
+
+  const task = async (): Promise<OpenClawEngineStatus> => {
+    const reason = options.reason || 'unknown';
+    try {
+      const syncResult = await syncOpenClawConfig({
+        reason: `bootstrap:${reason}`,
+        restartGatewayIfRunning: false,
+      });
+      if (!syncResult.success) {
+        return syncResult.status || manager.getStatus();
+      }
+      const ensuredStatus = await manager.ensureReady({ forceReinstall: options.forceReinstall });
+      if (ensuredStatus.phase === 'ready' || ensuredStatus.phase === 'running') {
+        return await manager.startGateway();
+      }
+      return ensuredStatus;
+    } catch (error) {
+      console.error(`[OpenClaw] bootstrap failed (${reason}):`, error);
+      return manager.getStatus();
+    }
+  };
+
+  const promise = task().finally(() => {
+    if (openClawBootstrapPromise === promise) {
+      openClawBootstrapPromise = null;
+    }
+  });
+  openClawBootstrapPromise = promise;
+  return promise;
+};
+
+const ensureOpenClawRunningForCowork = async () => {
+  const manager = getOpenClawEngineManager();
+  const status = manager.getStatus();
+  if (status.phase === 'running') {
+    return status;
+  }
+  if (status.phase === 'ready') {
+    return await manager.startGateway();
+  }
+  return status;
+};
+
 const getCoworkStore = () => {
   if (!coworkStore) {
     const sqliteStore = getStore();
@@ -532,75 +638,158 @@ const getCoworkStore = () => {
   return coworkStore;
 };
 
+const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
+  const configured = getCoworkStore().getConfig().agentEngine;
+  return configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
+};
+
+const getOpenClawConfigSync = (): OpenClawConfigSync => {
+  if (!openClawConfigSync) {
+    openClawConfigSync = new OpenClawConfigSync({
+      engineManager: getOpenClawEngineManager(),
+      getCoworkConfig: () => getCoworkStore().getConfig(),
+    });
+  }
+  return openClawConfigSync;
+};
+
+const syncOpenClawConfig = async (
+  options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
+): Promise<{ success: boolean; changed: boolean; status?: OpenClawEngineStatus; error?: string }> => {
+  const syncResult = getOpenClawConfigSync().sync(options.reason);
+  if (!syncResult.ok) {
+    const status = getOpenClawEngineManager().setExternalError(
+      `OpenClaw config sync failed: ${syncResult.error || 'unknown error'}`,
+    );
+    return {
+      success: false,
+      changed: false,
+      status,
+      error: syncResult.error,
+    };
+  }
+
+  if (!syncResult.changed || !options.restartGatewayIfRunning) {
+    return {
+      success: true,
+      changed: syncResult.changed,
+    };
+  }
+
+  const manager = getOpenClawEngineManager();
+  const status = manager.getStatus();
+  if (status.phase !== 'running') {
+    return {
+      success: true,
+      changed: true,
+      status,
+    };
+  }
+
+  await manager.stopGateway();
+  const restarted = await manager.startGateway();
+  if (restarted.phase !== 'running') {
+    return {
+      success: false,
+      changed: true,
+      status: restarted,
+      error: restarted.message || 'Failed to restart OpenClaw gateway after config sync.',
+    };
+  }
+  return {
+    success: true,
+    changed: true,
+    status: restarted,
+  };
+};
+
 const getCoworkRunner = () => {
   if (!coworkRunner) {
     coworkRunner = new CoworkRunner(getCoworkStore());
-
-    // Set up event listeners to forward to renderer
-    coworkRunner.on('message', (sessionId: string, message: any) => {
-      const safeMessage = sanitizeCoworkMessageForIpc(message);
-      const windows = BrowserWindow.getAllWindows();
-      windows.forEach(win => {
-        if (!win.isDestroyed()) {
-          try {
-            win.webContents.send('cowork:stream:message', { sessionId, message: safeMessage });
-          } catch (error) {
-            console.error('Failed to forward cowork message:', error);
-          }
-        }
-      });
-    });
-
-    coworkRunner.on('messageUpdate', (sessionId: string, messageId: string, content: string) => {
-      const safeContent = truncateIpcString(content, IPC_UPDATE_CONTENT_MAX_CHARS);
-      const windows = BrowserWindow.getAllWindows();
-      windows.forEach(win => {
-        if (!win.isDestroyed()) {
-          try {
-            win.webContents.send('cowork:stream:messageUpdate', { sessionId, messageId, content: safeContent });
-          } catch (error) {
-            console.error('Failed to forward cowork message update:', error);
-          }
-        }
-      });
-    });
-
-    coworkRunner.on('permissionRequest', (sessionId: string, request: any) => {
-      if (coworkRunner?.getSessionConfirmationMode(sessionId) === 'text') {
-        return;
-      }
-      const safeRequest = sanitizePermissionRequestForIpc(request);
-      const windows = BrowserWindow.getAllWindows();
-      windows.forEach(win => {
-        if (!win.isDestroyed()) {
-          try {
-            win.webContents.send('cowork:stream:permission', { sessionId, request: safeRequest });
-          } catch (error) {
-            console.error('Failed to forward cowork permission request:', error);
-          }
-        }
-      });
-    });
-
-    coworkRunner.on('complete', (sessionId: string, claudeSessionId: string | null) => {
-      const windows = BrowserWindow.getAllWindows();
-      windows.forEach(win => {
-        if (!win.isDestroyed()) {
-          win.webContents.send('cowork:stream:complete', { sessionId, claudeSessionId });
-        }
-      });
-    });
-
-    coworkRunner.on('error', (sessionId: string, error: string) => {
-      const windows = BrowserWindow.getAllWindows();
-      windows.forEach(win => {
-        if (!win.isDestroyed()) {
-          win.webContents.send('cowork:stream:error', { sessionId, error });
-        }
-      });
-    });
   }
   return coworkRunner;
+};
+
+const bindCoworkRuntimeForwarder = (): void => {
+  if (coworkRuntimeForwarderBound) return;
+  const runtime = getCoworkEngineRouter();
+
+  runtime.on('message', (sessionId: string, message: any) => {
+    const safeMessage = sanitizeCoworkMessageForIpc(message);
+    const windows = BrowserWindow.getAllWindows();
+    windows.forEach((win) => {
+      if (win.isDestroyed()) return;
+      try {
+        win.webContents.send('cowork:stream:message', { sessionId, message: safeMessage });
+      } catch (error) {
+        console.error('Failed to forward cowork message:', error);
+      }
+    });
+  });
+
+  runtime.on('messageUpdate', (sessionId: string, messageId: string, content: string) => {
+    const safeContent = truncateIpcString(content, IPC_UPDATE_CONTENT_MAX_CHARS);
+    const windows = BrowserWindow.getAllWindows();
+    windows.forEach((win) => {
+      if (win.isDestroyed()) return;
+      try {
+        win.webContents.send('cowork:stream:messageUpdate', { sessionId, messageId, content: safeContent });
+      } catch (error) {
+        console.error('Failed to forward cowork message update:', error);
+      }
+    });
+  });
+
+  runtime.on('permissionRequest', (sessionId: string, request: any) => {
+    if (runtime.getSessionConfirmationMode(sessionId) === 'text') {
+      return;
+    }
+    const safeRequest = sanitizePermissionRequestForIpc(request);
+    const windows = BrowserWindow.getAllWindows();
+    windows.forEach((win) => {
+      if (win.isDestroyed()) return;
+      try {
+        win.webContents.send('cowork:stream:permission', { sessionId, request: safeRequest });
+      } catch (error) {
+        console.error('Failed to forward cowork permission request:', error);
+      }
+    });
+  });
+
+  runtime.on('complete', (sessionId: string, claudeSessionId: string | null) => {
+    const windows = BrowserWindow.getAllWindows();
+    windows.forEach((win) => {
+      if (win.isDestroyed()) return;
+      win.webContents.send('cowork:stream:complete', { sessionId, claudeSessionId });
+    });
+  });
+
+  runtime.on('error', (sessionId: string, error: string) => {
+    const windows = BrowserWindow.getAllWindows();
+    windows.forEach((win) => {
+      if (win.isDestroyed()) return;
+      win.webContents.send('cowork:stream:error', { sessionId, error });
+    });
+  });
+
+  coworkRuntimeForwarderBound = true;
+};
+
+const getCoworkEngineRouter = () => {
+  if (!coworkEngineRouter) {
+    if (!claudeRuntimeAdapter) {
+      claudeRuntimeAdapter = new ClaudeRuntimeAdapter(getCoworkRunner());
+    }
+    if (!openClawRuntimeAdapter) {
+      openClawRuntimeAdapter = new OpenClawRuntimeAdapter(getCoworkStore(), getOpenClawEngineManager());
+    }
+    coworkEngineRouter = new CoworkEngineRouter({
+      getCurrentEngine: resolveCoworkAgentEngine,
+      openclawRuntime: openClawRuntimeAdapter,
+      claudeRuntime: claudeRuntimeAdapter,
+    });
+  }
+  return coworkEngineRouter;
 };
 
 const getSkillManager = () => {
@@ -615,15 +804,24 @@ const getIMGatewayManager = () => {
     const sqliteStore = getStore();
 
     // Get Cowork dependencies for IM Cowork mode
-    const runner = getCoworkRunner();
+    const runtime = getCoworkEngineRouter();
     const store = getCoworkStore();
 
     imGatewayManager = new IMGatewayManager(
       sqliteStore.getDatabase(),
       sqliteStore.getSaveFunction(),
       {
-        coworkRunner: runner,
+        coworkRuntime: runtime,
         coworkStore: store,
+        ensureCoworkReady: async () => {
+          if (resolveCoworkAgentEngine() !== 'openclaw') {
+            return;
+          }
+          const status = await ensureOpenClawRunningForCowork();
+          if (status.phase !== 'running') {
+            throw new Error(status.message || 'AI engine is initializing. Please try again in a moment.');
+          }
+        },
       }
     );
 
@@ -702,7 +900,7 @@ const getScheduler = () => {
     scheduler = new Scheduler({
       scheduledTaskStore: getScheduledTaskStore(),
       coworkStore: getCoworkStore(),
-      getCoworkRunner,
+      getCoworkRuntime: getCoworkEngineRouter,
       getIMGatewayManager: () => {
         try { return getIMGatewayManager(); } catch { return null; }
       },
@@ -849,8 +1047,17 @@ if (!gotTheLock) {
     return getStore().get(key);
   });
 
-  ipcMain.handle('store:set', (_event, key, value) => {
+  ipcMain.handle('store:set', async (_event, key, value) => {
     getStore().set(key, value);
+    if (key === 'app_config') {
+      const syncResult = await syncOpenClawConfig({
+        reason: 'app-config-change',
+        restartGatewayIfRunning: true,
+      });
+      if (!syncResult.success) {
+        console.error('[OpenClaw] Failed to sync config after app_config update:', syncResult.error);
+      }
+    }
   });
 
   ipcMain.handle('store:remove', (_event, key) => {
@@ -995,6 +1202,61 @@ if (!gotTheLock) {
     return getSkillManager().testEmailConnectivity(skillId, config);
   });
 
+  ipcMain.handle('openclaw:engine:getStatus', async () => {
+    try {
+      const manager = getOpenClawEngineManager();
+      return {
+        success: true,
+        status: manager.getStatus(),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get OpenClaw engine status',
+      };
+    }
+  });
+
+  ipcMain.handle('openclaw:engine:install', async () => {
+    try {
+      const status = await bootstrapOpenClawEngine({
+        forceReinstall: false,
+        reason: 'manual-install',
+      });
+      return {
+        success: status.phase === 'running' || status.phase === 'ready',
+        status,
+      };
+    } catch (error) {
+      const manager = getOpenClawEngineManager();
+      return {
+        success: false,
+        status: manager.getStatus(),
+        error: error instanceof Error ? error.message : 'Failed to install OpenClaw engine',
+      };
+    }
+  });
+
+  ipcMain.handle('openclaw:engine:retryInstall', async () => {
+    try {
+      const status = await bootstrapOpenClawEngine({
+        forceReinstall: true,
+        reason: 'manual-retry',
+      });
+      return {
+        success: status.phase === 'running' || status.phase === 'ready',
+        status,
+      };
+    } catch (error) {
+      const manager = getOpenClawEngineManager();
+      return {
+        success: false,
+        status: manager.getStatus(),
+        error: error instanceof Error ? error.message : 'Failed to retry OpenClaw engine install',
+      };
+    }
+  });
+
   // Cowork IPC handlers
   ipcMain.handle('cowork:session:start', async (_event, options: {
     prompt: string;
@@ -1004,6 +1266,14 @@ if (!gotTheLock) {
     activeSkillIds?: string[];
   }) => {
     try {
+      const activeEngine = resolveCoworkAgentEngine();
+      if (activeEngine === 'openclaw') {
+        const engineStatus = await ensureOpenClawRunningForCowork();
+        if (engineStatus.phase !== 'running') {
+          return getEngineNotReadyResponse(engineStatus);
+        }
+      }
+
       const coworkStoreInstance = getCoworkStore();
       const config = coworkStoreInstance.getConfig();
       const systemPrompt = options.systemPrompt ?? config.systemPrompt;
@@ -1028,7 +1298,6 @@ if (!gotTheLock) {
         config.executionMode || 'local',
         options.activeSkillIds || []
       );
-      const runner = getCoworkRunner();
 
       // Update session status to 'running' before starting async task
       // This ensures the frontend receives the correct status immediately
@@ -1040,7 +1309,8 @@ if (!gotTheLock) {
       });
 
       // Start the session asynchronously (skip initial user message since we already added it)
-      runner.startSession(session.id, options.prompt, {
+      const runtime = getCoworkEngineRouter();
+      runtime.startSession(session.id, options.prompt, {
         skipInitialUserMessage: true,
         skillIds: options.activeSkillIds,
         workspaceRoot: selectedWorkspaceRoot,
@@ -1069,8 +1339,19 @@ if (!gotTheLock) {
     activeSkillIds?: string[];
   }) => {
     try {
-      const runner = getCoworkRunner();
-      runner.continueSession(options.sessionId, options.prompt, { systemPrompt: options.systemPrompt, skillIds: options.activeSkillIds }).catch(error => {
+      const activeEngine = resolveCoworkAgentEngine();
+      if (activeEngine === 'openclaw') {
+        const engineStatus = await ensureOpenClawRunningForCowork();
+        if (engineStatus.phase !== 'running') {
+          return getEngineNotReadyResponse(engineStatus);
+        }
+      }
+
+      const runtime = getCoworkEngineRouter();
+      runtime.continueSession(options.sessionId, options.prompt, {
+        systemPrompt: options.systemPrompt,
+        skillIds: options.activeSkillIds,
+      }).catch(error => {
         console.error('Cowork continue error:', error);
       });
 
@@ -1086,8 +1367,8 @@ if (!gotTheLock) {
 
   ipcMain.handle('cowork:session:stop', async (_event, sessionId: string) => {
     try {
-      const runner = getCoworkRunner();
-      runner.stopSession(sessionId);
+      const runtime = getCoworkEngineRouter();
+      runtime.stopSession(sessionId);
       return { success: true };
     } catch (error) {
       return {
@@ -1249,8 +1530,8 @@ if (!gotTheLock) {
     result: PermissionResult;
   }) => {
     try {
-      const runner = getCoworkRunner();
-      runner.respondToPermission(options.requestId, options.result);
+      const runtime = getCoworkEngineRouter();
+      runtime.respondToPermission(options.requestId, options.result);
       return { success: true };
     } catch (error) {
       return {
@@ -1381,6 +1662,7 @@ if (!gotTheLock) {
   ipcMain.handle('cowork:config:set', async (_event, config: {
     workingDirectory?: string;
     executionMode?: 'auto' | 'local' | 'sandbox';
+    agentEngine?: CoworkAgentEngine;
     memoryEnabled?: boolean;
     memoryImplicitUpdateEnabled?: boolean;
     memoryLlmJudgeEnabled?: boolean;
@@ -1392,6 +1674,11 @@ if (!gotTheLock) {
         config.executionMode && String(config.executionMode) === 'container'
           ? 'sandbox'
           : config.executionMode;
+      const normalizedAgentEngine = config.agentEngine === 'yd_cowork'
+        ? 'yd_cowork'
+        : config.agentEngine === 'openclaw'
+          ? 'openclaw'
+          : undefined;
       const normalizedMemoryEnabled = typeof config.memoryEnabled === 'boolean'
         ? config.memoryEnabled
         : undefined;
@@ -1413,19 +1700,51 @@ if (!gotTheLock) {
             Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(config.memoryUserMemoriesMaxItems))
           )
         : undefined;
-      const normalizedConfig = {
+      const normalizedConfig: Parameters<CoworkStore['setConfig']>[0] = {
         ...config,
         executionMode: normalizedExecutionMode,
+        agentEngine: normalizedAgentEngine,
         memoryEnabled: normalizedMemoryEnabled,
         memoryImplicitUpdateEnabled: normalizedMemoryImplicitUpdateEnabled,
         memoryLlmJudgeEnabled: normalizedMemoryLlmJudgeEnabled,
         memoryGuardLevel: normalizedMemoryGuardLevel,
         memoryUserMemoriesMaxItems: normalizedMemoryUserMemoriesMaxItems,
       };
-      const previousWorkingDir = getCoworkStore().getConfig().workingDirectory;
+      const previousConfig = getCoworkStore().getConfig();
+      const previousWorkingDir = previousConfig.workingDirectory;
       getCoworkStore().setConfig(normalizedConfig);
       if (normalizedConfig.workingDirectory !== undefined && normalizedConfig.workingDirectory !== previousWorkingDir) {
         getSkillManager().handleWorkingDirectoryChange();
+      }
+
+      const nextConfig = getCoworkStore().getConfig();
+      if (normalizedAgentEngine !== undefined && normalizedAgentEngine !== previousConfig.agentEngine) {
+        getCoworkEngineRouter().handleEngineConfigChanged(normalizedAgentEngine);
+      }
+      const switchedToOpenClaw = normalizedAgentEngine === 'openclaw'
+        && previousConfig.agentEngine !== 'openclaw';
+
+      const shouldSyncOpenClawConfig = normalizedExecutionMode !== undefined
+        || normalizedAgentEngine !== undefined;
+      if (shouldSyncOpenClawConfig) {
+        const syncResult = await syncOpenClawConfig({
+          reason: 'cowork-config-change',
+          restartGatewayIfRunning: true,
+        });
+        if (!syncResult.success && nextConfig.agentEngine === 'openclaw') {
+          return {
+            success: false,
+            code: ENGINE_NOT_READY_CODE,
+            error: syncResult.error || 'OpenClaw config sync failed.',
+            engineStatus: syncResult.status || getOpenClawEngineManager().getStatus(),
+          };
+        }
+      }
+
+      if (switchedToOpenClaw) {
+        void ensureOpenClawRunningForCowork().catch((error) => {
+          console.error('[OpenClaw] Failed to auto-start gateway after engine switch:', error);
+        });
       }
       return { success: true };
     } catch (error) {
@@ -2071,6 +2390,9 @@ if (!gotTheLock) {
     });
     mainWindow.webContents.on('did-finish-load', () => {
       emitWindowState();
+      if (openClawEngineManager && !mainWindow?.isDestroyed()) {
+        mainWindow.webContents.send('openclaw:engine:onProgress', openClawEngineManager.getStatus());
+      }
     });
 
     // [关键代码] 显式告诉 Electron 使用系统的代理配置
@@ -2174,9 +2496,9 @@ if (!gotTheLock) {
     skillManager?.stopWatching();
 
     // Stop Cowork sessions without blocking shutdown.
-    if (coworkRunner) {
+    if (coworkEngineRouter) {
       console.log('[Main] Stopping cowork sessions...');
-      coworkRunner.stopAllSessions();
+      coworkEngineRouter.stopAllSessions();
     }
 
     await stopCoworkOpenAICompatProxy().catch((error) => {
@@ -2191,6 +2513,12 @@ if (!gotTheLock) {
     if (imGatewayManager) {
       await imGatewayManager.stopAll().catch(err => {
         console.error('[IM Gateway] Error stopping gateways on quit:', err);
+      });
+    }
+
+    if (openClawEngineManager) {
+      await openClawEngineManager.stopGateway().catch((error) => {
+        console.error('[OpenClaw] Failed to stop gateway on quit:', error);
       });
     }
 
@@ -2268,6 +2596,18 @@ if (!gotTheLock) {
     }
     // Inject store getter into claudeSettings
     setStoreGetter(() => store);
+
+    bindCoworkRuntimeForwarder();
+    bindOpenClawStatusForwarder();
+
+    const startupSync = await syncOpenClawConfig({
+      reason: 'startup',
+      restartGatewayIfRunning: false,
+    });
+    if (!startupSync.success) {
+      console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
+    }
+
     const manager = getSkillManager();
     manager.syncBundledSkillsToUserData();
     manager.startWatching();

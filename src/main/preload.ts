@@ -108,6 +108,18 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('generate-session-title', userInput),
   getRecentCwds: (limit?: number) =>
     ipcRenderer.invoke('get-recent-cwds', limit),
+  openclaw: {
+    engine: {
+      getStatus: () => ipcRenderer.invoke('openclaw:engine:getStatus'),
+      install: () => ipcRenderer.invoke('openclaw:engine:install'),
+      retryInstall: () => ipcRenderer.invoke('openclaw:engine:retryInstall'),
+      onProgress: (callback: (status: any) => void) => {
+        const handler = (_event: any, status: any) => callback(status);
+        ipcRenderer.on('openclaw:engine:onProgress', handler);
+        return () => ipcRenderer.removeListener('openclaw:engine:onProgress', handler);
+      },
+    },
+  },
   cowork: {
     // Session management
     startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; activeSkillIds?: string[] }) =>
@@ -143,6 +155,7 @@ contextBridge.exposeInMainWorld('electron', {
     setConfig: (config: {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
+      agentEngine?: 'openclaw' | 'yd_cowork';
       memoryEnabled?: boolean;
       memoryImplicitUpdateEnabled?: boolean;
       memoryLlmJudgeEnabled?: boolean;

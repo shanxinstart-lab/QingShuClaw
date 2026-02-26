@@ -8,14 +8,16 @@ import { coworkService } from '../services/cowork';
 import { imService } from '../services/im';
 import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import ErrorMessage from './ErrorMessage';
-import { XMarkIcon, Cog6ToothIcon, PlusCircleIcon, TrashIcon, PencilIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, ShieldCheckIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, Cog6ToothIcon, PlusCircleIcon, TrashIcon, PencilIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, ShieldCheckIcon, EnvelopeIcon, CpuChipIcon } from '@heroicons/react/24/outline';
 import BrainIcon from './icons/BrainIcon';
 import { useDispatch, useSelector } from 'react-redux';
 import { setAvailableModels } from '../store/slices/modelSlice';
 import { RootState } from '../store';
 import ThemedSelect from './ui/ThemedSelect';
 import type {
+  CoworkAgentEngine,
   CoworkExecutionMode,
+  OpenClawEngineStatus,
   CoworkUserMemoryEntry,
   CoworkMemoryStats,
   CoworkSandboxProgress,
@@ -39,7 +41,7 @@ import {
   CustomProviderIcon,
 } from './icons/providers';
 
-type TabType = 'general' | 'model' | 'coworkSandbox' | 'coworkMemory' | 'shortcuts' | 'im' | 'email';
+type TabType = 'general' | 'coworkAgentEngine' | 'model' | 'coworkSandbox' | 'coworkMemory' | 'shortcuts' | 'im' | 'email';
 
 export type SettingsOpenOptions = {
   initialTab?: TabType;
@@ -334,6 +336,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
   const coworkConfig = useSelector((state: RootState) => state.cowork.config);
   const imConfig = useSelector((state: RootState) => state.im.config);
 
+  const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'yd_cowork');
   const [coworkExecutionMode, setCoworkExecutionMode] = useState<CoworkExecutionMode>(coworkConfig.executionMode || 'local');
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
@@ -348,12 +351,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
   const [coworkSandboxLoading, setCoworkSandboxLoading] = useState(true);
   const [coworkSandboxProgress, setCoworkSandboxProgress] = useState<CoworkSandboxProgress | null>(null);
   const [coworkSandboxInstalling, setCoworkSandboxInstalling] = useState(false);
+  const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
+  const [openClawInstalling, setOpenClawInstalling] = useState(false);
 
   useEffect(() => {
+    setCoworkAgentEngine(coworkConfig.agentEngine || 'yd_cowork');
     setCoworkExecutionMode(coworkConfig.executionMode || 'local');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
   }, [
+    coworkConfig.agentEngine,
     coworkConfig.executionMode,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
@@ -388,6 +395,22 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
     });
     return () => unsubscribe();
   }, [loadCoworkSandboxStatus]);
+
+  useEffect(() => {
+    let active = true;
+    void coworkService.getOpenClawEngineStatus().then((status) => {
+      if (!active || !status) return;
+      setOpenClawEngineStatus(status);
+    });
+    const unsubscribe = coworkService.onOpenClawEngineStatus((status) => {
+      if (!active) return;
+      setOpenClawEngineStatus(status);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -668,9 +691,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
     });
   };
 
-  const hasCoworkConfigChanges = coworkExecutionMode !== coworkConfig.executionMode
+  const hasCoworkConfigChanges = coworkAgentEngine !== coworkConfig.agentEngine
+    || coworkExecutionMode !== coworkConfig.executionMode
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled;
+  const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
 
   const coworkSandboxDisabled = !coworkSandboxStatus?.supported
     || !coworkSandboxStatus?.runtimeReady
@@ -700,6 +725,37 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
     ? (i18nService.getLanguage() === 'zh' ? '镜像' : 'Image')
     : (i18nService.getLanguage() === 'zh' ? '运行时' : 'Runtime');
 
+  const openClawProgressPercent = useMemo(() => {
+    if (typeof openClawEngineStatus?.progressPercent !== 'number' || !Number.isFinite(openClawEngineStatus.progressPercent)) {
+      return null;
+    }
+    return Math.max(0, Math.min(100, Math.round(openClawEngineStatus.progressPercent)));
+  }, [openClawEngineStatus]);
+
+  const resolveOpenClawStatusText = (status: OpenClawEngineStatus | null): string => {
+    if (!status) {
+      return i18nService.t('coworkOpenClawNotInstalledNotice');
+    }
+    if (status.message?.trim()) {
+      return status.message.trim();
+    }
+    switch (status.phase) {
+      case 'not_installed':
+        return i18nService.t('coworkOpenClawNotInstalledNotice');
+      case 'installing':
+        return i18nService.t('coworkOpenClawInstalling');
+      case 'ready':
+        return i18nService.t('coworkOpenClawReadyNotice');
+      case 'starting':
+        return 'OpenClaw gateway is starting...';
+      case 'error':
+        return 'OpenClaw install failed.';
+      case 'running':
+      default:
+        return 'OpenClaw is ready.';
+    }
+  };
+
   const handleInstallCoworkSandbox = async () => {
     setCoworkSandboxInstalling(true);
     try {
@@ -712,6 +768,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
       }
     } finally {
       setCoworkSandboxInstalling(false);
+    }
+  };
+
+  const handleInstallOpenClawEngine = async () => {
+    if (openClawInstalling) return;
+    setOpenClawInstalling(true);
+    try {
+      const status = await coworkService.installOpenClawEngine();
+      if (status) {
+        setOpenClawEngineStatus(status);
+      }
+    } finally {
+      setOpenClawInstalling(false);
     }
   };
 
@@ -902,11 +971,15 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
       dispatch(setAvailableModels(allModels));
 
       if (hasCoworkConfigChanges) {
-        await coworkService.updateConfig({
+        const updated = await coworkService.updateConfig({
+          agentEngine: coworkAgentEngine,
           executionMode: coworkExecutionMode,
           memoryEnabled: coworkMemoryEnabled,
           memoryLlmJudgeEnabled: coworkMemoryLlmJudgeEnabled,
         });
+        if (!updated) {
+          throw new Error(i18nService.t('coworkConfigSaveFailed'));
+        }
       }
 
       // Save IM config
@@ -1433,6 +1506,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
   // 渲染标签页
   const sidebarTabs: { key: TabType; label: string; icon: React.ReactNode }[] = useMemo(() => [
     { key: 'general',        label: i18nService.t('general'),        icon: <Cog6ToothIcon className="h-5 w-5" /> },
+    { key: 'coworkAgentEngine', label: i18nService.t('coworkAgentEngine'), icon: <CpuChipIcon className="h-5 w-5" /> },
     { key: 'model',          label: i18nService.t('model'),          icon: <CubeIcon className="h-5 w-5" /> },
     { key: 'im',             label: i18nService.t('imBot'),          icon: <ChatBubbleLeftIcon className="h-5 w-5" /> },
     { key: 'email',          label: i18nService.t('emailTab'),       icon: <EnvelopeIcon className="h-5 w-5" /> },
@@ -1649,7 +1723,165 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
       case 'email':
         return <EmailSkillConfig />;
 
+      case 'coworkAgentEngine':
+        return (
+          <div className="space-y-6">
+            <div className="space-y-3">
+              <label className="block text-sm font-medium dark:text-claude-darkText text-claude-text">
+                {i18nService.t('coworkAgentEngine')}
+              </label>
+              <div className="space-y-2">
+                {([
+                  {
+                    value: 'yd_cowork',
+                    label: i18nService.t('coworkAgentEngineClaudeLegacy'),
+                    hint: i18nService.t('coworkAgentEngineClaudeLegacyHint'),
+                  },
+                  {
+                    value: 'openclaw',
+                    label: i18nService.t('coworkAgentEngineOpenClaw'),
+                    hint: i18nService.t('coworkAgentEngineOpenClawHint'),
+                  },
+                ] as Array<{ value: CoworkAgentEngine; label: string; hint: string }>).map((option) => {
+                  return (
+                    <label
+                      key={option.value}
+                      className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
+                    >
+                      <input
+                        type="radio"
+                        name="cowork-agent-engine"
+                        value={option.value}
+                        checked={coworkAgentEngine === option.value}
+                        onChange={() => setCoworkAgentEngine(option.value)}
+                        className="mt-1"
+                      />
+                      <span>
+                        <span className="block font-medium dark:text-claude-darkText text-claude-text">
+                          {option.label}
+                        </span>
+                        <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {option.hint}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            {isOpenClawAgentEngine && (
+              <div className="space-y-3 rounded-xl border px-4 py-4 dark:border-claude-darkBorder border-claude-border">
+                <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                  {i18nService.t('coworkOpenClawInstallHint')}
+                </div>
+                <div className={`rounded-xl border px-4 py-3 text-sm ${openClawEngineStatus?.phase === 'error'
+                  ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300'}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      {resolveOpenClawStatusText(openClawEngineStatus)}
+                      {openClawProgressPercent !== null && (
+                        <span className="ml-2 text-xs opacity-80">{openClawProgressPercent}%</span>
+                      )}
+                    </div>
+                  </div>
+                  {openClawProgressPercent !== null && (
+                    <div className="mt-2 h-2 rounded-full bg-black/10 overflow-hidden">
+                      <div
+                        className="h-full bg-claude-accent transition-all"
+                        style={{ width: `${openClawProgressPercent}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleInstallOpenClawEngine}
+                  disabled={
+                    openClawInstalling
+                    || openClawEngineStatus?.phase === 'installing'
+                    || openClawEngineStatus?.phase === 'starting'
+                    || openClawEngineStatus?.phase === 'running'
+                  }
+                  className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-claude-accent hover:bg-claude-accentHover text-white text-sm font-medium transition-colors disabled:opacity-50 active:scale-[0.98]"
+                >
+                  {(openClawInstalling
+                    || openClawEngineStatus?.phase === 'installing'
+                    || openClawEngineStatus?.phase === 'starting')
+                    ? i18nService.t('coworkOpenClawInstalling')
+                    : (openClawEngineStatus?.phase === 'running'
+                      ? i18nService.t('coworkOpenClawRunning')
+                      : (openClawEngineStatus?.phase === 'ready'
+                        ? i18nService.t('coworkOpenClawStart')
+                        : (openClawEngineStatus?.phase === 'error'
+                          ? i18nService.t('coworkOpenClawRetryInstall')
+                          : i18nService.t('coworkOpenClawInstall'))))}
+                </button>
+              </div>
+            )}
+          </div>
+        );
+
       case 'coworkSandbox':
+        if (isOpenClawAgentEngine) {
+          return (
+            <div className="space-y-6">
+              <div className="space-y-3">
+                <label className="block text-sm font-medium dark:text-claude-darkText text-claude-text">
+                  {i18nService.t('coworkExecutionMode')}
+                </label>
+                <div className="space-y-2">
+                  {([
+                    {
+                      value: 'auto',
+                      label: i18nService.t('coworkOpenClawExecutionModeAuto'),
+                      hint: i18nService.t('coworkOpenClawExecutionModeAutoHint'),
+                    },
+                    {
+                      value: 'local',
+                      label: i18nService.t('coworkOpenClawExecutionModeLocal'),
+                      hint: i18nService.t('coworkOpenClawExecutionModeLocalHint'),
+                    },
+                    {
+                      value: 'sandbox',
+                      label: i18nService.t('coworkOpenClawExecutionModeSandbox'),
+                      hint: i18nService.t('coworkOpenClawExecutionModeSandboxHint'),
+                    },
+                  ] as Array<{ value: CoworkExecutionMode; label: string; hint: string }>).map((option) => {
+                    return (
+                      <label
+                        key={option.value}
+                        className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
+                      >
+                        <input
+                          type="radio"
+                          name="cowork-execution-mode"
+                          value={option.value}
+                          checked={coworkExecutionMode === option.value}
+                          onChange={() => setCoworkExecutionMode(option.value)}
+                          className="mt-1"
+                        />
+                        <span>
+                          <span className="block font-medium dark:text-claude-darkText text-claude-text">
+                            {option.label}
+                          </span>
+                          <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                            {option.hint}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                  {i18nService.t('coworkOpenClawSandboxNotice')}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
         return (
           <div className="space-y-6">
             <div className="space-y-3">
@@ -1754,6 +1986,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice }) => {
       case 'coworkMemory':
         return (
           <div className="space-y-6">
+            {coworkAgentEngine === 'openclaw' && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                {i18nService.t('coworkMemoryLegacyNotice')}
+              </div>
+            )}
             <div className="space-y-3 rounded-xl border px-4 py-4 dark:border-claude-darkBorder border-claude-border">
               <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">
                 {i18nService.t('coworkMemoryTitle')}

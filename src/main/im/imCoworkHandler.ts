@@ -1,13 +1,13 @@
 /**
  * IM Cowork Handler
- * Adapter that enables IM (DingTalk/Feishu/Telegram) to use CoworkRunner for tool-enabled AI execution
+ * Adapter that enables IM (DingTalk/Feishu/Telegram) to use CoworkRuntime for tool-enabled AI execution
  */
 
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import type { CoworkRunner, PermissionRequest } from '../libs/coworkRunner';
+import type { CoworkRuntime, PermissionRequest } from '../libs/agentEngine/types';
 import type { CoworkStore, CoworkMessage } from '../coworkStore';
 import type { IMStore } from './imStore';
 import type { IMMessage, IMPlatform, IMMediaAttachment } from './types';
@@ -35,7 +35,7 @@ const IM_DENY_RESPONSE_RE = /^(拒绝|不同意|no|n)$/i;
 const IM_ALLOW_OPTION_LABEL = '允许本次操作';
 
 export interface IMCoworkHandlerOptions {
-  coworkRunner: CoworkRunner;
+  coworkRuntime: CoworkRuntime;
   coworkStore: CoworkStore;
   imStore: IMStore;
   getSkillsPrompt?: () => Promise<string | null>;
@@ -43,7 +43,7 @@ export interface IMCoworkHandlerOptions {
 }
 
 export class IMCoworkHandler extends EventEmitter {
-  private coworkRunner: CoworkRunner;
+  private coworkRuntime: CoworkRuntime;
   private coworkStore: CoworkStore;
   private imStore: IMStore;
   private getSkillsPrompt?: () => Promise<string | null>;
@@ -56,10 +56,15 @@ export class IMCoworkHandler extends EventEmitter {
   private imSessionIds: Set<string> = new Set();
   private sessionConversationMap: Map<string, { conversationId: string; platform: IMPlatform }> = new Map();
   private pendingPermissionByConversation: Map<string, PendingIMPermission> = new Map();
+  private readonly onMessage = this.handleMessage.bind(this);
+  private readonly onMessageUpdate = this.handleMessageUpdate.bind(this);
+  private readonly onPermissionRequest = this.handlePermissionRequest.bind(this);
+  private readonly onComplete = this.handleComplete.bind(this);
+  private readonly onError = this.handleError.bind(this);
 
   constructor(options: IMCoworkHandlerOptions) {
     super();
-    this.coworkRunner = options.coworkRunner;
+    this.coworkRuntime = options.coworkRuntime;
     this.coworkStore = options.coworkStore;
     this.imStore = options.imStore;
     this.getSkillsPrompt = options.getSkillsPrompt;
@@ -69,18 +74,18 @@ export class IMCoworkHandler extends EventEmitter {
   }
 
   /**
-   * Set up event listeners for CoworkRunner
+   * Set up event listeners for CoworkRuntime
    */
   private setupEventListeners(): void {
-    this.coworkRunner.on('message', this.handleMessage.bind(this));
-    this.coworkRunner.on('messageUpdate', this.handleMessageUpdate.bind(this));
-    this.coworkRunner.on('permissionRequest', this.handlePermissionRequest.bind(this));
-    this.coworkRunner.on('complete', this.handleComplete.bind(this));
-    this.coworkRunner.on('error', this.handleError.bind(this));
+    this.coworkRuntime.on('message', this.onMessage);
+    this.coworkRuntime.on('messageUpdate', this.onMessageUpdate);
+    this.coworkRuntime.on('permissionRequest', this.onPermissionRequest);
+    this.coworkRuntime.on('complete', this.onComplete);
+    this.coworkRuntime.on('error', this.onError);
   }
 
   /**
-   * Process an incoming IM message using CoworkRunner
+   * Process an incoming IM message using CoworkRuntime
    */
   async processMessage(message: IMMessage): Promise<string> {
     const pendingPermissionReply = await this.handlePendingPermissionReply(message);
@@ -122,7 +127,7 @@ export class IMCoworkHandler extends EventEmitter {
     const responsePromise = this.createAccumulatorPromise(coworkSessionId);
 
     // Start or continue session
-    const isActive = this.coworkRunner.isSessionActive(coworkSessionId);
+    const isActive = this.coworkRuntime.isSessionActive(coworkSessionId);
     const formattedContent = this.formatMessageWithMedia(message);
     const systemPrompt = await this.buildSystemPromptWithSkills();
     const hasAvailableSkills = systemPrompt.includes('<available_skills>');
@@ -163,10 +168,10 @@ export class IMCoworkHandler extends EventEmitter {
     };
 
     if (isActive) {
-      this.coworkRunner.continueSession(coworkSessionId, formattedContent, { systemPrompt })
+      this.coworkRuntime.continueSession(coworkSessionId, formattedContent, { systemPrompt })
         .catch(onSessionStartError);
     } else {
-      this.coworkRunner.startSession(coworkSessionId, formattedContent, {
+      this.coworkRuntime.startSession(coworkSessionId, formattedContent, {
         workspaceRoot: session?.cwd,
         confirmationMode: 'text',
         systemPrompt,
@@ -191,7 +196,7 @@ export class IMCoworkHandler extends EventEmitter {
         this.imSessionIds.delete(stale.coworkSessionId);
         this.sessionConversationMap.delete(stale.coworkSessionId);
         this.clearPendingPermissionsBySessionId(stale.coworkSessionId);
-        this.coworkRunner.stopSession(stale.coworkSessionId);
+        this.coworkRuntime.stopSession(stale.coworkSessionId);
       }
     }
 
@@ -207,7 +212,7 @@ export class IMCoworkHandler extends EventEmitter {
         this.imSessionIds.delete(existing.coworkSessionId);
         this.sessionConversationMap.delete(existing.coworkSessionId);
         this.clearPendingPermissionsBySessionId(existing.coworkSessionId);
-        this.coworkRunner.stopSession(existing.coworkSessionId);
+        this.coworkRuntime.stopSession(existing.coworkSessionId);
       } else {
         this.imStore.updateSessionLastActive(imConversationId, platform);
         this.imSessionIds.add(existing.coworkSessionId);
@@ -245,7 +250,7 @@ export class IMCoworkHandler extends EventEmitter {
       title,
       resolvedWorkspaceRoot,
       systemPrompt,
-      'local' // IM always uses local mode
+      config.executionMode || 'auto'
     );
 
     // Save mapping
@@ -312,7 +317,7 @@ export class IMCoworkHandler extends EventEmitter {
   }
 
   /**
-   * Handle message event from CoworkRunner
+   * Handle message event from CoworkRuntime
    */
   private handleMessage(sessionId: string, message: CoworkMessage): void {
     // Only process messages from IM sessions
@@ -361,7 +366,7 @@ export class IMCoworkHandler extends EventEmitter {
         const accumulator = this.messageAccumulators.get(sessionId);
         if (accumulator) {
           this.messageAccumulators.delete(sessionId);
-          this.coworkRunner.stopSession(sessionId);
+          this.coworkRuntime.stopSession(sessionId);
           reject(new Error('Request timed out'));
         }
       }, this.timeout);
@@ -471,14 +476,14 @@ export class IMCoworkHandler extends EventEmitter {
       return '当前有待确认操作，请回复“允许”或“拒绝”（60 秒内）。';
     }
 
-    if (!this.coworkRunner.isSessionActive(pending.sessionId)) {
+    if (!this.coworkRuntime.isSessionActive(pending.sessionId)) {
       this.clearPendingPermissionByKey(key);
       return '该确认请求已过期，请重新发送任务。';
     }
 
     if (IM_DENY_RESPONSE_RE.test(normalizedReply)) {
       this.clearPendingPermissionByKey(key);
-      this.coworkRunner.respondToPermission(pending.request.requestId, {
+      this.coworkRuntime.respondToPermission(pending.request.requestId, {
         behavior: 'deny',
         message: 'Operation denied by IM user confirmation.',
       });
@@ -491,7 +496,7 @@ export class IMCoworkHandler extends EventEmitter {
 
     this.clearPendingPermissionByKey(key);
     const responsePromise = this.createAccumulatorPromise(pending.sessionId);
-    this.coworkRunner.respondToPermission(
+    this.coworkRuntime.respondToPermission(
       pending.request.requestId,
       this.buildAllowPermissionResult(pending.request)
     );
@@ -506,7 +511,7 @@ export class IMCoworkHandler extends EventEmitter {
     if (!this.imSessionIds.has(sessionId)) return;
     const conversation = this.sessionConversationMap.get(sessionId);
     if (!conversation) {
-      this.coworkRunner.respondToPermission(request.requestId, {
+      this.coworkRuntime.respondToPermission(request.requestId, {
         behavior: 'deny',
         message: 'IM session mapping missing for permission request.',
       });
@@ -516,7 +521,7 @@ export class IMCoworkHandler extends EventEmitter {
     const key = this.createConversationKey(conversation.conversationId, conversation.platform);
     const existingPending = this.clearPendingPermissionByKey(key);
     if (existingPending) {
-      this.coworkRunner.respondToPermission(existingPending.request.requestId, {
+      this.coworkRuntime.respondToPermission(existingPending.request.requestId, {
         behavior: 'deny',
         message: 'Superseded by a newer permission request.',
       });
@@ -528,7 +533,7 @@ export class IMCoworkHandler extends EventEmitter {
         return;
       }
       this.clearPendingPermissionByKey(key);
-      this.coworkRunner.respondToPermission(request.requestId, {
+      this.coworkRuntime.respondToPermission(request.requestId, {
         behavior: 'deny',
         message: 'Permission request timed out after 60s',
       });
@@ -671,10 +676,10 @@ export class IMCoworkHandler extends EventEmitter {
     }
 
     // Remove event listeners
-    this.coworkRunner.removeListener('message', this.handleMessage.bind(this));
-    this.coworkRunner.removeListener('messageUpdate', this.handleMessageUpdate.bind(this));
-    this.coworkRunner.removeListener('permissionRequest', this.handlePermissionRequest.bind(this));
-    this.coworkRunner.removeListener('complete', this.handleComplete.bind(this));
-    this.coworkRunner.removeListener('error', this.handleError.bind(this));
+    this.coworkRuntime.off('message', this.onMessage);
+    this.coworkRuntime.off('messageUpdate', this.onMessageUpdate);
+    this.coworkRuntime.off('permissionRequest', this.onPermissionRequest);
+    this.coworkRuntime.off('complete', this.onComplete);
+    this.coworkRuntime.off('error', this.onError);
   }
 }

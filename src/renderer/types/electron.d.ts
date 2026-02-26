@@ -51,6 +51,7 @@ interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: 'auto' | 'local' | 'sandbox';
+  agentEngine: 'openclaw' | 'yd_cowork';
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
   memoryLlmJudgeEnabled: boolean;
@@ -62,6 +63,7 @@ type CoworkConfigUpdate = Partial<Pick<
   CoworkConfig,
   | 'workingDirectory'
   | 'executionMode'
+  | 'agentEngine'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'
   | 'memoryLlmJudgeEnabled'
@@ -119,6 +121,22 @@ interface CoworkSandboxProgress {
   total?: number;
   percent?: number;
   url?: string;
+}
+
+type OpenClawEnginePhase =
+  | 'not_installed'
+  | 'installing'
+  | 'ready'
+  | 'starting'
+  | 'running'
+  | 'error';
+
+interface OpenClawEngineStatus {
+  phase: OpenClawEnginePhase;
+  version: string | null;
+  progressPercent?: number;
+  message?: string;
+  canRetry: boolean;
 }
 
 interface WindowState {
@@ -217,6 +235,14 @@ interface IElectronAPI {
   saveApiConfig: (config: CoworkApiConfig) => Promise<{ success: boolean; error?: string }>;
   generateSessionTitle: (userInput: string | null) => Promise<string>;
   getRecentCwds: (limit?: number) => Promise<string[]>;
+  openclaw: {
+    engine: {
+      getStatus: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
+      install: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
+      retryInstall: () => Promise<{ success: boolean; status?: OpenClawEngineStatus; error?: string }>;
+      onProgress: (callback: (status: OpenClawEngineStatus) => void) => () => void;
+    };
+  };
   ipcRenderer: {
     send: (channel: string, ...args: any[]) => void;
     on: (channel: string, func: (...args: any[]) => void) => () => void;
@@ -230,8 +256,8 @@ interface IElectronAPI {
     onStateChanged: (callback: (state: WindowState) => void) => () => void;
   };
   cowork: {
-    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[] }) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
-    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[] }) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
+    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[] }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
+    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[] }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
     stopSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     setSessionPinned: (options: { sessionId: string; pinned: boolean }) => Promise<{ success: boolean; error?: string }>;
