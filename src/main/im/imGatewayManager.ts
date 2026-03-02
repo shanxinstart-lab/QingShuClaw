@@ -227,6 +227,9 @@ export class IMGatewayManager extends EventEmitter {
       message: IMMessage,
       replyFn: (text: string) => Promise<void>
     ): Promise<void> => {
+      // Persist notification target whenever we receive a message
+      this.persistNotificationTarget(message.platform);
+
       try {
         let response: string;
 
@@ -253,6 +256,10 @@ export class IMGatewayManager extends EventEmitter {
         await replyFn(response);
       } catch (error: any) {
         console.error(`[IMGatewayManager] Error processing message: ${error.message}`);
+        // Don't send "Replaced by a newer IM request" error to user, just log it
+        if (error.message === 'Replaced by a newer IM request') {
+          return;
+        }
         // Send error message to user
         try {
           await replyFn(`处理消息时出错: ${error.message}`);
@@ -267,6 +274,56 @@ export class IMGatewayManager extends EventEmitter {
     this.telegramGateway.setMessageCallback(messageHandler);
     this.discordGateway.setMessageCallback(messageHandler);
     this.nimGateway.setMessageCallback(messageHandler);
+  }
+
+  /**
+   * Persist the notification target for a platform after receiving a message.
+   */
+  private persistNotificationTarget(platform: IMPlatform): void {
+    try {
+      let target: any = null;
+      if (platform === 'dingtalk') {
+        target = this.dingtalkGateway.getNotificationTarget();
+      } else if (platform === 'feishu') {
+        target = this.feishuGateway.getNotificationTarget();
+      } else if (platform === 'telegram') {
+        target = this.telegramGateway.getNotificationTarget();
+      } else if (platform === 'discord') {
+        target = this.discordGateway.getNotificationTarget();
+      } else if (platform === 'nim') {
+        target = this.nimGateway.getNotificationTarget();
+      }
+      if (target != null) {
+        this.imStore.setNotificationTarget(platform, target);
+      }
+    } catch (err: any) {
+      console.warn(`[IMGatewayManager] Failed to persist notification target for ${platform}:`, err.message);
+    }
+  }
+
+  /**
+   * Restore notification target from SQLite after gateway starts.
+   */
+  private restoreNotificationTarget(platform: IMPlatform): void {
+    try {
+      const target = this.imStore.getNotificationTarget(platform);
+      if (target == null) return;
+
+      if (platform === 'dingtalk') {
+        this.dingtalkGateway.setNotificationTarget(target);
+      } else if (platform === 'feishu') {
+        this.feishuGateway.setNotificationTarget(target);
+      } else if (platform === 'telegram') {
+        this.telegramGateway.setNotificationTarget(target);
+      } else if (platform === 'discord') {
+        this.discordGateway.setNotificationTarget(target);
+      } else if (platform === 'nim') {
+        this.nimGateway.setNotificationTarget(target);
+      }
+      console.log(`[IMGatewayManager] Restored notification target for ${platform}`);
+    } catch (err: any) {
+      console.warn(`[IMGatewayManager] Failed to restore notification target for ${platform}:`, err.message);
+    }
   }
 
   /**
@@ -325,6 +382,11 @@ export class IMGatewayManager extends EventEmitter {
     // Update chat handler if settings changed
     if (config.settings) {
       this.updateChatHandler();
+    }
+
+    // Hot-update Telegram config on running gateway
+    if (config.telegram && this.telegramGateway) {
+      this.telegramGateway.updateConfig(config.telegram);
     }
   }
 
@@ -561,6 +623,9 @@ export class IMGatewayManager extends EventEmitter {
     } else if (platform === 'nim') {
       await this.nimGateway.start(config.nim);
     }
+
+    // Restore persisted notification target
+    this.restoreNotificationTarget(platform);
   }
 
   /**
@@ -692,6 +757,31 @@ export class IMGatewayManager extends EventEmitter {
       return true;
     } catch (error: any) {
       console.error(`[IMGatewayManager] Failed to send notification via ${platform}:`, error.message);
+      return false;
+    }
+  }
+
+  async sendNotificationWithMedia(platform: IMPlatform, text: string): Promise<boolean> {
+    if (!this.isConnected(platform)) {
+      console.warn(`[IMGatewayManager] Cannot send notification: ${platform} is not connected`);
+      return false;
+    }
+
+    try {
+      if (platform === 'dingtalk') {
+        await this.dingtalkGateway.sendNotificationWithMedia(text);
+      } else if (platform === 'feishu') {
+        await this.feishuGateway.sendNotificationWithMedia(text);
+      } else if (platform === 'telegram') {
+        await this.telegramGateway.sendNotificationWithMedia(text);
+      } else if (platform === 'discord') {
+        await this.discordGateway.sendNotificationWithMedia(text);
+      } else if (platform === 'nim') {
+        await this.nimGateway.sendNotificationWithMedia(text);
+      }
+      return true;
+    } catch (error: any) {
+      console.error(`[IMGatewayManager] Failed to send notification with media via ${platform}:`, error.message);
       return false;
     }
   }

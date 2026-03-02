@@ -28,13 +28,20 @@ import { createTray, destroyTray, updateTrayMenu } from './trayManager';
 import { isAutoLaunched, getAutoLaunchEnabled, setAutoLaunchEnabled } from './autoLaunchManager';
 import { ScheduledTaskStore } from './scheduledTaskStore';
 import { Scheduler } from './libs/scheduler';
+import { downloadUpdate, installUpdate, cancelActiveDownload } from './libs/appUpdateInstaller';
 import { initLogger, getLogFilePath } from './logger';
+import { ensurePythonRuntimeReady } from './libs/pythonRuntime';
+import {
+  applySystemProxyEnv,
+  resolveSystemProxyUrl,
+  restoreOriginalProxyEnv,
+  setSystemProxyEnabled,
+} from './libs/systemProxy';
 
 // 设置应用程序名称
 app.name = APP_NAME;
 app.setName(APP_NAME);
 
-const LEGACY_APP_NAMES = ['OctoBot', 'octobot'];
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
 const MIN_MEMORY_USER_MEMORIES_MAX_ITEMS = 1;
 const MAX_MEMORY_USER_MEMORIES_MAX_ITEMS = 60;
@@ -252,44 +259,6 @@ const configureUserDataPath = (): void => {
   }
 };
 
-const migrateLegacyUserData = (): void => {
-  const appDataPath = app.getPath('appData');
-  const userDataPath = app.getPath('userData');
-  const legacyRoots = LEGACY_APP_NAMES
-    .map(name => path.join(appDataPath, name))
-    .filter(legacyPath => legacyPath !== userDataPath && fs.existsSync(legacyPath));
-
-  if (legacyRoots.length === 0) {
-    return;
-  }
-
-  if (!fs.existsSync(userDataPath)) {
-    fs.mkdirSync(userDataPath, { recursive: true });
-  }
-
-  for (const legacyRoot of legacyRoots) {
-    try {
-      const entries = fs.readdirSync(legacyRoot);
-      for (const entry of entries) {
-        const sourcePath = path.join(legacyRoot, entry);
-        const targetPath = path.join(userDataPath, entry);
-        if (fs.existsSync(targetPath)) {
-          continue;
-        }
-        fs.cpSync(sourcePath, targetPath, {
-          recursive: true,
-          dereference: true,
-          force: false,
-          errorOnExist: false,
-        });
-      }
-      console.log(`[Main] Migrated missing user data from legacy directory: ${legacyRoot}`);
-    } catch (error) {
-      console.warn(`[Main] Failed to migrate legacy user data from ${legacyRoot}:`, error);
-    }
-  }
-};
-
 configureUserDataPath();
 initLogger();
 
@@ -503,6 +472,10 @@ process.on('unhandledRejection', (error) => {
   console.error('Unhandled Rejection:', error);
 });
 
+process.on('exit', (code) => {
+  console.log(`[Main] Process exiting with code: ${code}`);
+});
+
 let store: SqliteStore | null = null;
 let coworkStore: CoworkStore | null = null;
 let coworkRunner: CoworkRunner | null = null;
@@ -525,7 +498,12 @@ const initStore = async (): Promise<SqliteStore> => {
     if (!app.isReady()) {
       throw new Error('Store accessed before app is ready.');
     }
-    storeInitPromise = SqliteStore.create(app.getPath('userData'));
+    storeInitPromise = Promise.race([
+      SqliteStore.create(app.getPath('userData')),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Store initialization timed out after 15s')), 15_000)
+      ),
+    ]);
   }
   return storeInitPromise;
 };
@@ -943,8 +921,17 @@ let isQuitting = false;
 const activeStreamControllers = new Map<string, AbortController>();
 let lastReloadAt = 0;
 const MIN_RELOAD_INTERVAL_MS = 5000;
+type AppConfigSettings = {
+  theme?: string;
+  language?: string;
+  useSystemProxy?: boolean;
+};
 
-const resolveThemeFromConfig = (config?: { theme?: string }): 'light' | 'dark' => {
+const getUseSystemProxyFromConfig = (config?: { useSystemProxy?: boolean }): boolean => {
+  return config?.useSystemProxy === true;
+};
+
+const resolveThemeFromConfig = (config?: AppConfigSettings): 'light' | 'dark' => {
   if (config?.theme === 'dark') {
     return 'dark';
   }
@@ -955,12 +942,12 @@ const resolveThemeFromConfig = (config?: { theme?: string }): 'light' | 'dark' =
 };
 
 const getInitialTheme = (): 'light' | 'dark' => {
-  const config = getStore().get('app_config') as { theme?: string } | undefined;
+  const config = getStore().get<AppConfigSettings>('app_config');
   return resolveThemeFromConfig(config);
 };
 
 const getTitleBarOverlayOptions = () => {
-  const config = getStore().get('app_config') as { theme?: string } | undefined;
+  const config = getStore().get<AppConfigSettings>('app_config');
   const theme = resolveThemeFromConfig(config);
   return {
     color: TITLEBAR_COLORS[theme].color,
@@ -975,9 +962,34 @@ const updateTitleBarOverlay = () => {
     mainWindow.setTitleBarOverlay(getTitleBarOverlayOptions());
   }
   // Also update the window background color to match the theme
-  const config = getStore().get('app_config') as { theme?: string } | undefined;
+  const config = getStore().get<AppConfigSettings>('app_config');
   const theme = resolveThemeFromConfig(config);
   mainWindow.setBackgroundColor(theme === 'dark' ? '#0F1117' : '#F8F9FB');
+};
+
+const applyProxyPreference = async (useSystemProxy: boolean): Promise<void> => {
+  try {
+    await session.defaultSession.setProxy({ mode: useSystemProxy ? 'system' : 'direct' });
+  } catch (error) {
+    console.error('[Main] Failed to apply session proxy mode:', error);
+  }
+
+  setSystemProxyEnabled(useSystemProxy);
+
+  if (!useSystemProxy) {
+    restoreOriginalProxyEnv();
+    console.log('[Main] System proxy disabled (direct mode).');
+    return;
+  }
+
+  const proxyUrl = await resolveSystemProxyUrl('https://openrouter.ai');
+  applySystemProxyEnv(proxyUrl);
+
+  if (proxyUrl) {
+    console.log('[Main] System proxy enabled for process env:', proxyUrl);
+  } else {
+    console.warn('[Main] System proxy mode enabled, but no proxy endpoint was resolved (DIRECT).');
+  }
 };
 
 const emitWindowState = () => {
@@ -1089,8 +1101,14 @@ if (!gotTheLock) {
   });
 
   // Auto-launch IPC handlers
+  // Use SQLite store as the source of truth for UI state, because
+  // app.getLoginItemSettings() returns unreliable values on macOS and
+  // requires matching args on Windows.
   ipcMain.handle('app:getAutoLaunch', () => {
-    return { enabled: getAutoLaunchEnabled() };
+    const stored = getStore().get<boolean>('auto_launch_enabled');
+    // Fall back to OS API if SQLite has no record yet (e.g. upgraded from older version)
+    const enabled = stored ?? getAutoLaunchEnabled();
+    return { enabled };
   });
 
   ipcMain.handle('app:setAutoLaunch', (_event, enabled: unknown) => {
@@ -1099,6 +1117,7 @@ if (!gotTheLock) {
     }
     try {
       setAutoLaunchEnabled(enabled);
+      getStore().set('auto_launch_enabled', enabled);
       return { success: true };
     } catch (error) {
       return {
@@ -2042,22 +2061,30 @@ if (!gotTheLock) {
   });
 
   // Dialog handlers
-  ipcMain.handle('dialog:selectDirectory', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory', 'createDirectory'],
-    });
+  ipcMain.handle('dialog:selectDirectory', async (event) => {
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+    const dialogOptions = {
+      properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[],
+    };
+    const result = ownerWindow
+      ? await dialog.showOpenDialog(ownerWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
     if (result.canceled || result.filePaths.length === 0) {
       return { success: true, path: null };
     }
     return { success: true, path: result.filePaths[0] };
   });
 
-  ipcMain.handle('dialog:selectFile', async (_event, options?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openFile'],
+  ipcMain.handle('dialog:selectFile', async (event, options?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => {
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+    const dialogOptions = {
+      properties: ['openFile'] as ('openFile')[],
       title: options?.title,
       filters: options?.filters,
-    });
+    };
+    const result = ownerWindow
+      ? await dialog.showOpenDialog(ownerWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
     if (result.canceled || result.filePaths.length === 0) {
       return { success: true, path: null };
     }
@@ -2141,6 +2168,34 @@ if (!gotTheLock) {
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  });
+
+  // App update download & install
+  ipcMain.handle('appUpdate:download', async (event, url: string) => {
+    try {
+      const filePath = await downloadUpdate(url, (progress) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('appUpdate:downloadProgress', progress);
+        }
+      });
+      return { success: true, filePath };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Download failed' };
+    }
+  });
+
+  ipcMain.handle('appUpdate:cancelDownload', async () => {
+    const cancelled = cancelActiveDownload();
+    return { success: cancelled };
+  });
+
+  ipcMain.handle('appUpdate:install', async (_event, filePath: string) => {
+    try {
+      await installUpdate(filePath);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Installation failed' };
     }
   });
 
@@ -2395,12 +2450,6 @@ if (!gotTheLock) {
       }
     });
 
-    // [关键代码] 显式告诉 Electron 使用系统的代理配置
-    // 这会涵盖绝大多数 VPN（如 Clash, V2Ray 等开启了"系统代理"模式的情况）
-    mainWindow.webContents.session.setProxy({ mode: 'system' }).then(() => {
-      console.log('已设置为跟随系统代理');
-    });
-
     // 处理窗口关闭
     mainWindow.on('close', (e) => {
       // In development, close should actually quit so `npm run electron:dev`
@@ -2573,9 +2622,9 @@ if (!gotTheLock) {
 
   // 初始化应用
   const initApp = async () => {
+    console.log('[Main] initApp: waiting for app.whenReady()');
     await app.whenReady();
-
-    migrateLegacyUserData();
+    console.log('[Main] initApp: app is ready');
 
     // Note: Calendar permission is checked on-demand when calendar operations are requested
     // We don't trigger permission dialogs at startup to avoid annoying users
@@ -2586,11 +2635,16 @@ if (!gotTheLock) {
       fs.mkdirSync(defaultProjectDir, { recursive: true });
       console.log('Created default project directory:', defaultProjectDir);
     }
+    console.log('[Main] initApp: default project dir ensured');
 
+    console.log('[Main] initApp: starting initStore()');
     store = await initStore();
+    console.log('[Main] initApp: store initialized');
+
     // Defensive recovery: app may be force-closed during execution and leave
     // stale running flags in DB. Normalize them on startup.
     const resetCount = getCoworkStore().resetRunningSessions();
+    console.log('[Main] initApp: resetRunningSessions done, count:', resetCount);
     if (resetCount > 0) {
       console.log(`[Main] Reset ${resetCount} stuck cowork session(s) from running -> idle`);
     }
@@ -2608,18 +2662,49 @@ if (!gotTheLock) {
       console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
     }
 
+    console.log('[Main] initApp: setStoreGetter done');
     const manager = getSkillManager();
-    manager.syncBundledSkillsToUserData();
-    manager.startWatching();
+    console.log('[Main] initApp: getSkillManager done');
 
-    // Start skill services
-    const skillServices = getSkillServiceManager();
-    await skillServices.startAll();
+    // Non-critical: sync bundled skills to user data.
+    // Wrapped in try-catch so a failure here does not block window creation.
+    try {
+      manager.syncBundledSkillsToUserData();
+      console.log('[Main] initApp: syncBundledSkillsToUserData done');
+    } catch (error) {
+      console.error('[Main] initApp: syncBundledSkillsToUserData failed:', error);
+    }
 
-    // [关键代码] 显式告诉 Electron 使用系统的代理配置
-    // 这会涵盖绝大多数 VPN（如 Clash, V2Ray 等开启了"系统代理"模式的情况）
-    await session.defaultSession.setProxy({ mode: 'system' });
-    console.log('已设置为跟随系统代理');
+    try {
+      const runtimeResult = await ensurePythonRuntimeReady();
+      if (!runtimeResult.success) {
+        console.error('[Main] initApp: ensurePythonRuntimeReady failed:', runtimeResult.error);
+      } else {
+        console.log('[Main] initApp: ensurePythonRuntimeReady done');
+      }
+    } catch (error) {
+      console.error('[Main] initApp: ensurePythonRuntimeReady threw:', error);
+    }
+
+    try {
+      manager.startWatching();
+      console.log('[Main] initApp: startWatching done');
+    } catch (error) {
+      console.error('[Main] initApp: startWatching failed:', error);
+    }
+
+    // Start skill services (non-critical)
+    try {
+      const skillServices = getSkillServiceManager();
+      console.log('[Main] initApp: getSkillServiceManager done');
+      await skillServices.startAll();
+      console.log('[Main] initApp: skill services started');
+    } catch (error) {
+      console.error('[Main] initApp: skill services failed:', error);
+    }
+
+    const appConfig = getStore().get<AppConfigSettings>('app_config');
+    await applyProxyPreference(getUseSystemProxyFromConfig(appConfig));
 
     await startCoworkOpenAICompatProxy().catch((error) => {
       console.error('Failed to start OpenAI compatibility proxy:', error);
@@ -2632,7 +2717,9 @@ if (!gotTheLock) {
     setContentSecurityPolicy();
 
     // 创建窗口
+    console.log('[Main] initApp: creating window');
     createWindow();
+    console.log('[Main] initApp: window created');
 
     // Auto-reconnect IM bots that were enabled before restart
     getIMGatewayManager().startAllEnabled().catch((error) => {
@@ -2642,18 +2729,29 @@ if (!gotTheLock) {
     // 首次启动时默认开启开机自启动（先写标记再设置，避免崩溃后重复设置）
     if (!getStore().get('auto_launch_initialized')) {
       getStore().set('auto_launch_initialized', true);
+      getStore().set('auto_launch_enabled', true);
       setAutoLaunchEnabled(true);
     }
 
-    let lastLanguage = getStore().get<{ language?: string }>('app_config')?.language;
-    getStore().onDidChange('app_config', () => {
+    let lastLanguage = getStore().get<AppConfigSettings>('app_config')?.language;
+    let lastUseSystemProxy = getUseSystemProxyFromConfig(getStore().get<AppConfigSettings>('app_config'));
+    getStore().onDidChange<AppConfigSettings>('app_config', (newConfig, oldConfig) => {
       updateTitleBarOverlay();
       // 仅在语言变更时刷新托盘菜单文本
-      const currentLanguage = getStore().get<{ language?: string }>('app_config')?.language;
+      const currentLanguage = newConfig?.language;
       if (currentLanguage !== lastLanguage) {
         lastLanguage = currentLanguage;
         updateTrayMenu(() => mainWindow, getStore());
       }
+
+      const previousUseSystemProxy = oldConfig
+        ? getUseSystemProxyFromConfig(oldConfig)
+        : lastUseSystemProxy;
+      const currentUseSystemProxy = getUseSystemProxyFromConfig(newConfig);
+      if (currentUseSystemProxy !== previousUseSystemProxy) {
+        void applyProxyPreference(currentUseSystemProxy);
+      }
+      lastUseSystemProxy = currentUseSystemProxy;
     });
 
     // 在 macOS 上，当点击 dock 图标时显示已有窗口或重新创建
