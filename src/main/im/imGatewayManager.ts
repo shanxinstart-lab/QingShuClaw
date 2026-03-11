@@ -1,7 +1,7 @@
 /**
  * IM Gateway Manager
  * Unified manager for DingTalk, Feishu, NIM, Xiaomifeng gateways
- * and Telegram, Discord via OpenClaw
+ * and Telegram, Discord, QQ, WeCom via OpenClaw
  */
 
 import { EventEmitter } from 'events';
@@ -10,7 +10,6 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { NimGateway } from './nimGateway';
 import { XiaomifengGateway } from './xiaomifengGateway';
-import { WecomGateway } from './wecomGateway';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
 import { IMStore } from './imStore';
@@ -55,7 +54,6 @@ export interface IMGatewayManagerOptions {
 export class IMGatewayManager extends EventEmitter {
   private nimGateway: NimGateway;
   private xiaomifengGateway: XiaomifengGateway;
-  private wecomGateway: WecomGateway;
   private imStore: IMStore;
   private chatHandler: IMChatHandler | null = null;
   private coworkHandler: IMCoworkHandler | null = null;
@@ -79,7 +77,6 @@ export class IMGatewayManager extends EventEmitter {
     this.imStore = new IMStore(db, saveDb);
     this.nimGateway = new NimGateway();
     this.xiaomifengGateway = new XiaomifengGateway();
-    this.wecomGateway = new WecomGateway();
 
     // Store Cowork dependencies if provided
     if (options?.coworkRuntime && options?.coworkStore) {
@@ -139,23 +136,7 @@ export class IMGatewayManager extends EventEmitter {
 
     // QQ runs via OpenClaw; no direct gateway events to forward
 
-    // WeCom events
-    this.wecomGateway.on('status', () => {
-      this.emit('statusChange', this.getStatus());
-    });
-    this.wecomGateway.on('connected', () => {
-      this.emit('statusChange', this.getStatus());
-    });
-    this.wecomGateway.on('disconnected', () => {
-      this.emit('statusChange', this.getStatus());
-    });
-    this.wecomGateway.on('error', (error) => {
-      this.emit('error', { platform: 'wecom', error });
-      this.emit('statusChange', this.getStatus());
-    });
-    this.wecomGateway.on('message', (message: IMMessage) => {
-      this.emit('message', message);
-    });
+    // WeCom runs via OpenClaw; no direct gateway events to forward
   }
 
   /**
@@ -179,10 +160,7 @@ export class IMGatewayManager extends EventEmitter {
 
     // QQ runs via OpenClaw; no direct reconnection needed
 
-    if (this.wecomGateway && !this.wecomGateway.isConnected()) {
-      console.log('[IMGatewayManager] Reconnecting WeCom...');
-      this.wecomGateway.reconnectIfNeeded();
-    }
+    // WeCom runs via OpenClaw; no direct reconnection needed
   }
 
   /**
@@ -251,7 +229,6 @@ export class IMGatewayManager extends EventEmitter {
 
     this.nimGateway.setMessageCallback(messageHandler);
     this.xiaomifengGateway.setMessageCallback(messageHandler);
-    this.wecomGateway.setMessageCallback(messageHandler);
   }
 
   /**
@@ -262,9 +239,8 @@ export class IMGatewayManager extends EventEmitter {
       let target: any = null;
       if (platform === 'nim') {
         target = this.nimGateway.getNotificationTarget();
-      } else if (platform === 'wecom') {
-        target = this.wecomGateway.getNotificationTarget();
       }
+      // WeCom runs via OpenClaw; notification target not managed locally
       if (target != null) {
         this.imStore.setNotificationTarget(platform, target);
       }
@@ -283,9 +259,8 @@ export class IMGatewayManager extends EventEmitter {
 
       if (platform === 'nim') {
         this.nimGateway.setNotificationTarget(target);
-      } else if (platform === 'wecom') {
-        this.wecomGateway.setNotificationTarget(target);
       }
+      // WeCom runs via OpenClaw; notification target not managed locally
       console.log(`[IMGatewayManager] Restored notification target for ${platform}`);
     } catch (err: any) {
       console.warn(`[IMGatewayManager] Failed to restore notification target for ${platform}:`, err.message);
@@ -408,21 +383,7 @@ export class IMGatewayManager extends EventEmitter {
 
     // QQ runs via OpenClaw; config changes are synced via OpenClawConfigSync
 
-    // Hot-update WeCom config: restart if credential fields changed
-    if (config.wecom && this.wecomGateway) {
-      const oldWc = previousConfig.wecom;
-      const newWc = { ...oldWc, ...config.wecom };
-      const credentialsChanged =
-        newWc.botId !== oldWc.botId ||
-        newWc.secret !== oldWc.secret;
-
-      if (credentialsChanged && this.wecomGateway.isConnected()) {
-        console.log('[IMGatewayManager] WeCom credentials changed, restarting gateway...');
-        this.restartGateway('wecom').catch((err) => {
-          console.error('[IMGatewayManager] Failed to restart WeCom after config change:', err.message);
-        });
-      }
-    }
+    // WeCom runs via OpenClaw; config changes are synced via OpenClawConfigSync
   }
 
   /**
@@ -497,7 +458,14 @@ export class IMGatewayManager extends EventEmitter {
       discord: discordStatus,
       nim: this.nimGateway.getStatus(),
       xiaomifeng: this.xiaomifengGateway.getStatus(),
-      wecom: this.wecomGateway.getStatus(),
+      wecom: {
+        connected: Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret),
+        startedAt: null as number | null,
+        lastError: null as string | null,
+        botId: config.wecom?.botId || null,
+        lastInboundAt: null as number | null,
+        lastOutboundAt: null as number | null,
+      },
     };
   }
 
@@ -526,6 +494,11 @@ export class IMGatewayManager extends EventEmitter {
     // DingTalk always uses OpenClaw mode
     if (platform === 'dingtalk') {
       return this.testDingTalkOpenClawConnectivity(configOverride);
+    }
+
+    // WeCom always uses OpenClaw mode
+    if (platform === 'wecom') {
+      return this.testWecomOpenClawConnectivity(configOverride);
     }
 
     const config = this.buildMergedConfig(configOverride);
@@ -675,13 +648,6 @@ export class IMGatewayManager extends EventEmitter {
         message: 'QQ 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
         suggestion: '频道中需 @机器人 触发对话，也支持私信和群聊。',
       });
-    } else if (platform === 'wecom') {
-      addCheck({
-        code: 'nim_p2p_only_hint',
-        level: 'info',
-        message: '企业微信机器人通过 WebSocket 长连接接收消息。',
-        suggestion: '请在企业微信中向机器人发送消息触发对话。群聊中需 @机器人。',
-      });
     }
 
     return {
@@ -739,7 +705,11 @@ export class IMGatewayManager extends EventEmitter {
       await this.ensureOpenClawGatewayConnected?.();
       return;
     } else if (platform === 'wecom') {
-      await this.wecomGateway.start(config.wecom);
+      // WeCom runs via OpenClaw gateway (wecom-openclaw-plugin)
+      console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing config instead of starting direct gateway');
+      await this.syncOpenClawConfig?.();
+      await this.ensureOpenClawGatewayConnected?.();
+      return;
     }
 
     // Restore persisted notification target
@@ -780,7 +750,10 @@ export class IMGatewayManager extends EventEmitter {
       await this.syncOpenClawConfig?.();
       return;
     } else if (platform === 'wecom') {
-      await this.wecomGateway.stop();
+      // WeCom runs via OpenClaw gateway
+      console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing disabled config');
+      await this.syncOpenClawConfig?.();
+      return;
     }
   }
 
@@ -862,7 +835,6 @@ export class IMGatewayManager extends EventEmitter {
     await Promise.all([
       this.nimGateway.stop(),
       this.xiaomifengGateway.stop(),
-      this.wecomGateway.stop(),
     ]);
   }
 
@@ -870,7 +842,7 @@ export class IMGatewayManager extends EventEmitter {
    * Check if any gateway is connected
    */
   isAnyConnected(): boolean {
-    return this.nimGateway.isConnected() || this.xiaomifengGateway.isConnected() || this.wecomGateway.isConnected();
+    return this.nimGateway.isConnected() || this.xiaomifengGateway.isConnected();
   }
 
   /**
@@ -904,7 +876,9 @@ export class IMGatewayManager extends EventEmitter {
       return Boolean(config.qq?.enabled && config.qq.appId && config.qq.appSecret);
     }
     if (platform === 'wecom') {
-      return this.wecomGateway.isConnected();
+      // WeCom runs via OpenClaw; consider it connected when enabled and configured
+      const config = this.getConfig();
+      return Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret);
     }
     return false;
   }
@@ -927,7 +901,8 @@ export class IMGatewayManager extends EventEmitter {
         // QQ runs via OpenClaw; notifications are handled by the qqbot plugin
         console.log('[IMGatewayManager] QQ notification via OpenClaw not yet supported');
       } else if (platform === 'wecom') {
-        await this.wecomGateway.sendNotification(text);
+        // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
+        console.log('[IMGatewayManager] WeCom notification via OpenClaw not yet supported');
       } else if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotification(text);
       }
@@ -951,7 +926,8 @@ export class IMGatewayManager extends EventEmitter {
         // QQ runs via OpenClaw; notifications are handled by the qqbot plugin
         console.log('[IMGatewayManager] QQ notification with media via OpenClaw not yet supported');
       } else if (platform === 'wecom') {
-        await this.wecomGateway.sendNotificationWithMedia(text);
+        // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
+        console.log('[IMGatewayManager] WeCom notification with media via OpenClaw not yet supported');
       } else if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotificationWithMedia(text);
       }
@@ -1290,6 +1266,57 @@ export class IMGatewayManager extends EventEmitter {
     return { platform, testedAt, verdict, checks };
   }
 
+  /**
+   * Test WeCom connectivity when running via OpenClaw runtime.
+   * Validates config completeness; actual connection is handled by OpenClaw.
+   */
+  private async testWecomOpenClawConnectivity(
+    configOverride?: Partial<IMGatewayConfig>
+  ): Promise<IMConnectivityTestResult> {
+    const checks: IMConnectivityCheck[] = [];
+    const testedAt = Date.now();
+    const platform: IMPlatform = 'wecom';
+
+    const mergedConfig = this.buildMergedConfig(configOverride);
+    const wcConfig = mergedConfig.wecom;
+
+    // Check 1: Credentials present
+    if (!wcConfig?.botId || !wcConfig?.secret) {
+      const missing: string[] = [];
+      if (!wcConfig?.botId) missing.push('botId');
+      if (!wcConfig?.secret) missing.push('secret');
+      checks.push({
+        code: 'missing_credentials',
+        level: 'fail',
+        message: `缺少必要配置项: ${missing.join(', ')}`,
+        suggestion: '请补全 Bot ID 和 Secret 后重新测试连通性。',
+      });
+      return { platform, testedAt, verdict: 'fail', checks };
+    }
+
+    // Check 2: Config completeness passes
+    checks.push({
+      code: 'auth_check',
+      level: 'pass',
+      message: `企业微信配置已就绪（Bot ID: ${wcConfig.botId}）。`,
+    });
+
+    // Check 3: OpenClaw Gateway running info
+    checks.push({
+      code: 'gateway_running',
+      level: 'info',
+      message: '企业微信通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+    });
+
+    const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
+      ? 'fail'
+      : checks.some(c => c.level === 'warn')
+        ? 'warn'
+        : 'pass';
+
+    return { platform, testedAt, verdict, checks };
+  }
+
   private buildMergedConfig(configOverride?: Partial<IMGatewayConfig>): IMGatewayConfig {
     const current = this.getConfig();
     if (!configOverride) {
@@ -1406,28 +1433,7 @@ export class IMGatewayManager extends EventEmitter {
       if (!botId || !secret) {
         throw new Error('配置不完整');
       }
-      // Create a temporary WSClient to verify authentication
-      const { WSClient } = await import('@wecom/aibot-node-sdk');
-      const tmpClient = new WSClient({ botId, secret, maxReconnectAttempts: 0 });
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            reject(new Error('企业微信鉴权超时（10s）'));
-          }, CONNECTIVITY_TIMEOUT_MS);
-          tmpClient.on('authenticated', () => {
-            clearTimeout(timer);
-            resolve();
-          });
-          tmpClient.on('error', (err: Error) => {
-            clearTimeout(timer);
-            reject(err);
-          });
-          tmpClient.connect();
-        });
-        return `企业微信鉴权通过（Bot ID: ${botId}）。`;
-      } finally {
-        try { tmpClient.disconnect(); } catch (_) { /* ignore */ }
-      }
+      return `企业微信配置已就绪（Bot ID: ${botId}），通过 OpenClaw 运行。`;
     }
 
     if (platform === 'qq') {

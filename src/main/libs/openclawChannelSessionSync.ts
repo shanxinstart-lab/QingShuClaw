@@ -18,6 +18,8 @@ const CHANNEL_PLATFORM_MAP: Record<string, IMPlatform> = {
   feishu: 'feishu',
   'dingtalk-connector': 'dingtalk',
   qqbot: 'qq',
+  wecom: 'wecom',
+  'wecom-openclaw-plugin': 'wecom',
 };
 
 /** Parse a channel sessionKey into platform + conversationId.
@@ -78,6 +80,8 @@ const CHANNEL_TITLE_PREFIX: Record<string, string> = {
   feishu: '[飞书]',
   'dingtalk-connector': '[钉钉]',
   qqbot: '[QQ]',
+  wecom: '[企微]',
+  'wecom-openclaw-plugin': '[企微]',
 };
 
 export interface ChannelSessionSyncDeps {

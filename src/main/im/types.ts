@@ -202,12 +202,20 @@ export interface QQGatewayStatus {
 
 // ==================== WeCom (企业微信) Types ====================
 
-export interface WecomConfig {
+export interface WecomOpenClawConfig {
   enabled: boolean;
   botId: string;
   secret: string;
-  debug?: boolean;
+  dmPolicy: 'open' | 'pairing' | 'allowlist' | 'disabled';
+  allowFrom: string[];
+  groupPolicy: 'open' | 'allowlist' | 'disabled';
+  groupAllowFrom: string[];
+  sendThinkingMessage: boolean;
+  debug: boolean;
 }
+
+/** @deprecated Use WecomOpenClawConfig instead */
+export type WecomConfig = WecomOpenClawConfig;
 
 export interface WecomGatewayStatus {
   connected: boolean;
@@ -230,7 +238,7 @@ export interface IMGatewayConfig {
   discord: DiscordOpenClawConfig;
   nim: NimConfig;
   xiaomifeng: XiaomifengConfig;
-  wecom: WecomConfig;
+  wecom: WecomOpenClawConfig;
   settings: IMSettings;
 }
 
@@ -459,10 +467,15 @@ export const DEFAULT_QQ_CONFIG: QQOpenClawConfig = {
   debug: false,
 };
 
-export const DEFAULT_WECOM_CONFIG: WecomConfig = {
+export const DEFAULT_WECOM_CONFIG: WecomOpenClawConfig = {
   enabled: false,
   botId: '',
   secret: '',
+  dmPolicy: 'open',
+  allowFrom: [],
+  groupPolicy: 'open',
+  groupAllowFrom: [],
+  sendThinkingMessage: true,
   debug: true,
 };
 

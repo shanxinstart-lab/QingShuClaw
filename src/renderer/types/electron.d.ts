@@ -581,7 +581,12 @@ interface WecomConfig {
   enabled: boolean;
   botId: string;
   secret: string;
-  debug?: boolean;
+  dmPolicy: 'open' | 'pairing' | 'allowlist' | 'disabled';
+  allowFrom: string[];
+  groupPolicy: 'open' | 'allowlist' | 'disabled';
+  groupAllowFrom: string[];
+  sendThinkingMessage: boolean;
+  debug: boolean;
 }
 
 interface IMSettings {

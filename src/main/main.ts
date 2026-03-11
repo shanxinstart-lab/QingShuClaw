@@ -2352,7 +2352,13 @@ if (!gotTheLock) {
       }
       // Re-sync OpenClaw config so wecom-openclaw-plugin picks up new credentials
       if (config.wecom) {
-        void syncOpenClawConfig({ reason: 'im-wecom-config-change', restartGatewayIfRunning: false });
+        const wecomEngineManager = getOpenClawEngineManager();
+        if (wecomEngineManager.getStatus().phase === 'running') {
+          await syncOpenClawConfig({
+            reason: 'im-wecom-config-change',
+            restartGatewayIfRunning: true,
+          });
+        }
       }
       return { success: true };
     } catch (error) {

@@ -11,7 +11,7 @@ import { RootState } from '../../store';
 import { imService } from '../../services/im';
 import { setDingTalkConfig, setFeishuConfig, setTelegramOpenClawConfig, setQQConfig, setDiscordConfig, setNimConfig, setXiaomifengConfig, setWecomConfig, clearError } from '../../store/slices/imSlice';
 import { i18nService } from '../../services/i18n';
-import type { IMPlatform, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, TelegramOpenClawConfig, DiscordOpenClawConfig, FeishuOpenClawConfig, DingTalkOpenClawConfig, QQOpenClawConfig } from '../../types/im';
+import type { IMPlatform, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, TelegramOpenClawConfig, DiscordOpenClawConfig, FeishuOpenClawConfig, DingTalkOpenClawConfig, QQOpenClawConfig, WecomOpenClawConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 
 // Platform metadata
@@ -209,9 +209,17 @@ const IMSettings: React.FC = () => {
     dispatch(setXiaomifengConfig({ [field]: value }));
   };
 
-  // Handle WeCom config change
-  const handleWecomChange = (field: 'botId' | 'secret', value: string) => {
-    dispatch(setWecomConfig({ [field]: value }));
+  // Handle WeCom OpenClaw config change
+  const wecomOpenClawConfig = config.wecom;
+  const handleWecomOpenClawChange = (update: Partial<WecomOpenClawConfig>) => {
+    dispatch(setWecomConfig(update));
+  };
+  const handleSaveWecomOpenClawConfig = async (override?: Partial<WecomOpenClawConfig>) => {
+    if (!configLoaded) return;
+    const configToSave = override
+      ? { ...wecomOpenClawConfig, ...override }
+      : wecomOpenClawConfig;
+    await imService.updateConfig({ wecom: configToSave });
   };
 
   // Save config on blur — also auto-triggers NIM connectivity test when
@@ -240,6 +248,12 @@ const IMSettings: React.FC = () => {
     // For QQ, save qq config directly (OpenClaw mode)
     if (activePlatform === 'qq') {
       await imService.updateConfig({ qq: qqOpenClawConfig });
+      return;
+    }
+
+    // For WeCom, save wecom config directly (OpenClaw mode)
+    if (activePlatform === 'wecom') {
+      await imService.updateConfig({ wecom: wecomOpenClawConfig });
       return;
     }
 
@@ -378,6 +392,25 @@ const IMSettings: React.FC = () => {
         return;
       }
 
+      // WeCom has a separate config path (OpenClaw mode)
+      if (platform === 'wecom') {
+        const newEnabled = !wecomOpenClawConfig.enabled;
+        dispatch(setWecomConfig({ enabled: newEnabled }));
+        await imService.updateConfig({ wecom: { ...wecomOpenClawConfig, enabled: newEnabled } });
+
+        if (newEnabled) {
+          dispatch(clearError());
+          const success = await imService.startGateway(platform);
+          if (!success) {
+            dispatch(setWecomConfig({ enabled: false }));
+            await imService.updateConfig({ wecom: { ...wecomOpenClawConfig, enabled: false } });
+          }
+        } else {
+          await imService.stopGateway(platform);
+        }
+        return;
+      }
+
       const isEnabled = config[platform].enabled;
       const newEnabled = !isEnabled;
 
@@ -453,7 +486,7 @@ const IMSettings: React.FC = () => {
       return !!(config.qq.appId && config.qq.appSecret);
     }
     if (platform === 'wecom') {
-      return !!(config.wecom.botId && config.wecom.secret);
+      return !!(wecomOpenClawConfig.botId && wecomOpenClawConfig.secret);
     }
     return !!(config.feishu.appId && config.feishu.appSecret);
   };
@@ -501,6 +534,15 @@ const IMSettings: React.FC = () => {
       await imService.updateConfig({ qq: qqOpenClawConfig });
       await runConnectivityTest(platform, {
         qq: qqOpenClawConfig,
+      } as Partial<IMGatewayConfig>);
+      return;
+    }
+
+    // For WeCom, persist wecom config and test (OpenClaw mode)
+    if (platform === 'wecom') {
+      await imService.updateConfig({ wecom: wecomOpenClawConfig });
+      await runConnectivityTest(platform, {
+        wecom: wecomOpenClawConfig,
       } as Partial<IMGatewayConfig>);
       return;
     }
@@ -2578,17 +2620,17 @@ const IMSettings: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
-                  value={config.wecom.botId}
-                  onChange={(e) => handleWecomChange('botId', e.target.value)}
-                  onBlur={handleSaveConfig}
+                  value={wecomOpenClawConfig.botId}
+                  onChange={(e) => handleWecomOpenClawChange({ botId: e.target.value })}
+                  onBlur={() => handleSaveWecomOpenClawConfig()}
                   className="block w-full rounded-lg dark:bg-claude-darkSurface/80 bg-claude-surface/80 dark:border-claude-darkBorder/60 border-claude-border/60 border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 pr-8 text-sm transition-colors"
                   placeholder={i18nService.t('wecomBotIdPlaceholder') || '您的 Bot ID'}
                 />
-                {config.wecom.botId && (
+                {wecomOpenClawConfig.botId && (
                   <div className="absolute right-2 inset-y-0 flex items-center">
                     <button
                       type="button"
-                      onClick={() => { handleWecomChange('botId', ''); void imService.updateConfig({ wecom: { ...config.wecom, botId: '' } }); }}
+                      onClick={() => { handleWecomOpenClawChange({ botId: '' }); void imService.updateConfig({ wecom: { ...wecomOpenClawConfig, botId: '' } }); }}
                       className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
                       title={i18nService.t('clear') || 'Clear'}
                     >
@@ -2607,17 +2649,17 @@ const IMSettings: React.FC = () => {
               <div className="relative">
                 <input
                   type={showSecrets['wecom.secret'] ? 'text' : 'password'}
-                  value={config.wecom.secret}
-                  onChange={(e) => handleWecomChange('secret', e.target.value)}
-                  onBlur={handleSaveConfig}
+                  value={wecomOpenClawConfig.secret}
+                  onChange={(e) => handleWecomOpenClawChange({ secret: e.target.value })}
+                  onBlur={() => handleSaveWecomOpenClawConfig()}
                   className="block w-full rounded-lg dark:bg-claude-darkSurface/80 bg-claude-surface/80 dark:border-claude-darkBorder/60 border-claude-border/60 border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 pr-16 text-sm transition-colors"
                   placeholder="••••••••••••"
                 />
                 <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                  {config.wecom.secret && (
+                  {wecomOpenClawConfig.secret && (
                     <button
                       type="button"
-                      onClick={() => { handleWecomChange('secret', ''); void imService.updateConfig({ wecom: { ...config.wecom, secret: '' } }); }}
+                      onClick={() => { handleWecomOpenClawChange({ secret: '' }); void imService.updateConfig({ wecom: { ...wecomOpenClawConfig, secret: '' } }); }}
                       className="p-0.5 rounded text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-claude-accent transition-colors"
                       title={i18nService.t('clear') || 'Clear'}
                     >
@@ -2634,7 +2676,150 @@ const IMSettings: React.FC = () => {
                   </button>
                 </div>
               </div>
+              <p className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
+                从企业微信管理后台获取 Bot ID 和 Secret
+              </p>
             </div>
+
+            {/* Advanced Settings (collapsible) */}
+            <details className="group">
+              <summary className="cursor-pointer text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary hover:text-claude-accent transition-colors">
+                高级设置
+              </summary>
+              <div className="mt-2 space-y-3 pl-2 border-l-2 border-claude-border/30 dark:border-claude-darkBorder/30">
+                {/* DM Policy */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    DM Policy
+                  </label>
+                  <select
+                    value={wecomOpenClawConfig.dmPolicy}
+                    onChange={(e) => {
+                      const update = { dmPolicy: e.target.value as WecomOpenClawConfig['dmPolicy'] };
+                      handleWecomOpenClawChange(update);
+                      void handleSaveWecomOpenClawConfig(update);
+                    }}
+                    className="block w-full rounded-lg dark:bg-claude-darkSurface/80 bg-claude-surface/80 dark:border-claude-darkBorder/60 border-claude-border/60 border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 text-sm transition-colors"
+                  >
+                    <option value="open">Open（开放）</option>
+                    <option value="pairing">Pairing（配对码验证）</option>
+                    <option value="allowlist">Allowlist（白名单）</option>
+                    <option value="disabled">Disabled（禁用）</option>
+                  </select>
+                </div>
+
+                {/* Pairing Requests (shown when dmPolicy is 'pairing') */}
+                {wecomOpenClawConfig.dmPolicy === 'pairing' && renderPairingSection('wecom')}
+
+                {/* Allow From */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    Allow From (User IDs)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={allowedUserIdInput}
+                      onChange={(e) => setAllowedUserIdInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const id = allowedUserIdInput.trim();
+                          if (id && !wecomOpenClawConfig.allowFrom.includes(id)) {
+                            const newIds = [...wecomOpenClawConfig.allowFrom, id];
+                            handleWecomOpenClawChange({ allowFrom: newIds });
+                            setAllowedUserIdInput('');
+                            void imService.updateConfig({ wecom: { ...wecomOpenClawConfig, allowFrom: newIds } });
+                          }
+                        }
+                      }}
+                      className="block flex-1 rounded-lg dark:bg-claude-darkSurface/80 bg-claude-surface/80 dark:border-claude-darkBorder/60 border-claude-border/60 border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 text-sm transition-colors"
+                      placeholder="输入企业微信 User ID"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = allowedUserIdInput.trim();
+                        if (id && !wecomOpenClawConfig.allowFrom.includes(id)) {
+                          const newIds = [...wecomOpenClawConfig.allowFrom, id];
+                          handleWecomOpenClawChange({ allowFrom: newIds });
+                          setAllowedUserIdInput('');
+                          void imService.updateConfig({ wecom: { ...wecomOpenClawConfig, allowFrom: newIds } });
+                        }
+                      }}
+                      className="px-3 py-2 rounded-lg text-xs font-medium bg-claude-accent/10 text-claude-accent hover:bg-claude-accent/20 transition-colors"
+                    >
+                      {i18nService.t('add') || '添加'}
+                    </button>
+                  </div>
+                  {wecomOpenClawConfig.allowFrom.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {wecomOpenClawConfig.allowFrom.map((id) => (
+                        <span
+                          key={id}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs dark:bg-claude-darkSurface/80 bg-claude-surface/80 dark:border-claude-darkBorder/60 border-claude-border/60 border dark:text-claude-darkText text-claude-text"
+                        >
+                          {id}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newIds = wecomOpenClawConfig.allowFrom.filter((uid) => uid !== id);
+                              handleWecomOpenClawChange({ allowFrom: newIds });
+                              void imService.updateConfig({ wecom: { ...wecomOpenClawConfig, allowFrom: newIds } });
+                            }}
+                            className="text-claude-textSecondary dark:text-claude-darkTextSecondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                          >
+                            <XMarkIcon className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Group Policy */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    Group Policy
+                  </label>
+                  <select
+                    value={wecomOpenClawConfig.groupPolicy}
+                    onChange={(e) => {
+                      const update = { groupPolicy: e.target.value as WecomOpenClawConfig['groupPolicy'] };
+                      handleWecomOpenClawChange(update);
+                      void handleSaveWecomOpenClawConfig(update);
+                    }}
+                    className="block w-full rounded-lg dark:bg-claude-darkSurface/80 bg-claude-surface/80 dark:border-claude-darkBorder/60 border-claude-border/60 border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 text-sm transition-colors"
+                  >
+                    <option value="open">Open</option>
+                    <option value="allowlist">Allowlist</option>
+                    <option value="disabled">Disabled</option>
+                  </select>
+                </div>
+
+                {/* Send Thinking Message */}
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    发送"思考中"消息
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const update = { sendThinkingMessage: !wecomOpenClawConfig.sendThinkingMessage };
+                      handleWecomOpenClawChange(update);
+                      void handleSaveWecomOpenClawConfig(update);
+                    }}
+                    className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                      wecomOpenClawConfig.sendThinkingMessage ? 'bg-claude-accent' : 'dark:bg-claude-darkSurface bg-claude-surface'
+                    }`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      wecomOpenClawConfig.sendThinkingMessage ? 'translate-x-4' : 'translate-x-0'
+                    }`} />
+                  </button>
+                </div>
+              </div>
+            </details>
 
             <div className="pt-1">
               {renderConnectivityTestButton('wecom')}

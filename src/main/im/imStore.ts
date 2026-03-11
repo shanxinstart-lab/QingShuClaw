@@ -14,6 +14,7 @@ import {
   NimConfig,
   XiaomifengConfig,
   WecomConfig,
+  WecomOpenClawConfig,
   IMSettings,
   IMPlatform,
   IMSessionMapping,
@@ -252,6 +253,34 @@ export class IMStore {
       }
     }
 
+    // Migrate old native WeCom config to new OpenClaw format
+    const oldWecomResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['wecom']);
+    const newWecomResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['wecomOpenClaw']);
+    if (oldWecomResult[0]?.values[0] && !newWecomResult[0]?.values[0]) {
+      try {
+        const oldConfig = JSON.parse(oldWecomResult[0].values[0][0] as string) as Partial<{ enabled: boolean; botId: string; secret: string; debug: boolean }>;
+        if (oldConfig.botId) {
+          const newConfig: WecomOpenClawConfig = {
+            ...DEFAULT_WECOM_CONFIG,
+            enabled: oldConfig.enabled ?? false,
+            botId: oldConfig.botId,
+            secret: oldConfig.secret ?? '',
+            debug: oldConfig.debug ?? true,
+          };
+          const now = Date.now();
+          this.db.run(
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['wecomOpenClaw', JSON.stringify(newConfig), now]
+          );
+          this.db.run('DELETE FROM im_config WHERE key = ?', ['wecom']);
+          changed = true;
+          console.log('[IMStore] Migrated old WeCom config to OpenClaw format');
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
     if (changed) {
       this.saveDb();
     }
@@ -293,7 +322,7 @@ export class IMStore {
     const nim = this.getConfigValue<NimConfig>('nim') ?? DEFAULT_NIM_CONFIG;
     const xiaomifeng = this.getConfigValue<XiaomifengConfig>('xiaomifeng') ?? DEFAULT_XIAOMIFENG_CONFIG;
     const qq = this.getConfigValue<QQConfig>('qq') ?? DEFAULT_QQ_CONFIG;
-    const wecom = this.getConfigValue<WecomConfig>('wecom') ?? DEFAULT_WECOM_CONFIG;
+    const wecom = this.getConfigValue<WecomOpenClawConfig>('wecomOpenClaw') ?? DEFAULT_WECOM_CONFIG;
     const settings = this.getConfigValue<IMSettings>('settings') ?? DEFAULT_IM_SETTINGS;
 
     // Resolve enabled field: default to false for safety
@@ -434,16 +463,16 @@ export class IMStore {
     this.setConfigValue('qq', { ...current, ...config });
   }
 
-  // ==================== WeCom Config ====================
+  // ==================== WeCom OpenClaw Config ====================
 
-  getWecomConfig(): WecomConfig {
-    const stored = this.getConfigValue<WecomConfig>('wecom');
+  getWecomConfig(): WecomOpenClawConfig {
+    const stored = this.getConfigValue<WecomOpenClawConfig>('wecomOpenClaw');
     return { ...DEFAULT_WECOM_CONFIG, ...stored };
   }
 
-  setWecomConfig(config: Partial<WecomConfig>): void {
+  setWecomConfig(config: Partial<WecomOpenClawConfig>): void {
     const current = this.getWecomConfig();
-    this.setConfigValue('wecom', { ...current, ...config });
+    this.setConfigValue('wecomOpenClaw', { ...current, ...config });
   }
 
   // ==================== IM Settings ====================

@@ -14,7 +14,7 @@ import type {
   DiscordOpenClawConfig,
   NimConfig,
   XiaomifengConfig,
-  WecomConfig,
+  WecomOpenClawConfig,
   IMSettings,
 } from '../../types/im';
 import {
@@ -67,7 +67,7 @@ const imSlice = createSlice({
     setXiaomifengConfig: (state, action: PayloadAction<Partial<XiaomifengConfig>>) => {
       state.config.xiaomifeng = { ...state.config.xiaomifeng, ...action.payload };
     },
-    setWecomConfig: (state, action: PayloadAction<Partial<WecomConfig>>) => {
+    setWecomConfig: (state, action: PayloadAction<Partial<WecomOpenClawConfig>>) => {
       state.config.wecom = { ...state.config.wecom, ...action.payload };
     },
     setIMSettings: (state, action: PayloadAction<Partial<IMSettings>>) => {
