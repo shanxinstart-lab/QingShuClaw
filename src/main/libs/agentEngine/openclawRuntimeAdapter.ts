@@ -523,6 +523,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private static readonly FULL_HISTORY_SYNC_LIMIT = 50;
   private browserPrewarmAttempted = false;
 
+  /** Gateway WS auto-reconnect state */
+  private gatewayReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private gatewayReconnectAttempt = 0;
+  /** Set to true before intentionally stopping the client (e.g. version upgrade) to suppress auto-reconnect. */
+  private gatewayStoppingIntentionally = false;
+  private static readonly GATEWAY_RECONNECT_MAX_ATTEMPTS = 10;
+  private static readonly GATEWAY_RECONNECT_DELAYS = [2_000, 5_000, 10_000, 15_000, 30_000]; // ms
+
   constructor(store: CoworkStore, engineManager: OpenClawEngineManager) {
     super();
     this.store = store;
@@ -1150,6 +1158,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           return;
         }
 
+        // If stopGatewayClient() triggered this onClose, don't do anything —
+        // the caller is already handling cleanup and may be creating a new client.
+        if (this.gatewayStoppingIntentionally) {
+          return;
+        }
+
+        console.warn('[OpenClawRuntime] gateway WS disconnected — code:', _code, 'reason:', reason);
         const disconnectedError = new Error(reason || 'OpenClaw gateway client disconnected');
         const activeSessionIds = Array.from(this.activeTurns.keys());
         activeSessionIds.forEach((sessionId) => {
@@ -1161,8 +1176,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         this.stopGatewayClient();
         this.gatewayReadyPromise = Promise.reject(disconnectedError);
         this.gatewayReadyPromise.catch(() => {
-          // suppress unhandled rejection noise; caller will re-establish on next run
+          // suppress unhandled rejection noise; auto-reconnect will re-establish
         });
+
+        // Auto-reconnect after unexpected disconnect
+        this.scheduleGatewayReconnect();
       },
       onEvent: (event: GatewayEventFrame) => {
         this.handleGatewayEvent(event);
@@ -1176,7 +1194,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   private stopGatewayClient(): void {
+    this.gatewayStoppingIntentionally = true;
     this.stopChannelPolling();
+    this.cancelGatewayReconnect();
     try {
       this.gatewayClient?.stop();
     } catch (error) {
@@ -1189,6 +1209,49 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.channelSessionSync?.clearCache();
     this.knownChannelSessionIds.clear();
     this.browserPrewarmAttempted = false;
+    this.gatewayStoppingIntentionally = false;
+  }
+
+  private cancelGatewayReconnect(): void {
+    if (this.gatewayReconnectTimer) {
+      clearTimeout(this.gatewayReconnectTimer);
+      this.gatewayReconnectTimer = null;
+    }
+  }
+
+  /**
+   * Schedule an automatic gateway WS reconnection attempt with exponential backoff.
+   * Called from onClose when the connection drops unexpectedly after a successful handshake.
+   */
+  private scheduleGatewayReconnect(): void {
+    if (this.gatewayReconnectAttempt >= OpenClawRuntimeAdapter.GATEWAY_RECONNECT_MAX_ATTEMPTS) {
+      console.error('[GatewayReconnect] max attempts reached (' + OpenClawRuntimeAdapter.GATEWAY_RECONNECT_MAX_ATTEMPTS + '), giving up. Restart the app to reconnect.');
+      return;
+    }
+
+    const delays = OpenClawRuntimeAdapter.GATEWAY_RECONNECT_DELAYS;
+    const delay = delays[Math.min(this.gatewayReconnectAttempt, delays.length - 1)];
+    this.gatewayReconnectAttempt++;
+
+    console.log(`[GatewayReconnect] scheduling reconnect attempt ${this.gatewayReconnectAttempt}/${OpenClawRuntimeAdapter.GATEWAY_RECONNECT_MAX_ATTEMPTS} in ${delay}ms`);
+
+    this.gatewayReconnectTimer = setTimeout(() => {
+      this.gatewayReconnectTimer = null;
+      void this.attemptGatewayReconnect();
+    }, delay);
+  }
+
+  private async attemptGatewayReconnect(): Promise<void> {
+    console.log(`[GatewayReconnect] attempting reconnect (attempt ${this.gatewayReconnectAttempt})`);
+    try {
+      // connectGatewayIfNeeded checks if client already exists, so safe to call
+      await this.connectGatewayIfNeeded();
+      console.log('[GatewayReconnect] reconnected successfully');
+      this.gatewayReconnectAttempt = 0; // reset counter on success
+    } catch (error) {
+      console.warn('[GatewayReconnect] reconnect failed:', error);
+      this.scheduleGatewayReconnect(); // retry with next backoff
+    }
   }
 
   private prewarmBrowserIfNeeded(connection: OpenClawGatewayConnectionInfo): void {
