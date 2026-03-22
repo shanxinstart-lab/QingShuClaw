@@ -1,5 +1,6 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { shell } from 'electron';
+import { t } from '../i18n';
 
 // PKCE (Proof Key for Code Exchange) helpers - exactly matching OpenClaw implementation
 function generatePkceVerifierChallenge(): { verifier: string; challenge: string } {
@@ -150,12 +151,12 @@ export async function startQwenOAuth(
 ): Promise<QwenOAuthToken> {
   const { verifier, challenge } = generatePkceVerifierChallenge();
   
-  progressCallback.update('正在请求设备授权码...');
+  progressCallback.update(t('qwenOAuthRequestingDeviceCode'));
   const device = await requestDeviceCode({ challenge });
   
   const verificationUrl = device.verification_uri_complete || device.verification_uri;
   
-  progressCallback.update('正在打开浏览器进行授权...');
+  progressCallback.update(t('qwenOAuthOpeningBrowser'));
   
   try {
     await shell.openExternal(verificationUrl);
@@ -168,19 +169,19 @@ export async function startQwenOAuth(
   const timeoutMs = device.expires_in * 1000;
 
   while (Date.now() - start < timeoutMs) {
-    progressCallback.update('等待用户授权...');
+    progressCallback.update(t('qwenOAuthWaitingForUser'));
     const result = await pollDeviceToken({
       deviceCode: device.device_code,
       verifier,
     });
 
     if (result.status === "success") {
-      progressCallback.stop('OAuth 授权成功');
+      progressCallback.stop(t('qwenOAuthSuccess'));
       return result.token;
     }
 
     if (result.status === "error") {
-      progressCallback.stop('OAuth 授权失败');
+      progressCallback.stop(t('qwenOAuthFailed'));
       throw new Error(`Qwen OAuth failed: ${result.message}`);
     }
 
@@ -191,7 +192,7 @@ export async function startQwenOAuth(
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
 
-  progressCallback.stop('OAuth 授权超时');
+  progressCallback.stop(t('qwenOAuthTimeout'));
   throw new Error("Qwen OAuth timed out waiting for authorization.");
 }
 

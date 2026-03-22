@@ -976,7 +976,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
             // Don't clear API key - let both coexist
             // Don't change enabled state - keep current setting
             // Set appropriate base URL only if not set
-            baseUrl: prev.qwen.baseUrl || result.data.resourceUrl || 'https://portal.qwen.ai/v1',
+            baseUrl: prev.qwen.baseUrl || result?.data?.resourceUrl || 'https://portal.qwen.ai/v1',
           },
         }));
         setQwenOAuthProgress(i18nService.t('qwenOAuthSuccess'));
