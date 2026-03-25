@@ -562,7 +562,12 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   /** Throttle state for messageUpdate IPC emissions during streaming */
   private lastMessageUpdateEmitTime: Map<string, number> = new Map();
   private pendingMessageUpdateTimer: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private static readonly MESSAGE_UPDATE_THROTTLE_MS = 100;
+  private static readonly MESSAGE_UPDATE_THROTTLE_MS = 200;
+
+  /** Throttle state for SQLite store writes during streaming */
+  private lastStoreUpdateTime: Map<string, number> = new Map();
+  private pendingStoreUpdateTimer: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private static readonly STORE_UPDATE_THROTTLE_MS = 250;
 
   /**
    * Server-side agent timeout in seconds (mirrors agents.defaults.timeoutSeconds in openclaw config).
@@ -1371,6 +1376,65 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (timer) {
       clearTimeout(timer);
       this.pendingMessageUpdateTimer.delete(messageId);
+    }
+  }
+
+  /**
+   * Throttled SQLite store write for streaming message updates.
+   * Uses leading + trailing pattern identical to throttledEmitMessageUpdate.
+   * Final correctness is guaranteed by syncFinalAssistantWithHistory.
+   */
+  private throttledStoreUpdateMessage(
+    sessionId: string,
+    messageId: string,
+    content: string,
+    metadata: { isStreaming: boolean; isFinal: boolean },
+  ): void {
+    const now = Date.now();
+    const lastUpdate = this.lastStoreUpdateTime.get(messageId) ?? 0;
+    const elapsed = now - lastUpdate;
+
+    if (elapsed >= OpenClawRuntimeAdapter.STORE_UPDATE_THROTTLE_MS) {
+      this.clearPendingStoreUpdate(messageId);
+      this.lastStoreUpdateTime.set(messageId, now);
+      this.store.updateMessage(sessionId, messageId, { content, metadata });
+      return;
+    }
+
+    // Schedule a trailing write to ensure the latest content is persisted
+    this.clearPendingStoreUpdate(messageId);
+    this.pendingStoreUpdateTimer.set(messageId, setTimeout(() => {
+      this.pendingStoreUpdateTimer.delete(messageId);
+      this.lastStoreUpdateTime.set(messageId, Date.now());
+      // Guard: skip write if the session turn has already been cleaned up
+      const activeTurn = this.activeTurns.get(sessionId);
+      if (activeTurn?.assistantMessageId === messageId) {
+        this.store.updateMessage(sessionId, messageId, { content, metadata });
+      }
+    }, OpenClawRuntimeAdapter.STORE_UPDATE_THROTTLE_MS - elapsed));
+  }
+
+  private clearPendingStoreUpdate(messageId: string): void {
+    const timer = this.pendingStoreUpdateTimer.get(messageId);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingStoreUpdateTimer.delete(messageId);
+    }
+  }
+
+  /** Flush any pending throttled store write immediately (e.g. before segment split or final sync). */
+  private flushPendingStoreUpdate(sessionId: string, messageId: string): void {
+    const timer = this.pendingStoreUpdateTimer.get(messageId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.pendingStoreUpdateTimer.delete(messageId);
+    this.lastStoreUpdateTime.set(messageId, Date.now());
+    // Persist the latest in-memory content only; caller is responsible for metadata.
+    const turn = this.activeTurns.get(sessionId);
+    if (turn?.assistantMessageId === messageId && turn.currentAssistantSegmentText) {
+      this.store.updateMessage(sessionId, messageId, {
+        content: turn.currentAssistantSegmentText,
+      });
     }
   }
 
@@ -2193,10 +2257,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       turn.assistantMessageId = assistantMessage.id;
       this.emit('message', sessionId, assistantMessage);
     } else if (turn.assistantMessageId && turn.currentAssistantSegmentText) {
-      this.store.updateMessage(sessionId, turn.assistantMessageId, {
-        content: turn.currentAssistantSegmentText,
-        metadata: { isStreaming: true, isFinal: false },
-      });
+      this.throttledStoreUpdateMessage(sessionId, turn.assistantMessageId,
+        turn.currentAssistantSegmentText, { isStreaming: true, isFinal: false });
       this.throttledEmitMessageUpdate(sessionId, turn.assistantMessageId, turn.currentAssistantSegmentText);
     }
   }
@@ -2204,6 +2266,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private splitAssistantSegmentBeforeTool(sessionId: string, turn: ActiveTurn): void {
     if (!turn.assistantMessageId) return;
     const messageId = turn.assistantMessageId;
+
+    // Flush pending throttled updates so store content is current before reading.
+    this.flushPendingStoreUpdate(sessionId, messageId);
+    this.clearPendingMessageUpdate(messageId);
 
     // Committed text: use agentAssistantTextLength as the reliable segment length,
     // since currentText/currentAssistantSegmentText may be overwritten by chat deltas.
@@ -2216,10 +2282,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       turn.committedAssistantText = `${turn.committedAssistantText}${storeContent}`;
     }
 
-    // Flush pending throttled update and mark the message as final.
-    // Don't overwrite the content — the store already has the correct text
-    // from processAgentAssistantText's real-time updates.
-    this.clearPendingMessageUpdate(messageId);
     this.store.updateMessage(sessionId, messageId, {
       metadata: { isStreaming: false, isFinal: true },
     });
@@ -2284,15 +2346,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     if (turn.assistantMessageId && segmentText !== previousSegmentText) {
-      this.store.updateMessage(sessionId, turn.assistantMessageId, {
-        content: segmentText,
-        metadata: {
-          isStreaming: true,
-          isFinal: false,
-        },
-      });
+      // Only update in-memory state; SQLite write and IPC emit are handled
+      // by processAgentAssistantText on the agent event path.
       turn.currentAssistantSegmentText = segmentText;
-      this.throttledEmitMessageUpdate(sessionId, turn.assistantMessageId, segmentText);
     }
   }
 
@@ -2309,8 +2365,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     turn.currentAssistantSegmentText = finalSegmentText;
 
     if (turn.assistantMessageId) {
-      // Flush any pending throttled update and force-emit the latest store content
-      // so the renderer sees the final text even if the last throttled emit was skipped.
+      // Flush any pending throttled updates so store content is current.
+      this.flushPendingStoreUpdate(sessionId, turn.assistantMessageId);
       this.clearPendingMessageUpdate(turn.assistantMessageId);
       const storeSession = this.store.getSession(sessionId);
       const storeMsg = storeSession?.messages.find((m) => m.id === turn.assistantMessageId);
@@ -2486,14 +2542,12 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const runId = typeof payload.runId === 'string' ? payload.runId.trim() : '';
     if (runId && this.sessionIdByRunId.has(runId)) {
       const sid = this.sessionIdByRunId.get(runId) ?? null;
-      console.log('[Debug:resolveSessionId] resolved by runId:', runId, '→', sid);
       return sid;
     }
 
     const sessionKey = typeof payload.sessionKey === 'string' ? payload.sessionKey.trim() : '';
     if (sessionKey) {
       const sessionId = this.resolveSessionIdBySessionKey(sessionKey);
-      console.log('[Debug:resolveSessionId] resolved by sessionKey:', sessionKey, '→', sessionId);
       if (sessionId) {
         // Re-create ActiveTurn for channel session follow-up turns
         this.ensureActiveTurn(sessionId, sessionKey, runId);
@@ -2506,19 +2560,17 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     // Try to resolve channel-originated sessions
     if (sessionKey && this.channelSessionSync) {
-      console.log('[Debug:resolveSessionId] attempting channel resolve for sessionKey:', sessionKey);
       const channelSessionId = this.channelSessionSync.resolveOrCreateSession(sessionKey)
         || (!this.heartbeatSessionKeys.has(sessionKey) && this.channelSessionSync.resolveOrCreateMainAgentSession(sessionKey))
         || this.channelSessionSync.resolveOrCreateCronSession(sessionKey)
         || null;
-      console.log('[Debug:resolveSessionId] channel resolve — sessionKey:', sessionKey, '→', channelSessionId);
       if (channelSessionId) {
         // If this key was previously deleted, allow re-creation but skip history sync
         if (this.deletedChannelKeys.has(sessionKey)) {
           this.deletedChannelKeys.delete(sessionKey);
           this.fullySyncedSessions.add(channelSessionId);
           this.reCreatedChannelSessionIds.add(channelSessionId);
-          console.log('[Debug:resolveSessionId] re-created after delete, skipping history sync for:', sessionKey);
+          console.debug('[resolveSessionId] re-created after delete, skipping history sync for:', sessionKey);
         }
         this.rememberSessionKey(channelSessionId, sessionKey);
         this.ensureActiveTurn(channelSessionId, sessionKey, runId);
@@ -2529,7 +2581,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
     }
 
-    console.log('[Debug:resolveSessionId] failed — runId:', runId, 'sessionKey:', sessionKey);
+    console.warn('[resolveSessionId] failed — runId:', runId, 'sessionKey:', sessionKey);
     return null;
   }
 
@@ -3280,6 +3332,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (turn.assistantMessageId) {
         this.clearPendingMessageUpdate(turn.assistantMessageId);
         this.lastMessageUpdateEmitTime.delete(turn.assistantMessageId);
+        this.clearPendingStoreUpdate(turn.assistantMessageId);
+        this.lastStoreUpdateTime.delete(turn.assistantMessageId);
       }
       turn.knownRunIds.forEach((knownRunId) => {
         this.sessionIdByRunId.delete(knownRunId);
