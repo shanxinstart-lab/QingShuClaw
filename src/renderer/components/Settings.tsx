@@ -2216,122 +2216,42 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               </label>
             </div>
 
-            {/* Appearance Section */}
+            {/* Appearance Section — 12-theme gallery */}
             <div>
-              <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-3">
+              <h4 className="text-sm font-medium mb-3" style={{ color: 'var(--lobster-text-primary)' }}>
                 {i18nService.t('appearance')}
               </h4>
-              <div className="grid grid-cols-3 gap-4">
-                {([
-                  { value: 'light' as const, label: i18nService.t('light') },
-                  { value: 'dark' as const, label: i18nService.t('dark') },
-                  { value: 'system' as const, label: i18nService.t('system') },
-                ]).map((option) => {
-                  const isSelected = theme === option.value;
+              <div className="grid grid-cols-4 gap-3">
+                {themeService.getAllThemes().map((t) => {
+                  const isSelected = themeService.getThemeId() === t.meta.id;
+                  const [bg, c1, c2, c3] = t.meta.preview;
                   return (
                     <button
-                      key={option.value}
+                      key={t.meta.id}
                       type="button"
                       onClick={() => {
-                        setTheme(option.value);
-                        themeService.setTheme(option.value);
+                        setTheme(t.meta.appearance as 'light' | 'dark');
+                        themeService.setThemeById(t.meta.id);
                       }}
-                      className={`flex flex-col items-center rounded-xl border-2 p-3 transition-colors cursor-pointer ${
+                      className={`flex flex-col items-center rounded-xl border-2 p-2 transition-colors cursor-pointer ${
                         isSelected
-                          ? 'border-claude-accent bg-claude-accent/5 dark:bg-claude-accent/10'
-                          : 'dark:border-claude-darkBorder border-claude-border hover:border-claude-accent/50 dark:hover:border-claude-accent/50'
+                          ? 'border-primary bg-primary-muted'
+                          : 'border-transparent hover:border-primary/40'
                       }`}
+                      style={{
+                        borderColor: isSelected ? 'var(--lobster-primary)' : undefined,
+                        backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
+                      }}
                     >
-                      <svg viewBox="0 0 120 80" className="w-full h-auto rounded-md mb-2 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
-                        {option.value === 'light' && (
-                          <>
-                            <rect width="120" height="80" fill="#F8F9FB" />
-                            <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
-                            <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
-                            <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
-                            <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
-                            <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
-                            <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#E2E4E7" />
-                          </>
-                        )}
-                        {option.value === 'dark' && (
-                          <>
-                            <rect width="120" height="80" fill="#0F1117" />
-                            <rect x="0" y="0" width="30" height="80" fill="#151820" />
-                            <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
-                            <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#252930" />
-                          </>
-                        )}
-                        {option.value === 'system' && (
-                          <>
-                            <defs>
-                              <clipPath id="left-half">
-                                <rect x="0" y="0" width="60" height="80" />
-                              </clipPath>
-                              <clipPath id="right-half">
-                                <rect x="60" y="0" width="60" height="80" />
-                              </clipPath>
-                            </defs>
-                            {/* Light half */}
-                            <g clipPath="url(#left-half)">
-                              <rect width="120" height="80" fill="#F8F9FB" />
-                              <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
-                              <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
-                              <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
-                              <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
-                              <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
-                              <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            </g>
-                            {/* Dark half */}
-                            <g clipPath="url(#right-half)">
-                              <rect width="120" height="80" fill="#0F1117" />
-                              <rect x="0" y="0" width="30" height="80" fill="#151820" />
-                              <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
-                              <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
-                            </g>
-                            {/* Divider line */}
-                            <line x1="60" y1="0" x2="60" y2="80" stroke="#888" strokeWidth="0.5" />
-                          </>
-                        )}
+                      <svg viewBox="0 0 80 48" className="w-full h-auto rounded-md mb-1.5 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="80" height="48" fill={bg} />
+                        <rect x="4" y="6" width="20" height="36" rx="3" fill={c1} opacity="0.7" />
+                        <rect x="28" y="6" width="48" height="36" rx="3" fill={c2} opacity="0.5" />
+                        <circle cx="52" cy="24" r="8" fill={c3} opacity="0.8" />
+                        <rect x="32" y="34" width="40" height="4" rx="2" fill={c1} opacity="0.6" />
                       </svg>
-                      <span className={`text-xs font-medium ${
-                        isSelected
-                          ? 'text-claude-accent'
-                          : 'dark:text-claude-darkText text-claude-text'
-                      }`}>
-                        {option.label}
+                      <span className="text-[10px] font-medium truncate w-full text-center" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
+                        {t.meta.name}
                       </span>
                     </button>
                   );
