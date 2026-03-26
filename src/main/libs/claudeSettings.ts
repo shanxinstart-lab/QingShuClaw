@@ -23,6 +23,7 @@ const MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL = 'https://api.kimi.com/coding';
 
 type ProviderModel = {
   id: string;
+  name?: string;
   supportsImage?: boolean;
 };
 
@@ -50,6 +51,7 @@ export type ApiConfigResolution = {
     providerName: string;
     codingPlanEnabled: boolean;
     supportsImage?: boolean;
+    modelName?: string;
   };
 };
 
@@ -108,6 +110,7 @@ type MatchedProvider = {
   apiFormat: AnthropicApiFormat;
   baseURL: string;
   supportsImage?: boolean;
+  modelName?: string;
 };
 
 function getEffectiveProviderApiFormat(providerName: string, apiFormat: unknown): AnthropicApiFormat {
@@ -285,6 +288,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
       apiFormat,
       baseURL,
       supportsImage: matchedModel?.supportsImage,
+      modelName: matchedModel?.name,
     },
   };
 }
@@ -415,6 +419,7 @@ export function resolveRawApiConfig(): ApiConfigResolution {
       providerName: matched.providerName,
       codingPlanEnabled: !!matched.providerConfig.codingPlanEnabled,
       supportsImage: matched.supportsImage,
+      modelName: matched.modelName,
     },
   };
 }
