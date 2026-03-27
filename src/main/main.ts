@@ -857,13 +857,14 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
         }
       },
       getMcpBridgeConfig: (): McpBridgeConfig | null => {
-        if (!mcpBridgeServer?.callbackUrl || !mcpServerManager?.toolManifest?.length || !mcpBridgeSecret) {
+        if (!mcpBridgeServer?.callbackUrl || !mcpBridgeServer?.askUserCallbackUrl || !mcpBridgeSecret) {
           return null;
         }
         return {
           callbackUrl: mcpBridgeServer.callbackUrl,
+          askUserCallbackUrl: mcpBridgeServer.askUserCallbackUrl,
           secret: mcpBridgeSecret,
-          tools: mcpServerManager.toolManifest,
+          tools: mcpServerManager?.toolManifest ?? [],
         };
       },
       getAgents: () => getCoworkStore().listAgents(),
@@ -1147,6 +1148,9 @@ const getMcpStore = () => {
  * Start the MCP Bridge: server manager + HTTP callback.
  * Called during OpenClaw bootstrap before config sync.
  * Returns the bridge config to be written into openclaw.json.
+ *
+ * The HTTP callback server is always started (even without MCP servers)
+ * because the AskUserQuestion plugin also uses it for user confirmation dialogs.
  */
 const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
   // Deduplicate concurrent calls — only one initialization at a time
@@ -1156,33 +1160,31 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
   mcpBridgeStartPromise = (async (): Promise<McpBridgeConfig | null> => {
   try {
     console.log('[McpBridge] startMcpBridge called');
-    const enabledServers = getMcpStore().getEnabledServers();
-    console.log(`[McpBridge] enabledServers: ${enabledServers.length} (${enabledServers.map(s => s.name).join(', ')})`);
-    if (enabledServers.length === 0) {
-      console.log('[McpBridge] no enabled MCP servers, skipping bridge startup');
-      return null;
-    }
 
     // Generate a per-session secret for bridge auth
     if (!mcpBridgeSecret) {
       const crypto = await import('crypto');
       mcpBridgeSecret = crypto.randomUUID();
     }
-    console.log('[McpBridge] secret generated');
 
-    // Start server manager and discover tools
+    // Discover MCP tools (may be empty if no servers configured)
+    const enabledServers = getMcpStore().getEnabledServers();
+    console.log(`[McpBridge] enabledServers: ${enabledServers.length} (${enabledServers.map(s => s.name).join(', ')})`);
+
+    let tools: Awaited<ReturnType<McpServerManager['startServers']>> = [];
+    if (enabledServers.length > 0) {
+      if (!mcpServerManager) {
+        mcpServerManager = new McpServerManager();
+      }
+      console.log('[McpBridge] starting MCP servers...');
+      tools = await mcpServerManager.startServers(enabledServers);
+      console.log(`[McpBridge] tools discovered: ${tools.length}`);
+    }
+
+    // Always start HTTP callback server (serves both MCP Bridge and AskUserQuestion)
     if (!mcpServerManager) {
       mcpServerManager = new McpServerManager();
     }
-    console.log('[McpBridge] starting MCP servers...');
-    const tools = await mcpServerManager.startServers(enabledServers);
-    console.log(`[McpBridge] tools discovered: ${tools.length}`);
-    if (tools.length === 0) {
-      console.log('[McpBridge] no tools discovered from MCP servers');
-      return null;
-    }
-
-    // Start HTTP callback server
     if (!mcpBridgeServer) {
       mcpBridgeServer = new McpBridgeServer(mcpServerManager, mcpBridgeSecret);
     }
@@ -1191,14 +1193,50 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
       await mcpBridgeServer.start();
     }
 
+    // Register AskUserQuestion callback — shows a permission modal when the
+    // ask-user-question OpenClaw plugin sends a request via HTTP.
+    mcpBridgeServer.onAskUser((request) => {
+      const windows = BrowserWindow.getAllWindows();
+      windows.forEach((win) => {
+        if (win.isDestroyed()) return;
+        try {
+          win.webContents.send('cowork:stream:permission', {
+            sessionId: '__askuser__',
+            request: {
+              requestId: request.requestId,
+              toolName: 'AskUserQuestion',
+              toolInput: { questions: request.questions },
+            },
+          });
+        } catch (error) {
+          console.error('[AskUser] failed to send permission request to window:', error);
+        }
+      });
+    });
+
+    // Dismiss the AskUser modal when timeout or resolved from server side.
+    // Simulate a deny response to remove it from the renderer's pending queue.
+    mcpBridgeServer.onAskUserDismiss((requestId) => {
+      const windows = BrowserWindow.getAllWindows();
+      windows.forEach((win) => {
+        if (win.isDestroyed()) return;
+        try {
+          win.webContents.send('cowork:stream:permissionDismiss', { requestId });
+        } catch {
+          // ignore
+        }
+      });
+    });
+
     const callbackUrl = mcpBridgeServer.callbackUrl;
-    if (!callbackUrl) {
+    const askUserCallbackUrl = mcpBridgeServer.askUserCallbackUrl;
+    if (!callbackUrl || !askUserCallbackUrl) {
       console.error('[McpBridge] failed to get callback URL');
       return null;
     }
 
-    console.log(`[McpBridge] started: ${tools.length} tools, callback=${callbackUrl}`);
-    return { callbackUrl, secret: mcpBridgeSecret, tools };
+    console.log(`[McpBridge] started: ${tools.length} MCP tools, callback=${callbackUrl}`);
+    return { callbackUrl, askUserCallbackUrl, secret: mcpBridgeSecret, tools };
   } catch (error) {
     console.error('[McpBridge] startup error:', error instanceof Error ? error.stack || error.message : String(error));
     return null;
@@ -2882,6 +2920,31 @@ if (!gotTheLock) {
     result: PermissionResult;
   }) => {
     try {
+      // Dual-dispatch pattern: permission responses arrive through one IPC channel
+      // but may target either of two independent subsystems.
+      //
+      // - resolveAskUser() handles AskUserQuestion plugin requests routed through
+      //   the McpBridgeServer HTTP callback. It is a no-op when the requestId does
+      //   not match a pending bridge request (i.e. for normal SDK permission requests).
+      //
+      // - respondToPermission() handles standard Claude Agent SDK permission requests
+      //   managed by the CoworkEngineRouter. It is a no-op when the requestId does
+      //   not match a pending SDK permission (i.e. for bridge plugin requests).
+      //
+      // Both calls are safe to invoke unconditionally; exactly one will match.
+
+      // AskUserQuestion plugin responses go to the bridge server, not the runtime
+      if (mcpBridgeServer && options.requestId) {
+        const result = options.result;
+        const askUserResponse: import('./libs/mcpBridgeServer').AskUserResponse = {
+          behavior: result.behavior === 'allow' ? 'allow' : 'deny',
+          answers: result.behavior === 'allow' && result.updatedInput && typeof result.updatedInput === 'object'
+            ? (result.updatedInput as Record<string, unknown>).answers as Record<string, string> | undefined
+            : undefined,
+        };
+        mcpBridgeServer.resolveAskUser(options.requestId, askUserResponse);
+      }
+
       const runtime = getCoworkEngineRouter();
       runtime.respondToPermission(options.requestId, options.result);
       return { success: true };

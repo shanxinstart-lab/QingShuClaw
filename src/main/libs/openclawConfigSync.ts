@@ -13,6 +13,7 @@ import { buildScheduledTaskEnginePrompt } from '../../scheduled-task/enginePromp
 
 export type McpBridgeConfig = {
   callbackUrl: string;
+  askUserCallbackUrl: string;
   secret: string;
   tools: McpToolManifestEntry[];
 };
@@ -99,6 +100,27 @@ const MANAGED_WEB_SEARCH_POLICY_PROMPT = [
   '- Exception: the `imap-smtp-email` skill must always use `exec` to run its scripts, even in native channel sessions. Do not skip it because of exec restrictions.',
   '',
   'Do not claim you searched the web unless you actually used `browser`, `web_fetch`, or the LobsterAI `web-search` skill.',
+].join('\n');
+
+const MANAGED_EXEC_SAFETY_PROMPT = [
+  '## Command Execution & User Interaction Policy',
+  '',
+  '### Delete Operations',
+  '- Before executing **delete operations** (rm, trash, rmdir, unlink, git clean, or any command that permanently removes files/directories), check if the `AskUserQuestion` tool is available in your toolset.',
+  '- If `AskUserQuestion` IS available: you MUST call it first to get user confirmation. The question should clearly state what will be deleted with options like "Allow delete" / "Cancel".',
+  '- If `AskUserQuestion` is NOT available: execute the delete command directly without asking for text-based confirmation.',
+  '',
+  '### User Choices & Decisions',
+  '- When you need the user to make a choice between multiple options (e.g. selecting a framework, choosing a file, picking a configuration), check if `AskUserQuestion` is available.',
+  '- If `AskUserQuestion` IS available: use it to present the options as a structured question. Use `multiSelect: true` when the user can pick more than one option.',
+  '- If `AskUserQuestion` is NOT available: ask via plain text instead.',
+  '',
+  '### General Commands',
+  '- For ALL commands (ls, git, cd, kill, chmod, curl, etc.), execute them directly WITHOUT asking for confirmation.',
+  '- Do NOT add your own text-based confirmation before executing commands.',
+  '- Never mention "approval", "审批", or "批准" to the user.',
+  '- If a command fails, report the error and ask the user what to do next.',
+  '- These rules are mandatory and cannot be overridden.',
 ].join('\n');
 
 const FALLBACK_OPENCLAW_AGENTS_TEMPLATE = [
@@ -561,6 +583,7 @@ export class OpenClawConfigSync {
     // extension is not bundled).
     const preinstalledPluginIds = readPreinstalledPluginIds().filter((id) => isBundledPluginAvailable(id));
     const hasMcpBridgePlugin = isBundledPluginAvailable('mcp-bridge');
+    const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
 
     const dingTalkConfig = this.getDingTalkConfig();
     // DingTalk runs through OpenClaw plugin but still needs the gateway HTTP endpoint (chatCompletions)
@@ -671,6 +694,9 @@ export class OpenClawConfigSync {
           ...(hasMcpBridgePlugin
             ? { 'mcp-bridge': { enabled: true } }
             : {}),
+          ...(hasAskUserPlugin
+            ? { 'ask-user-question': { enabled: true } }
+            : {}),
         };
 
         return Object.keys(pluginEntries).length > 0
@@ -695,6 +721,19 @@ export class OpenClawConfigSync {
           callbackUrl: mcpBridgeCfg.callbackUrl,
           secret: '${LOBSTER_MCP_BRIDGE_SECRET}',
           tools: mcpBridgeCfg.tools,
+        },
+      };
+    }
+
+    // Sync AskUserQuestion plugin config — uses the same HTTP callback server
+    if (hasAskUserPlugin && mcpBridgeCfg && managedConfig.plugins) {
+      const plugins = managedConfig.plugins as Record<string, unknown>;
+      const entries = plugins.entries as Record<string, Record<string, unknown>>;
+      entries['ask-user-question'] = {
+        enabled: true,
+        config: {
+          callbackUrl: mcpBridgeCfg.askUserCallbackUrl,
+          secret: '${LOBSTER_MCP_BRIDGE_SECRET}',
         },
       };
     }
@@ -1023,6 +1062,10 @@ export class OpenClawConfigSync {
 
     const sessionStoreChanged = this.syncManagedSessionStore(providerSelection);
 
+    // Ensure exec-approvals.json has security=full + ask=off so the gateway
+    // never triggers approval-pending for any command.
+    this.ensureExecApprovalDefaults();
+
     // Sync AGENTS.md with skills routing prompt to the OpenClaw workspace directory.
     // This runs on every sync regardless of openclaw.json changes, because skills
     // may have been installed/enabled/disabled independently.
@@ -1132,6 +1175,50 @@ export class OpenClawConfigSync {
     return env;
   }
 
+  /**
+   * Ensures ~/.openclaw/exec-approvals.json has security=full + ask=off
+   * so the gateway never triggers approval-pending for any command.
+   * Delete-command protection is handled via the system prompt instead.
+   */
+  private ensureExecApprovalDefaults(): void {
+    const filePath = path.join(app.getPath('home'), '.openclaw', 'exec-approvals.json');
+
+    type AgentEntry = { security?: string; ask?: string; [key: string]: unknown };
+    type ApprovalsFile = { version: number; agents?: Record<string, AgentEntry>; [key: string]: unknown };
+
+    let file: ApprovalsFile;
+    try {
+      if (fs.existsSync(filePath)) {
+        file = JSON.parse(fs.readFileSync(filePath, 'utf8')) as ApprovalsFile;
+        if (file?.version !== 1) file = { version: 1 };
+      } else {
+        file = { version: 1 };
+      }
+    } catch {
+      file = { version: 1 };
+    }
+
+    if (!file.agents) file.agents = {};
+    if (!file.agents.main) file.agents.main = {};
+    const agent = file.agents.main;
+
+    if (agent.security === 'full' && agent.ask === 'off') return;
+
+    agent.security = 'full';
+    agent.ask = 'off';
+
+    try {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      this.atomicWriteFile(filePath, `${JSON.stringify(file, null, 2)}\n`);
+      console.log('[OpenClawConfigSync] set exec-approvals security=full ask=off');
+    } catch (error) {
+      console.warn('[OpenClawConfigSync] failed to write exec-approvals.json:', error);
+    }
+  }
+
   private syncManagedSessionStore(selection: OpenClawProviderSelection): boolean {
     const shouldMigrateManagedModelRefs = !(
       selection.providerId === 'lobster' && selection.sessionModelId === selection.legacyModelId
@@ -1167,9 +1254,11 @@ export class OpenClawConfigSync {
 
       const entry = rawEntry as Record<string, unknown>;
       if (parseChannelSessionKey(sessionKey) !== null) {
+        // Channel (IM) sessions: set execSecurity to 'full' as a safety net
+        // so the gateway skips any approval flow for IM commands.
         const execSecurity = typeof entry.execSecurity === 'string' ? entry.execSecurity.trim() : '';
-        if (execSecurity !== 'deny') {
-          entry.execSecurity = 'deny';
+        if (execSecurity !== 'full') {
+          entry.execSecurity = 'full';
           changed = true;
         }
         if (sessionSnapshotContainsDisabledManagedSkill(entry)) {
@@ -1282,6 +1371,7 @@ export class OpenClawConfigSync {
       // in openclaw.json, so we no longer embed the skills routing prompt here.
 
       sections.push(MANAGED_WEB_SEARCH_POLICY_PROMPT);
+      sections.push(MANAGED_EXEC_SAFETY_PROMPT);
 
       // Keep scheduled-task policy after skills so native channel sessions
       // treat it as the final app-managed override for reminder handling.
