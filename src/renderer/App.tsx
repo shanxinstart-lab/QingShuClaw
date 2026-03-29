@@ -23,6 +23,7 @@ import { checkForAppUpdate, type AppUpdateInfo, type AppUpdateDownloadProgress, 
 import { defaultConfig, getProviderDisplayName } from './config';
 import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
+import { setDraftPrompt } from './store/slices/coworkSlice';
 import type { ApiConfig } from './services/api';
 import type { CoworkPermissionResult } from './types/cowork';
 import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
@@ -296,6 +297,13 @@ const App: React.FC = () => {
       }));
     }, 0);
   }, [dispatch, mainView, currentSessionId]);
+
+  const handleCreateSkillByChat = useCallback(() => {
+    dispatch(setDraftPrompt({ sessionId: '__home__', draft: '使用你的skill-creator技能，来创建一个技能。首先，请询问我这个技能需要干什么。' }));
+    coworkService.clearSession();
+    dispatch(clearSelection());
+    setMainView('cowork');
+  }, [dispatch]);
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -692,6 +700,7 @@ const App: React.FC = () => {
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}
+                onCreateSkillByChat={handleCreateSkillByChat}
                 updateBadge={isSidebarCollapsed ? updateBadge : null}
                 readOnly={enterpriseConfig?.ui?.skills === 'readonly'}
               />

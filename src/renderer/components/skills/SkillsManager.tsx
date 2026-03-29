@@ -15,6 +15,7 @@ import FolderOpenIcon from '../icons/FolderOpenIcon';
 import LinkIcon from '../icons/LinkIcon';
 import PuzzleIcon from '../icons/PuzzleIcon';
 import TrashIcon from '../icons/TrashIcon';
+import PencilSquareIcon from '../icons/PencilSquareIcon';
 import { i18nService } from '../../services/i18n';
 import { skillService, resolveLocalizedText, compareVersions } from '../../services/skill';
 import { setSkills } from '../../store/slices/skillSlice';
@@ -53,9 +54,10 @@ const importTabConfig: Record<ImportSourceType, {
 
 interface SkillsManagerProps {
   readOnly?: boolean;
+  onCreateByChat?: () => void;
 }
 
-const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
+const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat }) => {
   const dispatch = useDispatch();
   const skills = useSelector((state: RootState) => state.skill.skills);
 
@@ -317,6 +319,11 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
     setIsRemoteImportOpen(true);
   };
 
+  const handleCreateByChat = () => {
+    setIsAddSkillMenuOpen(false);
+    onCreateByChat?.();
+  };
+
   const handleImportFromDialog = async () => {
     if (isDownloadingSkill) return;
     const trimmed = skillDownloadSource.trim();
@@ -568,6 +575,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
               >
                 <LinkIcon className="h-4 w-4 text-secondary" />
                 <span>{i18nService.t('remoteImport')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateByChat}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors"
+              >
+                <PencilSquareIcon className="h-4 w-4 text-secondary" />
+                <span>{i18nService.t('createSkillByChat')}</span>
               </button>
             </div>
           )}
