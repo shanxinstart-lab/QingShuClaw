@@ -48,7 +48,7 @@ import {
   PLATFORM_TO_CHANNEL_MAP,
 } from './libs/openclawChannelSessionSync';
 import { IMGatewayManager, IMPlatform, IMGatewayConfig } from './im';
-import { APP_NAME } from './appConstants';
+import { APP_NAME, APP_USER_DATA_DIR_NAME } from './appConstants';
 import { getSkillServiceManager } from './skillServices';
 import { createTray, destroyTray, updateTrayMenu } from './trayManager';
 import { setLanguage, t } from './i18n';
@@ -73,6 +73,18 @@ import {
   restoreOriginalProxyEnv,
   setSystemProxyEnabled,
 } from './libs/systemProxy';
+import {
+  createLegacyLobsterAuthAdapter,
+  createQtbAuthAdapter,
+  type AuthAdapter,
+} from './auth/adapter';
+import { resolveAuthBackendConfig } from './auth/config';
+import {
+  AuthBackend,
+  type AuthCallbackPayload,
+  type AuthConfig,
+  type AuthPasswordLoginInput,
+} from '../common/auth';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -166,6 +178,15 @@ const buildLogExportFileName = (): string => {
   const datePart = `${now.getFullYear()}${padTwoDigits(now.getMonth() + 1)}${padTwoDigits(now.getDate())}`;
   const timePart = `${padTwoDigits(now.getHours())}${padTwoDigits(now.getMinutes())}${padTwoDigits(now.getSeconds())}`;
   return `lobsterai-logs-${datePart}-${timePart}.zip`;
+};
+
+const describeUrlForLog = (value: string): string => {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return value;
+  }
 };
 
 const truncateIpcString = (value: string, maxChars: number): string => {
@@ -323,7 +344,7 @@ const savePngWithDialog = async (
 
 const configureUserDataPath = (): void => {
   const appDataPath = app.getPath('appData');
-  const preferredUserDataPath = path.join(appDataPath, APP_NAME);
+  const preferredUserDataPath = path.join(appDataPath, APP_USER_DATA_DIR_NAME);
   const currentUserDataPath = app.getPath('userData');
 
   if (currentUserDataPath !== preferredUserDataPath) {
@@ -1530,10 +1551,22 @@ function mergeCoworkSystemPrompt(
   return sections.length > 0 ? sections.join('\n\n') : undefined;
 }
 
+const resolveExistingPath = (candidates: string[]): string => {
+  const matched = candidates.find((candidate) => fs.existsSync(candidate));
+  return matched || candidates[0];
+};
+
 // 获取正确的预加载脚本路径
-const PRELOAD_PATH = app.isPackaged 
-  ? path.join(__dirname, 'preload.js')
-  : path.join(__dirname, '../dist-electron/preload.js');
+const PRELOAD_PATH = app.isPackaged
+  ? resolveExistingPath([
+      path.join(__dirname, 'preload.js'),
+      path.join(__dirname, 'main', 'preload.js'),
+    ])
+  : resolveExistingPath([
+      path.join(__dirname, '../dist-electron/preload.js'),
+      path.join(__dirname, '../dist-electron/main/preload.js'),
+      path.join(__dirname, 'preload.js'),
+    ]);
 
 // 获取应用图标路径（Windows 使用 .ico，其他平台使用 .png）
 const getAppIconPath = (): string | undefined => {
@@ -1559,6 +1592,7 @@ type AppConfigSettings = {
   theme?: string;
   language?: string;
   useSystemProxy?: boolean;
+  auth?: Partial<AuthConfig>;
 };
 
 const getUseSystemProxyFromConfig = (config?: { useSystemProxy?: boolean }): boolean => {
@@ -1682,21 +1716,34 @@ if (!gotTheLock) {
   app.setAsDefaultProtocolClient('lobsterai');
 
   // Buffer for deep link auth code received before renderer is ready
-  let pendingAuthCode: string | null = null;
+  let pendingAuthCallback: AuthCallbackPayload | null = null;
+  let pendingBridgeCode: { code: string } | null = null;
 
   /**
-   * Parse a lobsterai:// deep link and send (or buffer) the auth code.
+   * Parse a lobsterai:// deep link and send (or buffer) the auth callback payload.
    */
   const handleDeepLink = (url: string) => {
     try {
       const parsed = new URL(url);
       if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
         const code = parsed.searchParams.get('code');
+        const state = parsed.searchParams.get('state') || undefined;
         if (code) {
+          const payload = { code, ...(state ? { state } : {}) };
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('auth:callback', { code });
+            mainWindow.webContents.send('auth:callback', payload);
           } else {
-            pendingAuthCode = code;
+            pendingAuthCallback = payload;
+          }
+        }
+      } else if (parsed.hostname === 'auth' && parsed.pathname === '/bridge') {
+        const code = parsed.searchParams.get('code');
+        if (code) {
+          const payload = { code };
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('auth:bridgeCode', payload);
+          } else {
+            pendingBridgeCode = payload;
           }
         }
       }
@@ -1707,9 +1754,15 @@ if (!gotTheLock) {
 
   // Allow renderer to retrieve a buffered auth code on init
   ipcMain.handle('auth:getPendingCallback', () => {
-    const code = pendingAuthCode;
-    pendingAuthCode = null;
-    return code;
+    const callback = pendingAuthCallback;
+    pendingAuthCallback = null;
+    return callback;
+  });
+
+  ipcMain.handle('auth:getPendingBridgeCode', () => {
+    const bridgeCode = pendingBridgeCode;
+    pendingBridgeCode = null;
+    return bridgeCode;
   });
 
   // macOS: handle open-url event for deep links
@@ -1928,40 +1981,6 @@ if (!gotTheLock) {
   };
 
   /**
-   * Helper: Fetch with Bearer token, auto-refresh on 401 and retry once.
-   */
-  const fetchWithAuth = async (url: string, options?: RequestInit): Promise<Response> => {
-    const tokens = getAuthTokens();
-    if (!tokens) throw new Error('No auth tokens');
-
-    const doFetch = (accessToken: string) =>
-      net.fetch(url, {
-        ...options,
-        headers: { ...(options?.headers as Record<string, string>), Authorization: `Bearer ${accessToken}` },
-      });
-
-    let resp = await doFetch(tokens.accessToken);
-
-    if (resp.status === 401 && tokens.refreshToken) {
-      const serverBaseUrl = getServerApiBaseUrl();
-      const refreshResp = await net.fetch(`${serverBaseUrl}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-      });
-      if (refreshResp.ok) {
-        const refreshBody = await refreshResp.json() as { code: number; data: { accessToken: string; refreshToken?: string } };
-        if (refreshBody.code === 0 && refreshBody.data) {
-          saveAuthTokens(refreshBody.data.accessToken, refreshBody.data.refreshToken || tokens.refreshToken);
-          resp = await doFetch(refreshBody.data.accessToken);
-        }
-      }
-    }
-
-    return resp;
-  };
-
-  /**
    * Normalize quota data from various server response formats into a unified shape.
    */
   const normalizeQuota = (raw: Record<string, unknown>) => {
@@ -2002,176 +2021,125 @@ if (!gotTheLock) {
     };
   };
 
-  ipcMain.handle('auth:login', async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
-    try {
-      const baseUrl = loginUrl || `${getServerApiBaseUrl()}/login`;
-      const finalUrl = `${baseUrl}?source=electron`;
-      await shell.openExternal(finalUrl);
-      return { success: true };
-    } catch (error) {
-      console.error('[Auth] login failed:', error);
-      return { success: false, error: error instanceof Error ? error.message : 'Failed to open login' };
+  const getCurrentAuthBackendConfig = () => resolveAuthBackendConfig(getStore());
+
+  const getCurrentAuthApiBaseUrl = (): string | null => {
+    return getCurrentAuthBackendConfig().apiBaseUrl;
+  };
+
+  const getCurrentAuthAdapter = (): AuthAdapter => {
+    const backendConfig = getCurrentAuthBackendConfig();
+    const openExternalForAuth = async (url: string) => {
+      console.log(`[Auth] Opening the system browser for ${describeUrlForLog(url)}`);
+      await shell.openExternal(url);
+    };
+
+    if (backendConfig.backend === AuthBackend.Qtb) {
+      return createQtbAuthAdapter({
+        backend: backendConfig.backend,
+        fetchFn: (url, options) => net.fetch(url, options),
+        openExternal: openExternalForAuth,
+        resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
+        resolveWebBaseUrl: () => backendConfig.webBaseUrl,
+        getAuthTokens,
+        saveAuthTokens,
+        clearAuthTokens,
+        normalizeQuota,
+        updateServerModelMetadata,
+        clearServerModelMetadata,
+      });
     }
+
+    return createLegacyLobsterAuthAdapter({
+      backend: backendConfig.backend,
+      fetchFn: (url, options) => net.fetch(url, options),
+      openExternal: openExternalForAuth,
+      resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
+      resolveWebBaseUrl: () => backendConfig.webBaseUrl,
+      getAuthTokens,
+      saveAuthTokens,
+      clearAuthTokens,
+      normalizeQuota,
+      updateServerModelMetadata,
+      clearServerModelMetadata,
+    });
+  };
+
+  ipcMain.handle('auth:getBackend', async () => {
+    return getCurrentAuthAdapter().getBackend();
   });
 
-  ipcMain.handle('auth:exchange', async (_event, { code }: { code: string }) => {
-    try {
-      const serverBaseUrl = getServerApiBaseUrl();
-      const resp = await net.fetch(`${serverBaseUrl}/api/auth/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ authCode: code }),
-      });
-      if (!resp.ok) {
-        return { success: false, error: `Exchange failed: ${resp.status}` };
-      }
-      const body = await resp.json() as {
-        code: number;
-        message?: string;
-        data: {
-          accessToken: string;
-          refreshToken: string;
-          user: Record<string, unknown>;
-          quota: Record<string, unknown>;
-        };
-      };
-      if (body.code !== 0 || !body.data) {
-        return { success: false, error: body.message || 'Exchange failed' };
-      }
-      saveAuthTokens(body.data.accessToken, body.data.refreshToken);
-      return { success: true, user: body.data.user, quota: normalizeQuota(body.data.quota) };
-    } catch (error) {
-      console.error('[Auth] exchange failed:', error);
-      return { success: false, error: error instanceof Error ? error.message : 'Exchange failed' };
+  ipcMain.handle('auth:login', async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
+    console.log('[Auth] Received a login request from the renderer');
+    const result = await getCurrentAuthAdapter().login({ loginUrl });
+    if (result.success) {
+      console.log('[Auth] Opened the external login flow successfully');
+    } else {
+      console.warn(`[Auth] Failed to open the external login flow: ${result.error || 'unknown error'}`);
     }
+    return result;
+  });
+
+  ipcMain.handle('auth:loginWithPassword', async (_event, input: AuthPasswordLoginInput) => {
+    return getCurrentAuthAdapter().loginWithPassword(input);
+  });
+
+  ipcMain.handle('auth:getFeishuAuthorizeUrl', async () => {
+    return getCurrentAuthAdapter().getFeishuAuthorizeUrl();
+  });
+
+  ipcMain.handle('auth:createFeishuScanSession', async () => {
+    return getCurrentAuthAdapter().createFeishuScanSession();
+  });
+
+  ipcMain.handle(
+    'auth:pollFeishuScanSession',
+    async (_event, { scanSessionId }: { scanSessionId: string }) => {
+      return getCurrentAuthAdapter().pollFeishuScanSession(scanSessionId);
+    }
+  );
+
+  ipcMain.handle(
+    'auth:exchange',
+    async (_event, { code, state }: AuthCallbackPayload) => {
+      return getCurrentAuthAdapter().exchange(code, { state });
+    }
+  );
+
+  ipcMain.handle('auth:createBridgeTicket', async (_event, input) => {
+    return getCurrentAuthAdapter().createBridgeTicket(input);
+  });
+
+  ipcMain.handle('auth:exchangeBridgeCode', async (_event, input) => {
+    return getCurrentAuthAdapter().exchangeBridgeCode(input);
   });
 
   ipcMain.handle('auth:getUser', async () => {
-    try {
-      const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      // Fetch user profile
-      const profileResp = await fetchWithAuth(`${serverBaseUrl}/api/user/profile`);
-      if (!profileResp.ok) return { success: false };
-      const profileBody = await profileResp.json() as { code: number; data: Record<string, unknown> };
-      if (profileBody.code !== 0 || !profileBody.data) return { success: false };
-      // Fetch quota separately
-      const quotaResp = await fetchWithAuth(`${serverBaseUrl}/api/user/quota`);
-      let quota = null;
-      if (quotaResp.ok) {
-        const quotaBody = await quotaResp.json() as { code: number; data: Record<string, unknown> };
-        if (quotaBody.code === 0 && quotaBody.data) {
-          quota = normalizeQuota(quotaBody.data);
-        }
-      }
-      return { success: true, user: profileBody.data, quota };
-    } catch {
-      return { success: false };
-    }
+    return getCurrentAuthAdapter().getUser();
   });
 
   ipcMain.handle('auth:getQuota', async () => {
-    try {
-      const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      const resp = await fetchWithAuth(`${serverBaseUrl}/api/user/quota`);
-      if (!resp.ok) return { success: false };
-      const body = await resp.json() as { code: number; data: Record<string, unknown> };
-      if (body.code !== 0 || !body.data) return { success: false };
-      return { success: true, quota: normalizeQuota(body.data) };
-    } catch {
-      return { success: false };
-    }
+    return getCurrentAuthAdapter().getQuota();
   });
 
   ipcMain.handle('auth:getProfileSummary', async () => {
-    try {
-      const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      const resp = await fetchWithAuth(`${serverBaseUrl}/api/user/profile-summary`);
-      if (!resp.ok) return { success: false };
-      const body = await resp.json() as { code: number; data: Record<string, unknown> };
-      if (body.code !== 0 || !body.data) return { success: false };
-      return { success: true, data: body.data };
-    } catch {
-      return { success: false };
-    }
+    return getCurrentAuthAdapter().getProfileSummary();
   });
 
   ipcMain.handle('auth:logout', async () => {
-    try {
-      const tokens = getAuthTokens();
-      if (tokens) {
-        const serverBaseUrl = getServerApiBaseUrl();
-        await net.fetch(`${serverBaseUrl}/api/auth/logout`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${tokens.accessToken}` },
-        }).catch(() => { /* best-effort */ });
-      }
-      clearAuthTokens();
-      clearServerModelMetadata();
-      return { success: true };
-    } catch {
-      clearAuthTokens();
-      clearServerModelMetadata();
-      return { success: true };
-    }
+    return getCurrentAuthAdapter().logout();
   });
 
   ipcMain.handle('auth:refreshToken', async () => {
-    try {
-      const tokens = getAuthTokens();
-      if (!tokens?.refreshToken) return { success: false };
-      const serverBaseUrl = getServerApiBaseUrl();
-      const resp = await net.fetch(`${serverBaseUrl}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-      });
-      if (!resp.ok) return { success: false };
-      const body = await resp.json() as { code: number; data: { accessToken: string; refreshToken?: string } };
-      if (body.code !== 0 || !body.data) return { success: false };
-      saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
-      return { success: true, accessToken: body.data.accessToken };
-    } catch {
-      return { success: false };
-    }
+    return getCurrentAuthAdapter().refreshToken();
   });
 
   ipcMain.handle('auth:getAccessToken', async () => {
-    const tokens = getAuthTokens();
-    return tokens?.accessToken || null;
+    return getCurrentAuthAdapter().getAccessToken();
   });
 
   ipcMain.handle('auth:getModels', async () => {
-    try {
-      const tokens = getAuthTokens();
-      if (!tokens) {
-        console.log('[Auth:getModels] No auth tokens available');
-        return { success: false };
-      }
-      const serverBaseUrl = getServerApiBaseUrl();
-      const url = `${serverBaseUrl}/api/models/available`;
-      console.log('[Auth:getModels] Fetching:', url);
-      const resp = await fetchWithAuth(url);
-      console.log('[Auth:getModels] Response status:', resp.status);
-      if (!resp.ok) {
-        console.log('[Auth:getModels] Response not ok:', resp.status, resp.statusText);
-        return { success: false };
-      }
-      const data = await resp.json() as { code: number; data: Array<{ modelId: string; modelName: string; provider: string; apiFormat: string; supportsImage?: boolean }> };
-      console.log('[Auth:getModels] Response data:', JSON.stringify(data).slice(0, 500));
-      if (data.code !== 0) return { success: false };
-      // Cache server model metadata for use in OpenClaw config sync (supportsImage, etc.)
-      updateServerModelMetadata(data.data);
-      return { success: true, models: data.data };
-    } catch (e) {
-      console.error('[Auth:getModels] Error:', e);
-      return { success: false };
-    }
+    return getCurrentAuthAdapter().getModels();
   });
 
   // Skills IPC handlers
@@ -4392,7 +4360,7 @@ if (!gotTheLock) {
       tryLoadURL();
       
       // 打开开发者工具
-      mainWindow.webContents.openDevTools();
+      mainWindow.webContents.openDevTools({ mode: 'detach', activate: true });
     } else {
       // 生产环境
       mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
@@ -4605,24 +4573,15 @@ if (!gotTheLock) {
         try {
           const tokens = getAuthTokens();
           if (!tokens?.refreshToken) return null;
-          const serverBaseUrl = getServerApiBaseUrl();
-          const resp = await net.fetch(`${serverBaseUrl}/api/auth/refresh`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-          });
-          if (resp.ok) {
-            const body = await resp.json() as { code: number; data: { accessToken: string; refreshToken?: string } };
-            if (body.code === 0 && body.data) {
-              saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
+          const refreshResult = await getCurrentAuthAdapter().refreshToken();
+          if (refreshResult.success && refreshResult.accessToken) {
               console.log(`[Auth] token refresh succeeded (reason: ${reason})`);
-              resolvedToken = body.data.accessToken;
+              resolvedToken = refreshResult.accessToken;
               // Sync the fresh token to the OpenClaw gateway so it doesn't
               // continue using the expired token from its spawn-time env vars.
               syncOpenClawConfig({ reason: `token-refresh:${reason}`, restartGatewayIfRunning: true }).catch((err) => {
                 console.warn('[Auth] post-refresh OpenClaw config sync failed:', err);
               });
-            }
           }
         } catch (err) {
           console.warn(`[Auth] token refresh failed (reason: ${reason}):`, err);
@@ -4647,7 +4606,7 @@ if (!gotTheLock) {
       } catch { /* unable to parse JWT, return token as-is */ }
       return tokens;
     });
-    setServerBaseUrlGetter(() => getServerApiBaseUrl());
+    setServerBaseUrlGetter(() => getCurrentAuthApiBaseUrl() || getServerApiBaseUrl());
 
     // Wire up token refresher for the OpenAI compat proxy so it can retry
     // on 401/403 with a fresh accessToken instead of failing immediately.
@@ -4749,8 +4708,9 @@ if (!gotTheLock) {
         const parsed = new URL(coldStartDeepLink);
         if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
           const code = parsed.searchParams.get('code');
+          const state = parsed.searchParams.get('state') || undefined;
           if (code) {
-            pendingAuthCode = code;
+            pendingAuthCallback = { code, ...(state ? { state } : {}) };
           }
         }
       } catch (e) {

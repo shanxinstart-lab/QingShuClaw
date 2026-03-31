@@ -7,7 +7,7 @@ import { themeService } from '../services/theme';
 import { i18nService, LanguageType } from '../services/i18n';
 import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPayload, PasswordEncryptedPayload } from '../services/encryption';
 import { coworkService } from '../services/cowork';
-import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
+import { APP_ID, APP_NAME, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import ErrorMessage from './ErrorMessage';
 import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
@@ -29,6 +29,11 @@ import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import { defaultConfig, type AppConfig, getVisibleProviders } from '../config';
+import {
+  AuthBackend,
+  DEFAULT_QTB_API_BASE_URL,
+  DEFAULT_QTB_WEB_BASE_URL,
+} from '../../common/auth';
 import {
   OpenAIIcon,
   DeepSeekIcon,
@@ -417,6 +422,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [language, setLanguage] = useState<LanguageType>('zh');
   const [autoLaunch, setAutoLaunchState] = useState(false);
   const [useSystemProxy, setUseSystemProxy] = useState(false);
+  const [qtbApiBaseUrl, setQtbApiBaseUrl] = useState(DEFAULT_QTB_API_BASE_URL);
+  const [qtbWebBaseUrl, setQtbWebBaseUrl] = useState(DEFAULT_QTB_WEB_BASE_URL);
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
   const [preventSleep, setPreventSleepState] = useState(false);
   const [isUpdatingPreventSleep, setIsUpdatingPreventSleep] = useState(false);
@@ -635,6 +642,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setTheme(config.theme);
       setLanguage(config.language);
       setUseSystemProxy(config.useSystemProxy ?? false);
+      setQtbApiBaseUrl(config.auth?.qtbApiBaseUrl || DEFAULT_QTB_API_BASE_URL);
+      setQtbWebBaseUrl(config.auth?.qtbWebBaseUrl || DEFAULT_QTB_WEB_BASE_URL);
       const savedTestMode = config.app?.testMode ?? false;
       setTestMode(savedTestMode);
       if (savedTestMode) setTestModeUnlocked(true);
@@ -1358,6 +1367,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     setError(null);
 
     try {
+      const normalizedQtbApiBaseUrl = qtbApiBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_QTB_API_BASE_URL;
+      const normalizedQtbWebBaseUrl = qtbWebBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_QTB_WEB_BASE_URL;
       const normalizedProviders = Object.fromEntries(
         Object.entries(providers).map(([providerKey, providerConfig]) => {
           const apiFormat = getEffectiveApiFormat(providerKey, providerConfig.apiFormat);
@@ -1385,6 +1396,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         api: {
           key: primaryProvider.apiKey,
           baseUrl: primaryProvider.baseUrl,
+        },
+        auth: {
+          backend: AuthBackend.Qtb,
+          qtbApiBaseUrl: normalizedQtbApiBaseUrl,
+          qtbWebBaseUrl: normalizedQtbWebBaseUrl,
         },
         providers: normalizedProviders, // Save all providers configuration
         theme,
@@ -2214,6 +2230,50 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   />
                 </button>
               </label>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
+                  {i18nService.t('authSettingsTitle')}
+                </h4>
+                <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
+                  {i18nService.t('authSettingsDescription')}
+                </p>
+              </div>
+
+              <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3">
+                <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">
+                  {i18nService.t('authBackendQtb')}
+                </div>
+                <div className="mt-3 space-y-3">
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('authQtbApiBaseUrl')}
+                    </div>
+                    <input
+                      type="text"
+                      value={qtbApiBaseUrl}
+                      onChange={(event) => setQtbApiBaseUrl(event.target.value)}
+                      placeholder={i18nService.t('authQtbApiBaseUrlPlaceholder')}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('authQtbWebBaseUrl')}
+                    </div>
+                    <input
+                      type="text"
+                      value={qtbWebBaseUrl}
+                      onChange={(event) => setQtbWebBaseUrl(event.target.value)}
+                      placeholder={i18nService.t('authQtbWebBaseUrlPlaceholder')}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
 
             {/* Appearance Section */}
@@ -3288,7 +3348,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
             {/* Logo & App Name */}
             <img
               src="logo.png"
-              alt="LobsterAI"
+              alt={APP_NAME}
               className="w-16 h-16 mb-3 cursor-pointer select-none"
               onClick={() => {
                 const next = logoClickCount + 1;
@@ -3298,7 +3358,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 }
               }}
             />
-            <h3 className="text-lg font-semibold dark:text-claude-darkText text-claude-text">LobsterAI</h3>
+            <h3 className="text-lg font-semibold dark:text-claude-darkText text-claude-text">{APP_NAME}</h3>
             <span className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary mt-1">v{appVersion}</span>
 
             {/* Info Card */}

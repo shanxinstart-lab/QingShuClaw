@@ -1,3 +1,6 @@
+import type { AuthConfig } from '../common/auth';
+import { DEFAULT_AUTH_CONFIG } from '../common/auth';
+
 // 配置类型定义
 export interface AppConfig {
   // API 配置
@@ -227,6 +230,8 @@ export interface AppConfig {
     isDevelopment: boolean;
     testMode?: boolean;
   };
+  // 认证后端配置
+  auth: AuthConfig;
   // 快捷键配置
   shortcuts?: {
     newChat: string;
@@ -414,6 +419,7 @@ export const defaultConfig: AppConfig = {
     isDevelopment: process.env.NODE_ENV === 'development',
     testMode: process.env.NODE_ENV === 'development',
   },
+  auth: DEFAULT_AUTH_CONFIG,
   shortcuts: {
     newChat: 'Ctrl+N',
     search: 'Ctrl+F',

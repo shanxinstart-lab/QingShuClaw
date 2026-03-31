@@ -136,8 +136,8 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`shrink-0 dark:bg-claude-darkSurfaceMuted bg-claude-surfaceMuted flex flex-col sidebar-transition overflow-hidden ${
-        isCollapsed ? 'w-0' : 'w-60'
+      className={`relative shrink-0 dark:bg-claude-darkSurfaceMuted bg-claude-surfaceMuted flex flex-col sidebar-transition ${
+        isCollapsed ? 'w-0 overflow-hidden' : 'w-60 overflow-visible z-20'
       }`}
     >
       <div className="pt-3 pb-3">

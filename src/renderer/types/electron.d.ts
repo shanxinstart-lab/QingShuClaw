@@ -217,6 +217,11 @@ interface McpMarketplaceData {
 }
 
 import type { Agent, PresetAgent } from './agent';
+import type {
+  AuthBackend,
+  AuthCallbackPayload,
+  AuthPasswordLoginInput,
+} from '../../common/auth';
 
 interface CreditItem {
   type: 'subscription' | 'boost' | 'free';
@@ -474,8 +479,36 @@ interface IElectronAPI {
     requestCalendar: () => Promise<{ success: boolean; granted?: boolean; status?: string; error?: string }>;
   };
   auth: {
+    getBackend: () => Promise<{ success: boolean; backend: AuthBackend }>;
     login: (loginUrl?: string) => Promise<{ success: boolean; error?: string }>;
-    exchange: (code: string) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+    loginWithPassword: (
+      input: AuthPasswordLoginInput
+    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+    getFeishuAuthorizeUrl: () => Promise<{ success: boolean; url?: string; error?: string }>;
+    createFeishuScanSession: () => Promise<{
+      success: boolean;
+      session?: FeishuScanSession;
+      error?: string;
+    }>;
+    pollFeishuScanSession: (scanSessionId: string) => Promise<{
+      success: boolean;
+      session?: FeishuScanSessionPollResult;
+      error?: string;
+    }>;
+    exchange: (
+      code: string,
+      state?: string
+    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+    createBridgeTicket: (
+      input: import('../../common/auth').CreateBridgeTicketRequest
+    ) => Promise<{
+      success: boolean;
+      data?: import('../../common/auth').CreateBridgeTicketResponse;
+      error?: string;
+    }>;
+    exchangeBridgeCode: (
+      input: import('../../common/auth').ExchangeBridgeCodeRequest
+    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
     getUser: () => Promise<{ success: boolean; user?: any; quota?: any }>;
     getQuota: () => Promise<{ success: boolean; quota?: any }>;
     logout: () => Promise<{ success: boolean }>;
@@ -483,7 +516,10 @@ interface IElectronAPI {
     getAccessToken: () => Promise<string | null>;
     getModels: () => Promise<{ success: boolean; models?: Array<{ modelId: string; modelName: string; provider: string; apiFormat: string }> }>;
     getProfileSummary: () => Promise<{ success: boolean; data?: ProfileSummaryData }>;
-    onCallback: (callback: (data: { code: string }) => void) => () => void;
+    getPendingCallback: () => Promise<AuthCallbackPayload | null>;
+    getPendingBridgeCode: () => Promise<{ code: string } | null>;
+    onCallback: (callback: (data: AuthCallbackPayload) => void) => () => void;
+    onBridgeCode: (callback: (data: { code: string }) => void) => () => void;
     onQuotaChanged: (callback: () => void) => () => void;
   };
   networkStatus: {

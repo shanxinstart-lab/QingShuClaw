@@ -5,6 +5,11 @@ export interface UserProfile {
   phone: string;
   nickname: string;
   avatarUrl: string;
+  name?: string;
+  displayName?: string;
+  email?: string;
+  isAdmin?: number;
+  lastLogin?: string | null;
 }
 
 export interface UserQuota {
@@ -59,6 +64,7 @@ const authSlice = createSlice({
       state.isLoading = false;
       state.user = action.payload.user;
       state.quota = action.payload.quota;
+      state.profileSummary = null;
     },
     setLoggedOut(state) {
       state.isLoggedIn = false;
@@ -73,8 +79,20 @@ const authSlice = createSlice({
     setProfileSummary(state, action: PayloadAction<ProfileSummary>) {
       state.profileSummary = action.payload;
     },
+    updateUserAvatar(state, action: PayloadAction<string>) {
+      if (state.user) {
+        state.user.avatarUrl = action.payload;
+      }
+    },
   },
 });
 
-export const { setAuthLoading, setLoggedIn, setLoggedOut, updateQuota, setProfileSummary } = authSlice.actions;
+export const {
+  setAuthLoading,
+  setLoggedIn,
+  setLoggedOut,
+  updateQuota,
+  setProfileSummary,
+  updateUserAvatar,
+} = authSlice.actions;
 export default authSlice.reducer;

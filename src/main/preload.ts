@@ -1,5 +1,26 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannel as ScheduledTaskIpc } from '../scheduled-task/constants';
+
+// Sandbox preload cannot require sibling compiled modules reliably, so keep
+// the scheduled-task IPC channel names local in this bridge layer.
+const ScheduledTaskIpc = {
+  List: 'scheduledTask:list',
+  Get: 'scheduledTask:get',
+  Create: 'scheduledTask:create',
+  Update: 'scheduledTask:update',
+  Delete: 'scheduledTask:delete',
+  Toggle: 'scheduledTask:toggle',
+  RunManually: 'scheduledTask:runManually',
+  Stop: 'scheduledTask:stop',
+  ListRuns: 'scheduledTask:listRuns',
+  CountRuns: 'scheduledTask:countRuns',
+  ListAllRuns: 'scheduledTask:listAllRuns',
+  ResolveSession: 'scheduledTask:resolveSession',
+  ListChannels: 'scheduledTask:listChannels',
+  ListChannelConversations: 'scheduledTask:listChannelConversations',
+  StatusUpdate: 'scheduledTask:statusUpdate',
+  RunUpdate: 'scheduledTask:runUpdate',
+  Refresh: 'scheduledTask:refresh',
+} as const;
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -410,8 +431,19 @@ contextBridge.exposeInMainWorld('electron', {
     send: (status: 'online' | 'offline') => ipcRenderer.send('network:status-change', status),
   },
   auth: {
+    getBackend: () => ipcRenderer.invoke('auth:getBackend'),
     login: (loginUrl?: string) => ipcRenderer.invoke('auth:login', { loginUrl }),
-    exchange: (code: string) => ipcRenderer.invoke('auth:exchange', { code }),
+    loginWithPassword: (input: { username: string; password: string }) =>
+      ipcRenderer.invoke('auth:loginWithPassword', input),
+    getFeishuAuthorizeUrl: () => ipcRenderer.invoke('auth:getFeishuAuthorizeUrl'),
+    createFeishuScanSession: () => ipcRenderer.invoke('auth:createFeishuScanSession'),
+    pollFeishuScanSession: (scanSessionId: string) =>
+      ipcRenderer.invoke('auth:pollFeishuScanSession', { scanSessionId }),
+    exchange: (code: string, state?: string) => ipcRenderer.invoke('auth:exchange', { code, state }),
+    createBridgeTicket: (input: { target: 'web' | 'desktop'; redirectPath?: string }) =>
+      ipcRenderer.invoke('auth:createBridgeTicket', input),
+    exchangeBridgeCode: (input: { code: string; target: 'web' | 'desktop' }) =>
+      ipcRenderer.invoke('auth:exchangeBridgeCode', input),
     getUser: () => ipcRenderer.invoke('auth:getUser'),
     getQuota: () => ipcRenderer.invoke('auth:getQuota'),
     logout: () => ipcRenderer.invoke('auth:logout'),
@@ -419,10 +451,17 @@ contextBridge.exposeInMainWorld('electron', {
     getAccessToken: () => ipcRenderer.invoke('auth:getAccessToken'),
     getModels: () => ipcRenderer.invoke('auth:getModels'),
     getProfileSummary: () => ipcRenderer.invoke('auth:getProfileSummary'),
-    onCallback: (callback: (data: { code: string }) => void) => {
-      const handler = (_event: any, data: { code: string }) => callback(data);
+    getPendingCallback: () => ipcRenderer.invoke('auth:getPendingCallback'),
+    getPendingBridgeCode: () => ipcRenderer.invoke('auth:getPendingBridgeCode'),
+    onCallback: (callback: (data: { code: string; state?: string }) => void) => {
+      const handler = (_event: any, data: { code: string; state?: string }) => callback(data);
       ipcRenderer.on('auth:callback', handler);
       return () => ipcRenderer.removeListener('auth:callback', handler);
+    },
+    onBridgeCode: (callback: (data: { code: string }) => void) => {
+      const handler = (_event: any, data: { code: string }) => callback(data);
+      ipcRenderer.on('auth:bridgeCode', handler);
+      return () => ipcRenderer.removeListener('auth:bridgeCode', handler);
     },
     onQuotaChanged: (callback: () => void) => {
       const handler = () => callback();

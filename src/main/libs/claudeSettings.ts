@@ -20,6 +20,7 @@ const VOLCENGINE_CODING_PLAN_ANTHROPIC_BASE_URL = 'https://ark.cn-beijing.volces
 // Moonshot/Kimi Coding Plan 专属端点 (OpenAI 兼容和 Anthropic 兼容)
 const MOONSHOT_CODING_PLAN_OPENAI_BASE_URL = 'https://api.kimi.com/coding/v1';
 const MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL = 'https://api.kimi.com/coding';
+const LOBSTERAI_SERVER_PROXY_PATH = '/api/qingshu-claw/proxy/v1';
 
 type ProviderModel = {
   id: string;
@@ -145,7 +146,7 @@ function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
   if (!tokens?.accessToken || !serverBaseUrl) return null;
   const effectiveModelId = modelId?.trim() || '';
   if (!effectiveModelId) return null;
-  const baseURL = `${serverBaseUrl}/api/proxy/v1`;
+  const baseURL = `${serverBaseUrl}${LOBSTERAI_SERVER_PROXY_PATH}`;
   const cachedMeta = serverModelMetadataCache.get(effectiveModelId);
   console.log('[ClaudeSettings] lobsterai-server fallback activated:', { baseURL, modelId: effectiveModelId, supportsImage: cachedMeta?.supportsImage });
   return {
