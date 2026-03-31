@@ -22,7 +22,7 @@ const {
   isSimpleScheduledReminderText,
   parseSimpleScheduledReminderText,
   getScheduledReminderDisplayText,
-} = require('../dist-electron/scheduled-task/reminderText.js');
+} = require('../dist-electron/scheduledTask/reminderText.js');
 
 const PREFIX = 'A scheduled reminder has been triggered. The reminder content is:';
 const INTERNAL = 'Handle this reminder internally. Do not relay it to the user unless explicitly requested.';
