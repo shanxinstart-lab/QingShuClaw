@@ -45,7 +45,7 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({ selectedSkillId
 
   return (
     <div className="flex flex-col h-full">
-      <p className="text-xs dark:text-claude-darkTextSecondary/60 text-claude-textSecondary/60 mb-3">
+      <p className="text-xs text-secondary/60 mb-3">
         {i18nService.t('agentSkillsHint') || 'Select skills available to this Agent. Leave empty to use all enabled skills.'}
       </p>
       {enabledSkills.length > 5 && (
