@@ -52,7 +52,7 @@ export const OpenClawProviderId = {
   Anthropic: 'anthropic',
   OpenAI: 'openai',
   DeepSeek: 'deepseek',
-  Qwen: 'qwen',
+  Qwen: 'qwen-portal', // OpenClaw normalizes 'qwen' → 'qwen-portal'; use canonical ID to avoid config diff loop
   Zai: 'zai', // OpenClaw official provider ID for Zhipu/GLM
   Volcengine: 'volcengine',
   VolcenginePlan: 'volcengine-plan', // OpenClaw coding plan provider for Volcengine
