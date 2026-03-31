@@ -28,7 +28,7 @@ import type {
 import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
-import { defaultConfig, type AppConfig, getVisibleProviders } from '../config';
+import { defaultConfig, type AppConfig, getVisibleProviders, isCustomProvider, getCustomProviderDefaultName, getProviderDisplayName } from '../config';
 import {
   OpenAIIcon,
   DeepSeekIcon,
@@ -59,6 +59,12 @@ interface SettingsProps extends SettingsOpenOptions {
   onUpdateFound?: (info: AppUpdateInfo) => void;
 }
 
+
+const CUSTOM_PROVIDER_KEYS = [
+  'custom_0', 'custom_1', 'custom_2', 'custom_3', 'custom_4',
+  'custom_5', 'custom_6', 'custom_7', 'custom_8', 'custom_9',
+] as const;
+
 const providerKeys = [
   'openai',
   'gemini',
@@ -74,7 +80,7 @@ const providerKeys = [
   'xiaomi',
   'openrouter',
   'ollama',
-  'custom',
+  ...CUSTOM_PROVIDER_KEYS,
 ] as const;
 
 type ProviderType = (typeof providerKeys)[number];
@@ -145,7 +151,9 @@ const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode 
   volcengine: { label: 'Volcengine', icon: <VolcengineIcon /> },
   openrouter: { label: 'OpenRouter', icon: <OpenRouterIcon /> },
   ollama: { label: 'Ollama', icon: <OllamaIcon /> },
-  custom: { label: 'Custom', icon: <CustomProviderIcon /> },
+  ...Object.fromEntries(
+    CUSTOM_PROVIDER_KEYS.map(key => [key, { label: getCustomProviderDefaultName(key), icon: <CustomProviderIcon /> }])
+  ) as Record<(typeof CUSTOM_PROVIDER_KEYS)[number], { label: string; icon: React.ReactNode }>,
 };
 
 const providerSwitchableDefaultBaseUrls: Partial<Record<ProviderType, { anthropic: string; openai: string }>> = {
@@ -184,10 +192,6 @@ const providerSwitchableDefaultBaseUrls: Partial<Record<ProviderType, { anthropi
   ollama: {
     anthropic: 'http://localhost:11434',
     openai: 'http://localhost:11434/v1',
-  },
-  custom: {
-    anthropic: '',
-    openai: '',
   },
 };
 
@@ -430,6 +434,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [testResult, setTestResult] = useState<ProviderConnectionTestResult | null>(null);
   const [isTestResultModalOpen, setIsTestResultModalOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [pendingDeleteProvider, setPendingDeleteProvider] = useState<ProviderType | null>(null);
   const [isImportingProviders, setIsImportingProviders] = useState(false);
   const [isExportingProviders, setIsExportingProviders] = useState(false);
   const initialThemeRef = useRef<'light' | 'dark' | 'system'>(themeService.getTheme());
@@ -879,13 +884,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     return unsubscribe;
   }, []);
 
-  // Compute visible providers based on language
+  // Compute visible providers based on language, including active custom_N entries
   const visibleProviders = useMemo(() => {
     const visibleKeys = getVisibleProviders(language);
     const filtered: Partial<ProvidersConfig> = {};
     for (const key of visibleKeys) {
       if (providers[key as keyof ProvidersConfig]) {
         filtered[key as keyof ProvidersConfig] = providers[key as keyof ProvidersConfig];
+      }
+    }
+    // Append custom_N providers that exist in state, sorted by numeric suffix
+    for (const key of CUSTOM_PROVIDER_KEYS) {
+      if (providers[key]) {
+        filtered[key] = providers[key];
       }
     }
     return filtered as ProvidersConfig;
@@ -900,6 +911,61 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setActiveProvider(firstEnabledVisible ?? visibleKeys[0]);
     }
   }, [visibleProviders, activeProvider]);
+
+  // Handle adding a new custom provider
+  const handleAddCustomProvider = () => {
+    // Find the first unused custom slot
+    const usedKeys = new Set(Object.keys(providers));
+    const newKey = CUSTOM_PROVIDER_KEYS.find(k => !usedKeys.has(k));
+    if (!newKey) return; // All 10 slots used
+    setProviders(prev => ({
+      ...prev,
+      [newKey]: {
+        enabled: false,
+        apiKey: '',
+        baseUrl: '',
+        apiFormat: 'openai' as const,
+        models: [],
+        displayName: undefined,
+      },
+    }));
+    setActiveProvider(newKey);
+    setShowApiKey(false);
+    setIsAddingModel(false);
+    setIsEditingModel(false);
+    setEditingModelId(null);
+    setNewModelName('');
+    setNewModelId('');
+    setNewModelSupportsImage(false);
+    setModelFormError(null);
+  };
+
+  // Handle deleting a custom provider
+  const handleDeleteCustomProvider = (key: ProviderType) => {
+    setPendingDeleteProvider(key);
+  };
+
+  const confirmDeleteCustomProvider = () => {
+    const key = pendingDeleteProvider;
+    if (!key) return;
+    setPendingDeleteProvider(null);
+    setProviders(prev => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    // Persist the deletion immediately so it survives window close
+    const currentConfig = configService.getConfig();
+    const updatedProviders = { ...currentConfig.providers };
+    delete updatedProviders[key];
+    configService.updateConfig({ providers: updatedProviders as AppConfig['providers'] });
+    // If the deleted provider was active, switch to first visible
+    if (activeProvider === key) {
+      const visibleKeys = Object.keys(visibleProviders).filter(k => k !== key) as ProviderType[];
+      const firstEnabled = visibleKeys.find(k => visibleProviders[k]?.enabled);
+      setActiveProvider(firstEnabled ?? visibleKeys[0] ?? providerKeys[0]);
+    }
+  };
 
   // Handle provider change
   const handleProviderChange = (provider: ProviderType) => {
@@ -1421,7 +1487,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
             allModels.push({
               id: model.id,
               name: model.name,
-              provider: providerName.charAt(0).toUpperCase() + providerName.slice(1),
+              provider: getProviderDisplayName(providerName, config),
               providerKey: providerName,
               supportsImage: model.supportsImage ?? false,
             });
@@ -2456,34 +2522,60 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               />
               {Object.entries(visibleProviders).map(([provider, config]) => {
                 const providerKey = provider as ProviderType;
+                const isCustom = isCustomProvider(provider);
                 const providerInfo = providerMeta[providerKey];
                 const missingApiKey = providerRequiresApiKey(providerKey) && !config.apiKey.trim();
                 const canToggleProvider = config.enabled || !missingApiKey;
+                const displayLabel = isCustom
+                  ? ((config as ProviderConfig).displayName || getCustomProviderDefaultName(provider))
+                  : (providerInfo?.label ?? getProviderDisplayName(provider));
                 return (
                   <div
                     key={provider}
                     onClick={() => handleProviderChange(providerKey)}
-                    className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    className={`group flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
                       activeProvider === provider
                         ? 'bg-primary/10 dark:bg-primary/20 border border-primary/30 shadow-subtle'
                         : 'bg-surface/50 bg-surface hover:bg-surface-raised border border-transparent'
                     }`}
                   >
-                    <div className="flex flex-1 items-center">
-                      <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                    <div className="flex flex-1 items-center min-w-0">
+                      <div className="mr-2 flex h-7 w-7 items-center justify-center shrink-0">
                         <span className="text-foreground">
-                          {providerInfo?.icon}
+                          {isCustom ? <CustomProviderIcon /> : providerInfo?.icon}
                         </span>
                       </div>
-                      <span className={`text-sm font-medium truncate ${
-                        activeProvider === provider
-                          ? 'text-primary'
-                          : 'text-foreground'
-                      }`}>
-                        {providerInfo?.label ?? provider.charAt(0).toUpperCase() + provider.slice(1)}
-                      </span>
+                      <div className="flex flex-col min-w-0">
+                        <span className={`text-sm font-medium truncate ${
+                          activeProvider === provider
+                            ? 'text-primary'
+                            : 'text-foreground'
+                        }`}>
+                          {displayLabel}
+                        </span>
+                        {isCustom && (
+                          <span className="text-[9px] leading-tight mt-0.5 text-primary/70">
+                            {i18nService.t('customBadge')}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center ml-2">
+                    <div className="flex items-center ml-2 gap-1">
+                      {isCustom && (
+                        <button
+                          type="button"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity text-claude-secondaryText hover:text-red-500 dark:text-claude-darkSecondaryText dark:hover:text-red-400 p-0.5"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteCustomProvider(providerKey);
+                          }}
+                          title={i18nService.t('deleteCustomProvider')}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                          </svg>
+                        </button>
+                      )}
                       <div
                         title={!canToggleProvider ? i18nService.t('configureApiKey') : undefined}
                         className={`w-7 h-4 rounded-full flex items-center transition-colors ${
@@ -2509,13 +2601,26 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   </div>
                 );
               })}
+              {/* Add Custom Provider Button */}
+              {CUSTOM_PROVIDER_KEYS.some(k => !providers[k]) && (
+              <button
+                type="button"
+                onClick={handleAddCustomProvider}
+                className="w-full flex items-center justify-center p-2 rounded-xl border border-dashed border-claude-border dark:border-claude-darkBorder text-claude-secondaryText dark:text-claude-darkSecondaryText hover:border-claude-accent hover:text-claude-accent transition-colors text-sm"
+              >
+                {i18nService.t('addCustomProvider')}
+              </button>
+              )}
             </div>
 
             {/* Provider Settings - Right Side */}
             <div className="w-3/5 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
               <div className="flex items-center justify-between pb-2 border-b border-border">
                 <h3 className="text-base font-medium text-foreground">
-                  {(providerMeta[activeProvider]?.label ?? activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1))} {i18nService.t('providerSettings')}
+                  {isCustomProvider(activeProvider)
+                    ? ((providers[activeProvider] as ProviderConfig)?.displayName || getCustomProviderDefaultName(activeProvider))
+                    : (providerMeta[activeProvider]?.label ?? getProviderDisplayName(activeProvider))
+                  } {i18nService.t('providerSettings')}
                 </h3>
                 <div
                   className={`px-2 py-0.5 rounded-lg text-xs font-medium ${
@@ -2776,6 +2881,22 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 </div>
               )}
 
+              {isCustomProvider(activeProvider) && (
+                <div>
+                  <label htmlFor={`${activeProvider}-displayName`} className="block text-xs font-medium dark:text-claude-darkText text-claude-text mb-1">
+                    {i18nService.t('customDisplayName')}
+                  </label>
+                  <input
+                    type="text"
+                    id={`${activeProvider}-displayName`}
+                    value={(providers[activeProvider] as ProviderConfig)?.displayName ?? ''}
+                    onChange={(e) => handleProviderConfigChange(activeProvider, 'displayName', e.target.value)}
+                    className="block w-full rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset dark:border-claude-darkBorder border-claude-border border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 text-xs"
+                    placeholder={i18nService.t('customDisplayNamePlaceholder')}
+                  />
+                </div>
+              )}
+
               {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
               <div>
                 <label htmlFor={`${activeProvider}-baseUrl`} className="block text-xs font-medium text-foreground mb-1">
@@ -2822,7 +2943,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     </div>
                   )}
                 </div>
-                {activeProvider === 'custom' && (
+                {isCustomProvider(activeProvider) && (
                 <div className="mt-1.5 space-y-0.5 text-[11px] text-secondary">
                   <p>
                     <span className="text-sm text-primary/50 mr-1">•</span>
@@ -3489,6 +3610,40 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   className="px-3 py-1.5 text-xs font-medium rounded-xl border border-border text-foreground hover:bg-surface-raised transition-colors active:scale-[0.98]"
                 >
                   {i18nService.t('close')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {pendingDeleteProvider && (
+          <div
+            className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 px-4 rounded-2xl"
+            onClick={() => setPendingDeleteProvider(null)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl dark:bg-claude-darkSurface bg-claude-bg dark:border-claude-darkBorder border-claude-border border shadow-modal p-4"
+            >
+              <p className="text-sm dark:text-claude-darkText text-claude-text">
+                {i18nService.t('confirmDeleteCustomProvider')}
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteProvider(null)}
+                  className="px-3 py-1.5 text-xs font-medium rounded-xl border dark:border-claude-darkBorder border-claude-border dark:text-claude-darkText text-claude-text dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors active:scale-[0.98]"
+                >
+                  {i18nService.t('cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDeleteCustomProvider}
+                  className="px-3 py-1.5 text-xs font-medium rounded-xl bg-red-500 hover:bg-red-600 text-white transition-colors active:scale-[0.98]"
+                >
+                  {i18nService.t('deleteCustomProvider')}
                 </button>
               </div>
             </div>
