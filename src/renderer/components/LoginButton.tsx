@@ -85,16 +85,16 @@ const CreditItemRow: React.FC<{ item: CreditItem; isEn: boolean }> = ({ item, is
             {label}
           </span>
         ) : (
-          <span className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+          <span className="text-xs text-secondary">
             {label}
           </span>
         )}
-        <span className="text-xs font-medium dark:text-claude-darkText text-claude-text">
+        <span className="text-xs font-medium text-foreground">
           {formatCredits(item.creditsRemaining)}{i18nService.t('authCreditsUnit')}
         </span>
       </div>
       {expiresText && (
-        <span className="text-[10px] dark:text-claude-darkTextSecondary text-claude-textSecondary pl-0.5">
+        <span className="text-[10px] text-secondary pl-0.5">
           {expiresText}
         </span>
       )}
@@ -680,7 +680,7 @@ const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> 
         <button
           type="button"
           onClick={handleLogout}
-          className="w-full px-4 py-2 text-left text-sm text-red-500 dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors cursor-pointer flex items-center gap-2"
+          className="w-full px-4 py-2 text-left text-sm text-red-500 hover:bg-surface-raised transition-colors cursor-pointer flex items-center gap-2"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -753,7 +753,7 @@ const LoginButton: React.FC = () => {
       <button
         type="button"
         onClick={handleClick}
-        className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary hover:text-claude-text dark:hover:text-claude-darkText hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors cursor-pointer"
+        className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer"
       >
         {isLoggedIn ? (
           <>

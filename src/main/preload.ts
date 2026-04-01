@@ -1,26 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
-
-// Sandbox preload cannot require sibling compiled modules reliably, so keep
-// the scheduled-task IPC channel names local in this bridge layer.
-const ScheduledTaskIpc = {
-  List: 'scheduledTask:list',
-  Get: 'scheduledTask:get',
-  Create: 'scheduledTask:create',
-  Update: 'scheduledTask:update',
-  Delete: 'scheduledTask:delete',
-  Toggle: 'scheduledTask:toggle',
-  RunManually: 'scheduledTask:runManually',
-  Stop: 'scheduledTask:stop',
-  ListRuns: 'scheduledTask:listRuns',
-  CountRuns: 'scheduledTask:countRuns',
-  ListAllRuns: 'scheduledTask:listAllRuns',
-  ResolveSession: 'scheduledTask:resolveSession',
-  ListChannels: 'scheduledTask:listChannels',
-  ListChannelConversations: 'scheduledTask:listChannelConversations',
-  StatusUpdate: 'scheduledTask:statusUpdate',
-  RunUpdate: 'scheduledTask:runUpdate',
-  Refresh: 'scheduledTask:refresh',
-} as const;
+import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
+import type { Platform } from '../shared/platform';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -36,6 +16,7 @@ contextBridge.exposeInMainWorld('electron', {
     setEnabled: (options: { id: string; enabled: boolean }) => ipcRenderer.invoke('skills:setEnabled', options),
     delete: (id: string) => ipcRenderer.invoke('skills:delete', id),
     download: (source: string) => ipcRenderer.invoke('skills:download', source),
+    upgrade: (skillId: string, downloadUrl: string) => ipcRenderer.invoke('skills:upgrade', skillId, downloadUrl),
     confirmInstall: (pendingId: string, action: string) =>
       ipcRenderer.invoke('skills:confirmInstall', pendingId, action),
     getRoot: () => ipcRenderer.invoke('skills:getRoot'),
@@ -62,6 +43,9 @@ contextBridge.exposeInMainWorld('electron', {
   permissions: {
     checkCalendar: () => ipcRenderer.invoke('permissions:checkCalendar'),
     requestCalendar: () => ipcRenderer.invoke('permissions:requestCalendar'),
+  },
+  enterprise: {
+    getConfig: () => ipcRenderer.invoke('enterprise:getConfig'),
   },
   api: {
     // 普通 API 请求（非流式）
@@ -349,10 +333,10 @@ contextBridge.exposeInMainWorld('electron', {
     syncConfig: () => ipcRenderer.invoke('im:config:sync'),
 
     // Gateway control
-    startGateway: (platform: 'dingtalk' | 'feishu' | 'telegram' | 'discord' | 'nim' | 'xiaomifeng' | 'wecom' | 'popo' | 'weixin') => ipcRenderer.invoke('im:gateway:start', platform),
-    stopGateway: (platform: 'dingtalk' | 'feishu' | 'telegram' | 'discord' | 'nim' | 'xiaomifeng' | 'wecom' | 'popo' | 'weixin') => ipcRenderer.invoke('im:gateway:stop', platform),
+    startGateway: (platform: Platform) => ipcRenderer.invoke('im:gateway:start', platform),
+    stopGateway: (platform: Platform) => ipcRenderer.invoke('im:gateway:stop', platform),
     testGateway: (
-      platform: 'dingtalk' | 'feishu' | 'telegram' | 'discord' | 'nim' | 'xiaomifeng' | 'wecom' | 'popo' | 'weixin',
+      platform: Platform,
       configOverride?: any
     ) => ipcRenderer.invoke('im:gateway:test', platform, configOverride),
 
