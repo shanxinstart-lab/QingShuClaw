@@ -21,6 +21,13 @@ export interface AuthPasswordLoginInput {
   password: string;
 }
 
+export const AuthLoginMode = {
+  Scan: 'scan',
+  Manual: 'manual',
+} as const;
+
+export type AuthLoginMode = typeof AuthLoginMode[keyof typeof AuthLoginMode];
+
 export const BridgeTarget = {
   Web: 'web',
   Desktop: 'desktop',

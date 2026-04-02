@@ -11,6 +11,8 @@ import {
   CheckIcon,
   ChevronRightIcon,
   PhotoIcon,
+  SpeakerWaveIcon,
+  SpeakerXMarkIcon,
 } from '@heroicons/react/24/outline';
 import { ShareIcon } from '@heroicons/react/20/solid';
 import InformationCircleIcon from '../icons/InformationCircleIcon';
@@ -28,6 +30,10 @@ import WindowTitleBar from '../window/WindowTitleBar';
 import { getCompactFolderName } from '../../utils/path';
 import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
+import { configService } from '../../services/config';
+import { DEFAULT_TTS_CONFIG } from '../../config';
+import { AppCustomEvent } from '../../constants/app';
+import type { TtsAvailability } from '../../../shared/tts/constants';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
@@ -369,6 +375,24 @@ const formatToolInput = (
 
 const hasText = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
+
+const buildSpeakableAssistantText = (content: string): string => {
+  if (!content.trim()) {
+    return '';
+  }
+
+  return content
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]+`/g, ' ')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/^>\s?/gm, '')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^[-*+]\s+/gm, '')
+    .replace(/^\d+\.\s+/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+};
 
 const getToolResultDisplay = (message: CoworkMessage): string => {
   if (hasText(message.content)) {
@@ -1026,14 +1050,24 @@ const AssistantMessageItem: React.FC<{
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
   showCopyButton?: boolean;
+  showTtsButton?: boolean;
+  isTtsPlaying?: boolean;
+  onPlayTts?: (message: CoworkMessage) => void;
+  onStopTts?: () => void;
 }> = ({
   message,
   resolveLocalFilePath,
   mapDisplayText,
   showCopyButton = false,
+  showTtsButton = false,
+  isTtsPlaying = false,
+  onPlayTts,
+  onStopTts,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
+  const speakableText = buildSpeakableAssistantText(displayContent);
+  const hasSpeakableText = speakableText.length > 0;
 
   return (
     <div
@@ -1049,8 +1083,36 @@ const AssistantMessageItem: React.FC<{
           showRevealInFolderAction
         />
       </div>
-      {showCopyButton && (
+      {(showCopyButton || showTtsButton) && (
         <div className="flex items-center gap-1.5 mt-1">
+          {showTtsButton && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!hasSpeakableText) {
+                  window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+                    detail: i18nService.t('ttsNoSpeakableContent'),
+                  }));
+                  return;
+                }
+                if (isTtsPlaying) {
+                  onStopTts?.();
+                  return;
+                }
+                onPlayTts?.(message);
+              }}
+              className={`p-1.5 rounded-md hover:bg-surface-raised transition-all duration-200 ${
+                isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
+              title={isTtsPlaying ? i18nService.t('ttsStop') : i18nService.t('ttsPlay')}
+            >
+              {isTtsPlaying ? (
+                <SpeakerXMarkIcon className="w-4 h-4 text-red-500" />
+              ) : (
+                <SpeakerWaveIcon className="w-4 h-4 text-[var(--icon-secondary)]" />
+              )}
+            </button>
+          )}
           <CopyButton
             content={displayContent}
             visible={isHovered}
@@ -1164,12 +1226,20 @@ export const AssistantTurnBlock: React.FC<{
   mapDisplayText?: (value: string) => string;
   showTypingIndicator?: boolean;
   showCopyButtons?: boolean;
+  showTtsButtons?: boolean;
+  ttsPlayingMessageId?: string | null;
+  onPlayTts?: (message: CoworkMessage) => void;
+  onStopTts?: () => void;
 }> = ({
   turn,
   resolveLocalFilePath,
   mapDisplayText,
   showTypingIndicator = false,
   showCopyButtons = true,
+  showTtsButtons = false,
+  ttsPlayingMessageId = null,
+  onPlayTts,
+  onStopTts,
 }) => {
   const visibleAssistantItems = getVisibleAssistantItems(turn.assistantItems);
 
@@ -1277,6 +1347,10 @@ export const AssistantTurnBlock: React.FC<{
                     resolveLocalFilePath={resolveLocalFilePath}
                     mapDisplayText={mapDisplayText}
                     showCopyButton={showCopyButtons && !hasToolGroupAfter}
+                    showTtsButton={showTtsButtons}
+                    isTtsPlaying={ttsPlayingMessageId === item.message.id}
+                    onPlayTts={onPlayTts}
+                    onStopTts={onStopTts}
                   />
                 );
               }
@@ -1366,6 +1440,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const actionButtonRef = useRef<HTMLButtonElement>(null);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [isExportingImage, setIsExportingImage] = useState(false);
+  const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
+  const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
+  const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
 
   // Rename states
   const [isRenaming, setIsRenaming] = useState(false);
@@ -1384,6 +1461,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   useEffect(() => {
     setShouldAutoScroll(true);
   }, [currentSession?.id]);
+
+  useEffect(() => {
+    if (!isMac) {
+      return;
+    }
+    let active = true;
+    void window.electron.tts.getAvailability().then((availability) => {
+      if (active) {
+        setTtsAvailability(availability);
+      }
+    }).catch((error) => {
+      console.error('Failed to inspect TTS availability:', error);
+    });
+
+    const unsubscribe = window.electron.tts.onStateChanged((event) => {
+      if (!active) {
+        return;
+      }
+      if (event.type === 'speaking') {
+        return;
+      }
+      if (event.type === 'stopped' || event.type === 'error') {
+        setTtsPlayingMessageId(null);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [isMac]);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -1473,6 +1581,65 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     }
     setShowConfirmDelete(false);
   };
+
+  const stopTtsPlayback = useCallback(async () => {
+    setTtsPlayingMessageId(null);
+    await window.electron.tts.stop();
+  }, []);
+
+  const playAssistantMessage = useCallback(async (message: CoworkMessage) => {
+    const text = buildSpeakableAssistantText(message.content);
+    if (!text) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('ttsNoSpeakableContent'),
+      }));
+      return;
+    }
+
+    const ttsConfig = {
+      ...DEFAULT_TTS_CONFIG,
+      ...(configService.getConfig().tts ?? {}),
+    };
+    setTtsPlayingMessageId(message.id);
+    const result = await window.electron.tts.speak({
+      text,
+      voiceId: ttsConfig.voiceId,
+      rate: ttsConfig.rate,
+      volume: ttsConfig.volume,
+    });
+    if (!result.success) {
+      setTtsPlayingMessageId(null);
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: result.error || i18nService.t('coworkSpeechUnavailable'),
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isMac || !ttsAvailability?.supported || isStreaming || !currentSession) {
+      return;
+    }
+
+    const ttsConfig = {
+      ...DEFAULT_TTS_CONFIG,
+      ...(configService.getConfig().tts ?? {}),
+    };
+    if (!ttsConfig.enabled || !ttsConfig.autoPlayAssistantReply) {
+      return;
+    }
+
+    const lastAssistantMessage = [...currentSession.messages].reverse().find((message) => (
+      message.type === 'assistant' && buildSpeakableAssistantText(message.content).length > 0
+    ));
+    if (!lastAssistantMessage) {
+      return;
+    }
+    if (lastAutoPlayedMessageIdRef.current === lastAssistantMessage.id) {
+      return;
+    }
+    lastAutoPlayedMessageIdRef.current = lastAssistantMessage.id;
+    void playAssistantMessage(lastAssistantMessage);
+  }, [currentSession, isMac, isStreaming, playAssistantMessage, ttsAvailability]);
 
   const closeMenu = () => {
     setMenuPosition(null);
@@ -1942,6 +2109,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             resolveLocalFilePath={resolveLocalFilePath}
             showTypingIndicator
             showCopyButtons={!isStreaming}
+            showTtsButtons={isMac && !!ttsAvailability?.supported}
+            ttsPlayingMessageId={ttsPlayingMessageId}
+            onPlayTts={playAssistantMessage}
+            onStopTts={stopTtsPlayback}
           />
         </div>
       );
@@ -1979,6 +2150,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 mapDisplayText={mapDisplayText}
                 showTypingIndicator={showTypingIndicator}
                 showCopyButtons={!isStreaming}
+                showTtsButtons={isMac && !!ttsAvailability?.supported}
+                ttsPlayingMessageId={ttsPlayingMessageId}
+                onPlayTts={playAssistantMessage}
+                onStopTts={stopTtsPlayback}
               />
             </div>
           )}

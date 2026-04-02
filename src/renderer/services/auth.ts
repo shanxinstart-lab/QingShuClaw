@@ -12,22 +12,129 @@ import type { Model } from '../store/slices/modelSlice';
 import {
   AuthBackend,
   BridgeTarget,
+  DEFAULT_QTB_API_BASE_URL,
   type CreateBridgeTicketRequest,
   type AuthBackend as AuthBackendType,
   type FeishuScanSession,
   type FeishuScanSessionPollResult,
 } from '../../common/auth';
+import { AppCustomEvent } from '../constants/app';
+import { configService } from './config';
 import { i18nService } from './i18n';
 
 class AuthService {
   private unsubCallback: (() => void) | null = null;
   private unsubBridgeCode: (() => void) | null = null;
+  private unsubSessionInvalidated: (() => void) | null = null;
   private unsubQuotaChanged: (() => void) | null = null;
   private unsubWindowState: (() => void) | null = null;
   private lastRefreshTime = 0;
+  private pendingFeishuScanSessionPromise: Promise<FeishuScanSession> | null = null;
+  private cachedFeishuScanSession: FeishuScanSession | null = null;
+
+  private isReusableFeishuScanSession(session?: FeishuScanSession | null): session is FeishuScanSession {
+    if (!session?.scanSessionId) {
+      return false;
+    }
+
+    if (!session.qrCodeContent && !session.authorizeUrl) {
+      return false;
+    }
+
+    if (!session.expiredAt) {
+      return true;
+    }
+
+    return session.expiredAt - Date.now() > 3000;
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timeoutId: number | null = null;
+    const timeoutPromise = new Promise<T>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(new Error(message));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  private getQtbApiBaseUrl(): string {
+    const configured = configService.getConfig().auth?.qtbApiBaseUrl;
+    if (typeof configured === 'string' && configured.trim()) {
+      return configured.trim().replace(/\/+$/, '');
+    }
+    return DEFAULT_QTB_API_BASE_URL;
+  }
+
+  private normalizeFeishuScanSession(raw: any): FeishuScanSession {
+    return {
+      scanSessionId: raw?.scanSessionId || '',
+      status: raw?.status,
+      authorizeUrl: raw?.authorizeUrl || '',
+      qrCodeContent: raw?.qrCodeContent || '',
+      expiredAt: raw?.expiredAt,
+      errorCode: raw?.errorCode ?? null,
+      errorMessage: raw?.errorMessage ?? null,
+    };
+  }
+
+  private async createFeishuScanSessionByApiFetch(): Promise<FeishuScanSession> {
+    const baseUrl = this.getQtbApiBaseUrl();
+    const response = await this.withTimeout(
+      window.electron.api.fetch({
+        url: `${baseUrl}/api/datachat/qingshu/auth/scan/session`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          channelType: 'qingshu',
+          clientName: 'QingShuClaw',
+          clientVersion: 'dev',
+        }),
+      }),
+      15000,
+      '创建飞书扫码会话超时，请检查本机 9080 服务与网络配置'
+    );
+
+    if (!response.ok || !response.data || typeof response.data !== 'object') {
+      throw new Error(response.error || i18nService.t('authLoginFailed'));
+    }
+
+    const payload = response.data as {
+      code?: number;
+      msg?: string;
+      data?: Record<string, unknown>;
+    };
+    if (payload.code !== 200 || !payload.data) {
+      throw new Error(payload.msg || i18nService.t('authLoginFailed'));
+    }
+
+    const session = this.normalizeFeishuScanSession(payload.data);
+    if (!session.scanSessionId || (!session.authorizeUrl && !session.qrCodeContent)) {
+      throw new Error(i18nService.t('authFeishuScanQrUnavailable'));
+    }
+    return session;
+  }
 
   private showToast(message: string) {
-    window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, { detail: message }));
+  }
+
+  private clearLocalSessionState() {
+    this.pendingFeishuScanSessionPromise = null;
+    this.cachedFeishuScanSession = null;
+    this.lastRefreshTime = 0;
+    store.dispatch(setLoggedOut());
+    store.dispatch(clearServerModels());
   }
 
   private async applyAuthenticatedUser(result: { user?: any; quota?: any }) {
@@ -65,6 +172,9 @@ class AuthService {
     });
     this.unsubBridgeCode = window.electron.auth.onBridgeCode(async ({ code }) => {
       await this.handleBridgeCode(code);
+    });
+    this.unsubSessionInvalidated = window.electron.auth.onSessionInvalidated(() => {
+      this.clearLocalSessionState();
     });
 
     const pendingCallback = await window.electron.auth.getPendingCallback();
@@ -110,18 +220,77 @@ class AuthService {
     }
   }
 
-  async createFeishuScanSession(): Promise<FeishuScanSession> {
-    const result = await window.electron.auth.createFeishuScanSession();
-    if (!result.success || !result.session) {
+  async createFeishuScanSession(forceRefresh = false): Promise<FeishuScanSession> {
+    if (!forceRefresh && this.isReusableFeishuScanSession(this.cachedFeishuScanSession)) {
+      return this.cachedFeishuScanSession;
+    }
+
+    if (!forceRefresh && this.pendingFeishuScanSessionPromise) {
+      return this.pendingFeishuScanSessionPromise;
+    }
+
+    const requestPromise = (async () => {
+      try {
+        const result = await this.withTimeout(
+          window.electron.auth.createFeishuScanSession(),
+          8000,
+          'auth:createFeishuScanSession timed out'
+        );
+        if (result.success && result.session) {
+          this.cachedFeishuScanSession = result.session;
+          return result.session;
+        }
+        throw new Error(result.error || 'auth:createFeishuScanSession returned no session');
+      } catch (error) {
+        console.warn('[Auth] Falling back to api.fetch for Feishu scan session:', error);
+        const session = await this.createFeishuScanSessionByApiFetch();
+        this.cachedFeishuScanSession = session;
+        return session;
+      } finally {
+        this.pendingFeishuScanSessionPromise = null;
+      }
+    })();
+
+    this.pendingFeishuScanSessionPromise = requestPromise;
+    return requestPromise;
+  }
+
+  async openFeishuScanWindow(input: {
+    authorizeUrl?: string;
+    scanSessionId?: string;
+  }) {
+    const result = await this.withTimeout(
+      window.electron.auth.openFeishuScanWindow(input),
+      10000,
+      '打开飞书扫码窗口超时，请重试'
+    );
+    if (!result.success) {
       throw new Error(result.error || i18nService.t('authLoginFailed'));
     }
-    return result.session;
   }
 
   async pollFeishuScanSession(scanSessionId: string): Promise<FeishuScanSessionPollResult> {
     const result = await window.electron.auth.pollFeishuScanSession(scanSessionId);
     if (!result.success || !result.session) {
       throw new Error(result.error || i18nService.t('authLoginFailed'));
+    }
+
+    if (
+      this.cachedFeishuScanSession?.scanSessionId === scanSessionId
+      && !result.session.authenticated
+    ) {
+      this.cachedFeishuScanSession = {
+        ...this.cachedFeishuScanSession,
+        ...result.session,
+      };
+    }
+
+    if (
+      result.session.authenticated
+      || result.session.status === 'FAILED'
+      || result.session.status === 'EXPIRED'
+    ) {
+      this.cachedFeishuScanSession = null;
     }
 
     if (result.session.authenticated && result.session.user) {
@@ -246,9 +415,11 @@ class AuthService {
    * Logout.
    */
   async logout() {
-    await window.electron.auth.logout();
-    store.dispatch(setLoggedOut());
-    store.dispatch(clearServerModels());
+    try {
+      await window.electron.auth.logout();
+    } finally {
+      this.clearLocalSessionState();
+    }
   }
 
   /**
@@ -299,6 +470,8 @@ class AuthService {
     this.unsubCallback = null;
     this.unsubBridgeCode?.();
     this.unsubBridgeCode = null;
+    this.unsubSessionInvalidated?.();
+    this.unsubSessionInvalidated = null;
     this.unsubQuotaChanged?.();
     this.unsubQuotaChanged = null;
     this.unsubWindowState?.();
@@ -322,10 +495,18 @@ class AuthService {
           supportsImage: m.supportsImage ?? false,
         }));
         store.dispatch(setServerModels(serverModels));
+        console.log('[AuthService] server models injected into store:', {
+          count: serverModels.length,
+          modelIds: serverModels.map(model => model.id),
+        });
       } else {
+        console.warn('[AuthService] clearing server models because request was unsuccessful:', {
+          error: 'unknown error',
+        });
         store.dispatch(clearServerModels());
       }
-    } catch {
+    } catch (error) {
+      console.error('[AuthService] clearing server models because request crashed:', error);
       store.dispatch(clearServerModels());
     }
   }

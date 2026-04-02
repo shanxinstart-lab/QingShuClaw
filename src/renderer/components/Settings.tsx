@@ -29,7 +29,19 @@ import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
-import { defaultConfig, type AppConfig, getVisibleProviders, isCustomProvider, getCustomProviderDefaultName,getProviderDisplayName } from '../config';
+import type { WakeInputStatus } from '../../shared/wakeInput/constants';
+import type { TtsVoice } from '../../shared/tts/constants';
+import {
+  DEFAULT_SPEECH_INPUT_CONFIG,
+  DEFAULT_TTS_CONFIG,
+  DEFAULT_WAKE_INPUT_CONFIG,
+  defaultConfig,
+  type AppConfig,
+  getVisibleProviders,
+  isCustomProvider,
+  getCustomProviderDefaultName,
+  getProviderDisplayName,
+} from '../config';
 import {
   AuthBackend,
   DEFAULT_QTB_API_BASE_URL,
@@ -171,11 +183,6 @@ const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/
 const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
   value === 'openai' ? 'openai' : 'anthropic'
 );
-const ABOUT_CONTACT_EMAIL = 'lobsterai.project@rd.netease.com';
-const ABOUT_USER_MANUAL_URL = 'https://lobsterai.youdao.com/#/docs/lobsterai_user_manual';
-const ABOUT_USER_COMMUNITY_URL = 'https://lobsterai.youdao.com/#/about';
-const ABOUT_SERVICE_TERMS_URL = 'https://c.youdao.com/dict/hardware/lobsterai/lobsterai_service.html';
-
 // MiniMax Portal OAuth constants
 const MINIMAX_OAUTH_CLIENT_ID = '78257093-7e40-4613-99e0-527b14b39113';
 const MINIMAX_OAUTH_SCOPE = 'group_id profile model.completion';
@@ -195,6 +202,25 @@ type MiniMaxOAuthPhase =
   | { kind: 'success' }
   | { kind: 'error'; message: string };
 
+const renderBrandHighlight = (text: string) => {
+  const match = /(灵工打卡|Linggong Daka)/.exec(text);
+  if (!match || match.index < 0) {
+    return text;
+  }
+
+  const brandText = match[0];
+  const before = text.slice(0, match.index);
+  const after = text.slice(match.index + brandText.length);
+
+  return (
+    <>
+      {before}
+      <span className="text-emerald-600 dark:text-emerald-400">{brandText}</span>
+      {after}
+    </>
+  );
+};
+
 async function generateMiniMaxPkce(): Promise<{ verifier: string; challenge: string; state: string }> {
   const verifierArray = new Uint8Array(32);
   crypto.getRandomValues(verifierArray);
@@ -210,40 +236,6 @@ async function generateMiniMaxPkce(): Promise<{ verifier: string; challenge: str
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   return { verifier, challenge, state };
 }
-
-const copyTextFallback = (text: string): boolean => {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.opacity = '0';
-  textarea.style.pointerEvents = 'none';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, text.length);
-  const copied = document.execCommand('copy');
-  document.body.removeChild(textarea);
-  return copied;
-};
-
-const copyTextToClipboard = async (text: string): Promise<boolean> => {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch (clipboardError) {
-      console.warn('Navigator clipboard write failed, trying fallback:', clipboardError);
-    }
-  }
-
-  try {
-    return copyTextFallback(text);
-  } catch (fallbackError) {
-    console.error('Fallback clipboard copy failed:', fallbackError);
-    return false;
-  }
-};
 
 const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'openai' | 'gemini' | null => {
   if (provider === 'openai' || provider === 'stepfun') {
@@ -473,6 +465,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [language, setLanguage] = useState<LanguageType>('zh');
   const [autoLaunch, setAutoLaunchState] = useState(false);
   const [useSystemProxy, setUseSystemProxy] = useState(false);
+  const [speechStopCommand, setSpeechStopCommand] = useState(DEFAULT_SPEECH_INPUT_CONFIG.stopCommand);
+  const [speechSubmitCommand, setSpeechSubmitCommand] = useState(DEFAULT_SPEECH_INPUT_CONFIG.submitCommand);
+  const [wakeInputEnabled, setWakeInputEnabled] = useState(DEFAULT_WAKE_INPUT_CONFIG.enabled);
+  const [wakeInputWakeWord] = useState(DEFAULT_WAKE_INPUT_CONFIG.wakeWord);
+  const [wakeInputSubmitCommand, setWakeInputSubmitCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
+  const [wakeInputCancelCommand, setWakeInputCancelCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
+  const [wakeInputStatus, setWakeInputStatus] = useState<WakeInputStatus | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState(DEFAULT_TTS_CONFIG.enabled);
+  const [ttsAutoPlayAssistantReply, setTtsAutoPlayAssistantReply] = useState(DEFAULT_TTS_CONFIG.autoPlayAssistantReply);
+  const [ttsVoiceId, setTtsVoiceId] = useState(DEFAULT_TTS_CONFIG.voiceId);
+  const [ttsRate, setTtsRate] = useState(DEFAULT_TTS_CONFIG.rate);
+  const [ttsVolume, setTtsVolume] = useState(DEFAULT_TTS_CONFIG.volume);
+  const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
   const [qtbApiBaseUrl, setQtbApiBaseUrl] = useState(DEFAULT_QTB_API_BASE_URL);
   const [qtbWebBaseUrl, setQtbWebBaseUrl] = useState(DEFAULT_QTB_WEB_BASE_URL);
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
@@ -509,7 +514,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   // 创建引用来确保内容区域的滚动
   const contentRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
-  const emailCopiedTimerRef = useRef<number | null>(null);
   const updateCheckTimerRef = useRef<number | null>(null);
   
   // 快捷键设置
@@ -530,12 +534,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   // About tab
   const [appVersion, setAppVersion] = useState('');
-  const [emailCopied, setEmailCopied] = useState(false);
   const [isExportingLogs, setIsExportingLogs] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const [logoClickCount, setLogoClickCount] = useState(0);
   const [testModeUnlocked, setTestModeUnlocked] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error'>('idle');
+  const isMac = window.electron.platform === 'darwin';
 
   useEffect(() => {
     window.electron.appInfo.getVersion().then(setAppVersion);
@@ -544,20 +548,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   useEffect(() => {
     setShowApiKey(false);
   }, [activeProvider]);
-
-  const handleCopyContactEmail = useCallback(async () => {
-    const copied = await copyTextToClipboard(ABOUT_CONTACT_EMAIL);
-    if (copied) {
-      setEmailCopied(true);
-      if (emailCopiedTimerRef.current != null) {
-        window.clearTimeout(emailCopiedTimerRef.current);
-      }
-      emailCopiedTimerRef.current = window.setTimeout(() => {
-        setEmailCopied(false);
-        emailCopiedTimerRef.current = null;
-      }, 1200);
-    }
-  }, []);
 
   const handleCheckUpdate = useCallback(async () => {
     if (updateCheckStatus === 'checking' || !appVersion) return;
@@ -588,18 +578,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       }, 3000);
     }
   }, [appVersion, updateCheckStatus, onUpdateFound]);
-
-  const handleOpenUserManual = useCallback(() => {
-    void window.electron.shell.openExternal(ABOUT_USER_MANUAL_URL);
-  }, []);
-
-  const handleOpenUserCommunity = useCallback(() => {
-    void window.electron.shell.openExternal(ABOUT_USER_COMMUNITY_URL);
-  }, []);
-
-  const handleOpenServiceTerms = useCallback(() => {
-    void window.electron.shell.openExternal(ABOUT_SERVICE_TERMS_URL);
-  }, []);
 
   const handleExportLogs = useCallback(async () => {
     if (isExportingLogs) {
@@ -665,9 +643,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   ]);
 
   useEffect(() => () => {
-    if (emailCopiedTimerRef.current != null) {
-      window.clearTimeout(emailCopiedTimerRef.current);
-    }
     if (updateCheckTimerRef.current != null) {
       window.clearTimeout(updateCheckTimerRef.current);
     }
@@ -699,6 +674,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setTheme(config.theme);
       setLanguage(config.language);
       setUseSystemProxy(config.useSystemProxy ?? false);
+      setSpeechStopCommand(config.speechInput?.stopCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.stopCommand);
+      setSpeechSubmitCommand(config.speechInput?.submitCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.submitCommand);
+      setWakeInputEnabled(config.wakeInput?.enabled ?? DEFAULT_WAKE_INPUT_CONFIG.enabled);
+      setWakeInputSubmitCommand(config.wakeInput?.submitCommand ?? DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
+      setWakeInputCancelCommand(config.wakeInput?.cancelCommand ?? DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
+      setTtsEnabled(config.tts?.enabled ?? DEFAULT_TTS_CONFIG.enabled);
+      setTtsAutoPlayAssistantReply(config.tts?.autoPlayAssistantReply ?? DEFAULT_TTS_CONFIG.autoPlayAssistantReply);
+      setTtsVoiceId(config.tts?.voiceId ?? DEFAULT_TTS_CONFIG.voiceId);
+      setTtsRate(config.tts?.rate ?? DEFAULT_TTS_CONFIG.rate);
+      setTtsVolume(config.tts?.volume ?? DEFAULT_TTS_CONFIG.volume);
       setQtbApiBaseUrl(config.auth?.qtbApiBaseUrl || DEFAULT_QTB_API_BASE_URL);
       setQtbWebBaseUrl(config.auth?.qtbWebBaseUrl || DEFAULT_QTB_WEB_BASE_URL);
       const savedTestMode = config.app?.testMode ?? false;
@@ -905,6 +890,40 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setError('Failed to load settings');
     }
   }, []);
+
+  useEffect(() => {
+    if (!isMac) {
+      return;
+    }
+
+    let active = true;
+    void window.electron.wakeInput.getStatus().then((status) => {
+      if (active) {
+        setWakeInputStatus(status);
+      }
+    }).catch((error) => {
+      console.error('Failed to load wake input status:', error);
+    });
+
+    void window.electron.tts.getVoices().then((result) => {
+      if (active && result.success && result.voices) {
+        setTtsVoices(result.voices);
+      }
+    }).catch((error) => {
+      console.error('Failed to load TTS voices:', error);
+    });
+
+    const unsubscribeWakeInput = window.electron.wakeInput.onStateChanged((status) => {
+      if (active) {
+        setWakeInputStatus(status);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribeWakeInput();
+    };
+  }, [isMac]);
 
   useEffect(() => {
     return () => {
@@ -1487,6 +1506,28 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     try {
       const normalizedQtbApiBaseUrl = qtbApiBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_QTB_API_BASE_URL;
       const normalizedQtbWebBaseUrl = qtbWebBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_QTB_WEB_BASE_URL;
+      const normalizedSpeechStopCommand = speechStopCommand.trim();
+      const normalizedSpeechSubmitCommand = speechSubmitCommand.trim();
+
+      if (
+        normalizedSpeechStopCommand
+        && normalizedSpeechSubmitCommand
+        && normalizedSpeechStopCommand === normalizedSpeechSubmitCommand
+      ) {
+        setError(i18nService.t('speechInputCommandDuplicateError'));
+        return;
+      }
+      const normalizedWakeSubmitCommand = wakeInputSubmitCommand.trim();
+      const normalizedWakeCancelCommand = wakeInputCancelCommand.trim();
+      if (
+        normalizedWakeSubmitCommand
+        && normalizedWakeCancelCommand
+        && normalizedWakeSubmitCommand === normalizedWakeCancelCommand
+      ) {
+        setError(i18nService.t('wakeInputCommandDuplicateError'));
+        return;
+      }
+
       const normalizedProviders = Object.fromEntries(
         Object.entries(providers).map(([providerKey, providerConfig]) => {
           const apiFormat = getEffectiveApiFormat(providerKey, providerConfig.apiFormat);
@@ -1524,6 +1565,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         theme,
         language,
         useSystemProxy,
+        speechInput: {
+          stopCommand: normalizedSpeechStopCommand,
+          submitCommand: normalizedSpeechSubmitCommand,
+        },
+        wakeInput: {
+          enabled: wakeInputEnabled,
+          wakeWord: wakeInputWakeWord,
+          submitCommand: normalizedWakeSubmitCommand,
+          cancelCommand: normalizedWakeCancelCommand,
+          sessionTimeoutMs: DEFAULT_WAKE_INPUT_CONFIG.sessionTimeoutMs,
+        },
+        tts: {
+          enabled: ttsEnabled,
+          autoPlayAssistantReply: ttsAutoPlayAssistantReply,
+          voiceId: ttsVoiceId,
+          rate: ttsRate,
+          volume: ttsVolume,
+        },
         shortcuts,
         app: {
           ...configService.getConfig().app,
@@ -2329,6 +2388,231 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 </button>
               </label>
             </div>
+
+            {isMac && (
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
+                    {i18nService.t('speechInputCommandsTitle')}
+                  </h4>
+                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
+                    {i18nService.t('speechInputCommandsDescription')}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3">
+                  <div className="space-y-3">
+                    <label className="block">
+                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                        {i18nService.t('speechInputStopCommandLabel')}
+                      </div>
+                      <input
+                        type="text"
+                        value={speechStopCommand}
+                        onChange={(event) => setSpeechStopCommand(event.target.value)}
+                        placeholder={i18nService.t('speechInputStopCommandPlaceholder')}
+                        className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                      />
+                    </label>
+
+                    <label className="block">
+                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                        {i18nService.t('speechInputSubmitCommandLabel')}
+                      </div>
+                      <input
+                        type="text"
+                        value={speechSubmitCommand}
+                        onChange={(event) => setSpeechSubmitCommand(event.target.value)}
+                        placeholder={i18nService.t('speechInputSubmitCommandPlaceholder')}
+                        className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                      />
+                    </label>
+                  </div>
+
+                  <p className="mt-3 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    {i18nService.t('speechInputCommandsHint')}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {isMac && (
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
+                    {i18nService.t('wakeInputTitle')}
+                  </h4>
+                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
+                    {i18nService.t('wakeInputDescription')}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <span className="text-sm text-secondary">
+                      {i18nService.t('wakeInputEnabledLabel')}
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={wakeInputEnabled}
+                      onClick={() => setWakeInputEnabled((prev) => !prev)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        wakeInputEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          wakeInputEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
+                  <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    {i18nService.t('wakeInputWakeWordLabel')}: {wakeInputWakeWord}
+                  </div>
+                  <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    {i18nService.t('wakeInputStatusLabel')}: {wakeInputStatus ? i18nService.t(`wakeInputStatus_${wakeInputStatus.status}`) : i18nService.t('loading')}
+                  </div>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('wakeInputSubmitCommandLabel')}
+                    </div>
+                    <input
+                      type="text"
+                      value={wakeInputSubmitCommand}
+                      onChange={(event) => setWakeInputSubmitCommand(event.target.value)}
+                      placeholder={i18nService.t('wakeInputSubmitCommandPlaceholder')}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('wakeInputCancelCommandLabel')}
+                    </div>
+                    <input
+                      type="text"
+                      value={wakeInputCancelCommand}
+                      onChange={(event) => setWakeInputCancelCommand(event.target.value)}
+                      placeholder={i18nService.t('wakeInputCancelCommandPlaceholder')}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {isMac && (
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
+                    {i18nService.t('ttsTitle')}
+                  </h4>
+                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
+                    {i18nService.t('ttsDescription')}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-4">
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <span className="text-sm text-secondary">
+                      {i18nService.t('ttsEnabledLabel')}
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ttsEnabled}
+                      onClick={() => setTtsEnabled((prev) => !prev)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        ttsEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          ttsEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <span className="text-sm text-secondary">
+                      {i18nService.t('ttsAutoPlayLabel')}
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ttsAutoPlayAssistantReply}
+                      onClick={() => setTtsAutoPlayAssistantReply((prev) => !prev)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        ttsAutoPlayAssistantReply ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          ttsAutoPlayAssistantReply ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
+                  <div>
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('ttsVoiceLabel')}
+                    </div>
+                    <ThemedSelect
+                      id="tts-voice"
+                      value={ttsVoiceId}
+                      onChange={(value) => setTtsVoiceId(value)}
+                      options={[
+                        { value: '', label: i18nService.t('ttsVoiceAuto') },
+                        ...ttsVoices.map((voice) => ({
+                          value: voice.identifier,
+                          label: `${voice.name} (${voice.language})`,
+                        })),
+                      ]}
+                    />
+                  </div>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('ttsRateLabel')}: {ttsRate.toFixed(2)}
+                    </div>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1"
+                      step="0.05"
+                      value={ttsRate}
+                      onChange={(event) => setTtsRate(Number(event.target.value))}
+                      className="w-full"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('ttsVolumeLabel')}: {ttsVolume.toFixed(2)}
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={ttsVolume}
+                      onChange={(event) => setTtsVolume(Number(event.target.value))}
+                      className="w-full"
+                    />
+                  </label>
+
+                  <p className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    {i18nService.t('ttsVoiceHint')}
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-4">
               <div>
@@ -3515,98 +3799,89 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
       case 'about':
         return (
-          <div className="flex min-h-full flex-col items-center pt-6 pb-3">
-            {/* Logo & App Name */}
-            <img
-              src="logo.png"
-              alt={APP_NAME}
-              className="w-16 h-16 mb-3 cursor-pointer select-none"
-              onClick={() => {
-                const next = logoClickCount + 1;
-                setLogoClickCount(next);
-                if (next >= 10 && !testModeUnlocked) {
-                  setTestModeUnlocked(true);
-                }
-              }}
-            />
-            <h3 className="text-lg font-semibold text-foreground">{APP_NAME}</h3>
-            <span className="text-xs text-secondary mt-1">v{appVersion}</span>
+          <div className="flex min-h-full flex-col pt-4 pb-3">
+            <div className="rounded-2xl border border-border bg-surface px-5 py-5 shadow-sm">
+              <div className="flex items-start gap-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = logoClickCount + 1;
+                    setLogoClickCount(next);
+                    if (next >= 10 && !testModeUnlocked) {
+                      setTestModeUnlocked(true);
+                    }
+                  }}
+                  className="shrink-0 rounded-2xl border border-border bg-surface-raised p-3 transition-colors hover:border-primary/30"
+                >
+                  <img
+                    src="logo.png"
+                    alt={APP_NAME}
+                    className="h-12 w-12 cursor-pointer select-none"
+                  />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-secondary">
+                    {renderBrandHighlight(i18nService.t('aboutBrandEyebrow'))}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <h3 className="text-xl font-semibold tracking-tight text-foreground">{APP_NAME}</h3>
+                    <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                      {i18nService.t('aboutProductBadge')}
+                    </span>
+                    <span className="rounded-full bg-surface-raised px-2.5 py-1 text-[11px] font-medium text-secondary">
+                      {i18nService.t('aboutPlatformBadge')}
+                    </span>
+                  </div>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-secondary">
+                    {renderBrandHighlight(i18nService.t('aboutBrandDescription'))}
+                  </p>
+                </div>
+              </div>
+            </div>
 
-            {/* Info Card */}
-            <div className="w-full mt-8 rounded-xl border border-border overflow-hidden">
+            <div className="mt-5 w-full overflow-hidden rounded-2xl border border-border bg-surface">
               <div className="flex items-center justify-between px-4 py-3 border-b border-border">
                 <span className="text-sm text-foreground">{i18nService.t('aboutVersion')}</span>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-secondary">{appVersion}</span>
                   {!enterpriseConfig?.disableUpdate && (
-                  <button
-                    type="button"
-                    disabled={updateCheckStatus === 'checking'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleCheckUpdate();
-                    }}
-                    className="text-xs px-2 py-0.5 rounded-md border border-border text-secondary hover:text-primary dark:hover:text-primary hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {updateCheckStatus === 'checking' && i18nService.t('updateChecking')}
-                    {updateCheckStatus === 'upToDate' && i18nService.t('updateUpToDate')}
-                    {updateCheckStatus === 'error' && i18nService.t('updateCheckFailed')}
-                    {updateCheckStatus === 'idle' && i18nService.t('checkForUpdate')}
-                  </button>
+                    <button
+                      type="button"
+                      disabled={updateCheckStatus === 'checking'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleCheckUpdate();
+                      }}
+                      className="text-xs px-2 py-0.5 rounded-md border border-border text-secondary hover:text-primary dark:hover:text-primary hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {updateCheckStatus === 'checking' && i18nService.t('updateChecking')}
+                      {updateCheckStatus === 'upToDate' && i18nService.t('updateUpToDate')}
+                      {updateCheckStatus === 'error' && i18nService.t('updateCheckFailed')}
+                      {updateCheckStatus === 'idle' && i18nService.t('checkForUpdate')}
+                    </button>
                   )}
                   {enterpriseConfig?.disableUpdate && (
-                  <span className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-                    {i18nService.t('settings.enterprise.managed')}
-                  </span>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm text-foreground">{i18nService.t('aboutContactEmail')}</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleCopyContactEmail();
-                    }}
-                    title={i18nService.t('copyToClipboard')}
-                    className="text-sm text-secondary bg-transparent border-none appearance-none p-0 m-0 cursor-pointer focus:outline-none"
-                  >
-                    {ABOUT_CONTACT_EMAIL}
-                  </button>
-                  {emailCopied && (
-                    <span className="text-[11px] leading-4 text-emerald-600 dark:text-emerald-400">
-                      {language === 'zh' ? '已复制' : 'Copied'}
+                    <span className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
+                      {i18nService.t('settings.enterprise.managed')}
                     </span>
                   )}
                 </div>
               </div>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm text-foreground">{i18nService.t('aboutUserManual')}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenUserManual();
-                  }}
-                  className="text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
-                >
-                  {ABOUT_USER_MANUAL_URL}
-                </button>
+                <span className="text-sm text-foreground">{i18nService.t('aboutProductType')}</span>
+                <span className="text-sm text-secondary">
+                  {renderBrandHighlight(i18nService.t('aboutProductTypeValue'))}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                <span className="text-sm text-foreground">{i18nService.t('aboutPlatform')}</span>
+                <span className="text-sm text-secondary">{i18nService.t('aboutPlatformValue')}</span>
               </div>
               <div className={`flex items-center justify-between px-4 py-3${testModeUnlocked ? ' border-b border-border' : ''}`}>
-                <span className="text-sm text-foreground">{i18nService.t('aboutUserCommunity')}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenUserCommunity();
-                  }}
-                  className="text-sm text-secondary hover:text-primary dark:hover:text-primary bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer focus:outline-none hover:bg-surface-raised transition-colors"
-                >
-                  {ABOUT_USER_COMMUNITY_URL}
-                </button>
+                <span className="text-sm text-foreground">{i18nService.t('aboutDataScope')}</span>
+                <span className="text-right text-sm text-secondary">
+                  {renderBrandHighlight(i18nService.t('aboutDataScopeValue'))}
+                </span>
               </div>
               {testModeUnlocked && (
                 <div className="flex items-center justify-between px-4 py-3">
@@ -3630,20 +3905,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               )}
             </div>
 
-            {/* Footer */}
-            <div className="mt-auto w-full pt-14 pb-2 flex flex-col items-center">
+            <div className="mt-auto w-full pt-8 pb-2">
               <div className="flex items-center justify-center text-sm text-secondary">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenServiceTerms();
-                  }}
-                  className="bg-transparent border-none appearance-none px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded-md cursor-pointer hover:text-primary dark:hover:text-primary transition-colors"
-                >
-                  {i18nService.t('aboutServiceTerms')}
-                </button>
-                <span className="mx-3 text-xs opacity-40">|</span>
                 <button
                   type="button"
                   onClick={(e) => {
@@ -3657,11 +3920,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 </button>
               </div>
 
-              <p className="mt-5 text-xs text-secondary">
-                {language === 'zh' ? '网易有道 版权所有' : 'NetEase Youdao. All rights reserved.'}
+              <p className="mt-1 text-center text-xs text-secondary">
+                {i18nService.t('aboutCopyright').replace('{year}', String(new Date().getFullYear()))}
               </p>
-              <p className="mt-1 text-xs text-secondary">
-                Copyright &copy; {new Date().getFullYear()} NetEase Youdao. All Rights Reserved.
+              <p className="mt-1 text-center text-xs text-secondary">
+                {i18nService.t('aboutRightsReserved')}
               </p>
             </div>
           </div>

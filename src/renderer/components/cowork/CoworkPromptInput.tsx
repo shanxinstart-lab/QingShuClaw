@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { PaperAirplaneIcon, StopIcon, FolderIcon } from '@heroicons/react/24/solid';
-import { PhotoIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { PhotoIcon, ExclamationTriangleIcon, MicrophoneIcon } from '@heroicons/react/24/outline';
 import PaperClipIcon from '../icons/PaperClipIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import ModelSelector from '../ModelSelector';
@@ -9,18 +9,24 @@ import FolderSelectorPopover from './FolderSelectorPopover';
 import { SkillsButton, ActiveSkillBadge } from '../skills';
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
+import { configService } from '../../services/config';
 import { RootState } from '../../store';
 import { setDraftPrompt, setDraftAttachments, clearDraftAttachments, type DraftAttachment } from '../../store/slices/coworkSlice';
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { Skill } from '../../types/skill';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { getCompactFolderName } from '../../utils/path';
+import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
+import { SpeechErrorCode } from '../../../shared/speech/constants';
+import { DEFAULT_SPEECH_INPUT_CONFIG } from '../../config';
+import { AppCustomEvent } from '../../constants/app';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
 type CoworkAttachment = DraftAttachment;
 
 const INPUT_FILE_LABEL = '输入文件';
+const EMPTY_ATTACHMENTS: CoworkAttachment[] = [];
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
 
@@ -92,6 +98,14 @@ interface CoworkPromptInputProps {
   remoteManaged?: boolean;
 }
 
+type InputSpeechStatus = 'idle' | 'requesting_permission' | 'listening';
+type PendingSpeechVoiceCommand = SpeechVoiceCommandAction | null;
+type WakeDictationCommandConfig = {
+  submitCommand: string;
+  cancelCommand: string;
+  sessionTimeoutMs: number;
+};
+
 const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInputProps>(
   (props, ref) => {
     const {
@@ -112,17 +126,26 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const dispatch = useDispatch();
     const draftKey = sessionId || '__home__';
     const draftPrompt = useSelector((state: RootState) => state.cowork.draftPrompts[draftKey] || '');
-    const attachments = useSelector((state: RootState) => state.cowork.draftAttachments[draftKey] || []) as CoworkAttachment[];
+    const attachments = useSelector(
+      (state: RootState) => state.cowork.draftAttachments[draftKey] || EMPTY_ATTACHMENTS
+    );
     const [value, setValue] = useState(draftPrompt);
     const [showFolderMenu, setShowFolderMenu] = useState(false);
     const [showFolderRequiredWarning, setShowFolderRequiredWarning] = useState(false);
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [isAddingFile, setIsAddingFile] = useState(false);
     const [imageVisionHint, setImageVisionHint] = useState(false);
+    const [speechStatus, setSpeechStatus] = useState<InputSpeechStatus>('idle');
+    const [speechVisible, setSpeechVisible] = useState(window.electron.platform === 'darwin');
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const folderButtonRef = useRef<HTMLButtonElement>(null);
     const dragDepthRef = useRef(0);
+    const valueRef = useRef(value);
+    const speechBaseValueRef = useRef('');
+    const pendingSpeechVoiceCommandRef = useRef<PendingSpeechVoiceCommand>(null);
+    const wakeDictationConfigRef = useRef<WakeDictationCommandConfig | null>(null);
+    const wakeDictationTimerRef = useRef<number | null>(null);
 
   // 暴露方法给父组件
   React.useImperativeHandle(ref, () => ({
@@ -144,10 +167,17 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const isMac = window.electron.platform === 'darwin';
+  const isSpeechActive = speechStatus !== 'idle';
 
   const isLarge = size === 'large';
   const minHeight = isLarge ? 60 : 24;
   const maxHeight = isLarge ? 200 : 200;
+
+  const getSpeechVoiceCommandConfig = useCallback(() => ({
+    ...DEFAULT_SPEECH_INPUT_CONFIG,
+    ...(configService.getConfig().speechInput ?? {}),
+  }), []);
 
   // Load skills on mount
   useEffect(() => {
@@ -178,6 +208,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [value, minHeight, maxHeight]);
 
   useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  useEffect(() => {
     const handleFocusInput = (event: Event) => {
       const detail = (event as CustomEvent<{ clear?: boolean }>).detail;
       const shouldClear = detail?.clear ?? true;
@@ -190,8 +224,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       });
     };
     window.addEventListener('cowork:focus-input', handleFocusInput);
+    window.addEventListener(AppCustomEvent.FocusCoworkInput, handleFocusInput);
     return () => {
       window.removeEventListener('cowork:focus-input', handleFocusInput);
+      window.removeEventListener(AppCustomEvent.FocusCoworkInput, handleFocusInput);
     };
   }, []);
 
@@ -201,10 +237,104 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
   }, [workingDirectory]);
 
+  useEffect(() => {
+    if (!isMac) {
+      return;
+    }
+
+    let active = true;
+    window.electron.speech.getAvailability()
+      .then((availability) => {
+        if (!active) {
+          return;
+        }
+        setSpeechVisible(availability.enabled ?? true);
+      })
+      .catch((error) => {
+        console.error('Failed to inspect speech availability:', error);
+        if (active) {
+          setSpeechVisible(true);
+        }
+      });
+
+    const unsubscribe = window.electron.speech.onStateChanged((event) => {
+      switch (event.type) {
+        case 'listening':
+          setSpeechStatus('listening');
+          break;
+        case 'partial': {
+          const currentCommandConfig = wakeDictationConfigRef.current
+            ? {
+                stopCommand: wakeDictationConfigRef.current.cancelCommand,
+                submitCommand: wakeDictationConfigRef.current.submitCommand,
+              }
+            : getSpeechVoiceCommandConfig();
+          const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
+          const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+          setValue(nextValue);
+          if (commandResult.action) {
+            speechBaseValueRef.current = nextValue;
+            pendingSpeechVoiceCommandRef.current = commandResult.action;
+            void window.electron.speech.stop().catch(() => undefined);
+          }
+          break;
+        }
+        case 'final': {
+          const currentCommandConfig = wakeDictationConfigRef.current
+            ? {
+                stopCommand: wakeDictationConfigRef.current.cancelCommand,
+                submitCommand: wakeDictationConfigRef.current.submitCommand,
+              }
+            : getSpeechVoiceCommandConfig();
+          const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
+          const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+          speechBaseValueRef.current = nextValue;
+          setValue(nextValue);
+          if (commandResult.action) {
+            pendingSpeechVoiceCommandRef.current = commandResult.action;
+            void window.electron.speech.stop().catch(() => undefined);
+          }
+          break;
+        }
+        case 'stopped':
+          setSpeechStatus('idle');
+          break;
+        case 'error':
+          setSpeechStatus('idle');
+          pendingSpeechVoiceCommandRef.current = null;
+          window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(event.code, event.message) }));
+          break;
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+      void window.electron.speech.stop().catch(() => undefined);
+    };
+  }, [getSpeechVoiceCommandConfig, isMac]);
+
   // Sync value from draft when sessionId changes
   useEffect(() => {
     setValue(draftPrompt);
+    speechBaseValueRef.current = draftPrompt;
   }, [draftKey]); // intentionally omit draftPrompt to only trigger on session switch
+
+  useEffect(() => {
+    if (!isSpeechActive) {
+      return;
+    }
+    pendingSpeechVoiceCommandRef.current = null;
+    void window.electron.speech.stop().catch(() => undefined);
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!isStreaming || !isSpeechActive) {
+      return;
+    }
+    pendingSpeechVoiceCommandRef.current = null;
+    void window.electron.speech.stop().catch(() => undefined);
+  }, [isStreaming, isSpeechActive]);
 
   useEffect(() => {
     if (value !== draftPrompt) {
@@ -222,7 +352,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
 
     const trimmedValue = value.trim();
-    if ((!trimmedValue && attachments.length === 0) || isStreaming || disabled) return;
+    if ((!trimmedValue && attachments.length === 0) || isStreaming || disabled || isSpeechActive) return;
     setShowFolderRequiredWarning(false);
 
     // Get active skills prompts and combine them
@@ -270,10 +400,79 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const result = await onSubmit(finalPrompt, skillPrompt, imageAtts.length > 0 ? imageAtts : undefined);
     if (result === false) return;
     setValue('');
+    speechBaseValueRef.current = '';
+    pendingSpeechVoiceCommandRef.current = null;
     dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
     dispatch(clearDraftAttachments(draftKey));
     setImageVisionHint(false);
-  }, [value, isStreaming, disabled, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch]);
+  }, [value, isStreaming, disabled, isSpeechActive, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch]);
+
+  useEffect(() => {
+    if (speechStatus !== 'idle') {
+      return;
+    }
+
+    if (pendingSpeechVoiceCommandRef.current !== SpeechVoiceCommandAction.Submit) {
+      pendingSpeechVoiceCommandRef.current = null;
+      wakeDictationConfigRef.current = null;
+      if (wakeDictationTimerRef.current) {
+        window.clearTimeout(wakeDictationTimerRef.current);
+        wakeDictationTimerRef.current = null;
+      }
+      return;
+    }
+
+    pendingSpeechVoiceCommandRef.current = null;
+    wakeDictationConfigRef.current = null;
+    if (wakeDictationTimerRef.current) {
+      window.clearTimeout(wakeDictationTimerRef.current);
+      wakeDictationTimerRef.current = null;
+    }
+    void handleSubmit();
+  }, [handleSubmit, speechStatus]);
+
+  useEffect(() => {
+    const handleWakeDictationStart = (event: Event) => {
+      const detail = (event as CustomEvent<WakeDictationCommandConfig>).detail;
+      if (!detail || disabled || isStreaming || !isMac || !speechVisible) {
+        return;
+      }
+
+      speechBaseValueRef.current = valueRef.current;
+      pendingSpeechVoiceCommandRef.current = null;
+      wakeDictationConfigRef.current = detail;
+      if (wakeDictationTimerRef.current) {
+        window.clearTimeout(wakeDictationTimerRef.current);
+      }
+      wakeDictationTimerRef.current = window.setTimeout(() => {
+        if (speechStatus !== 'idle') {
+          pendingSpeechVoiceCommandRef.current = null;
+          wakeDictationConfigRef.current = null;
+          void window.electron.speech.stop().catch(() => undefined);
+        }
+        wakeDictationTimerRef.current = null;
+      }, detail.sessionTimeoutMs);
+      setSpeechStatus('requesting_permission');
+      void window.electron.speech.start().then((result) => {
+        if (!result.success) {
+          setSpeechStatus('idle');
+          wakeDictationConfigRef.current = null;
+          if (wakeDictationTimerRef.current) {
+            window.clearTimeout(wakeDictationTimerRef.current);
+            wakeDictationTimerRef.current = null;
+          }
+          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+            detail: resolveSpeechErrorMessage(result.error, result.error),
+          }));
+        }
+      });
+    };
+
+    window.addEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
+    return () => {
+      window.removeEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
+    };
+  }, [disabled, isMac, isStreaming, speechStatus, speechVisible]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -290,7 +489,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
     if (event.key === 'Enter' && !isComposing) {
       const hasModifier = event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
-      if (!hasModifier && !isStreaming && !disabled) {
+      if (!hasModifier && !isStreaming && !disabled && !isSpeechActive) {
         event.preventDefault();
         handleSubmit();
       } else if (hasModifier && !event.shiftKey) {
@@ -328,6 +527,91 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const modelSupportsImage = !!selectedModel?.supportsImage;
+
+  function extractSpeechErrorReason(message?: string): string | null {
+    const normalized = message?.trim();
+    if (!normalized) {
+      return null;
+    }
+    if (
+      normalized === SpeechErrorCode.RuntimeError
+      || normalized === SpeechErrorCode.StartFailed
+      || normalized === SpeechErrorCode.HelperUnavailable
+      || normalized === SpeechErrorCode.InvalidResponse
+    ) {
+      return null;
+    }
+    return normalized;
+  }
+
+  function resolveSpeechErrorMessage(code?: string, message?: string): string {
+    const normalizedCode = code?.trim().toLowerCase();
+    const normalizedMessage = message?.trim().toLowerCase();
+    const reason = extractSpeechErrorReason(message);
+    if (
+      normalizedCode === SpeechErrorCode.SpeechPermissionDenied
+      || normalizedCode === SpeechErrorCode.PermissionDenied
+      || normalizedMessage?.includes('speech recognition permission was denied')
+      || normalizedMessage?.includes('speech permission')
+    ) {
+      return i18nService.t('coworkSpeechPermissionDenied');
+    }
+    if (
+      normalizedCode === SpeechErrorCode.MicrophonePermissionDenied
+      || normalizedMessage?.includes('microphone permission was denied')
+      || normalizedMessage?.includes('microphone permission')
+    ) {
+      return i18nService.t('coworkSpeechMicrophonePermissionDenied');
+    }
+
+    switch (code) {
+      case SpeechErrorCode.RecognizerUnavailable:
+        return i18nService.t('coworkSpeechRecognizerUnavailable');
+      case SpeechErrorCode.AlreadyListening:
+        return i18nService.t('coworkSpeechStartFailed');
+      case SpeechErrorCode.DevPermissionPromptUnsupported:
+        return i18nService.t('coworkSpeechDevPermissionPromptUnsupported');
+      case SpeechErrorCode.HelperUnavailable:
+      case SpeechErrorCode.UnsupportedPlatform:
+        return i18nService.t('coworkSpeechUnavailable');
+      case SpeechErrorCode.StartFailed:
+        return reason
+          ? i18nService.t('coworkSpeechStartFailedWithReason').replace('{reason}', reason)
+          : i18nService.t('coworkSpeechStartFailed');
+      case SpeechErrorCode.RuntimeError:
+      default:
+        return reason
+          ? i18nService.t('coworkSpeechRuntimeErrorWithReason').replace('{reason}', reason)
+          : i18nService.t('coworkSpeechRuntimeError');
+    }
+  }
+
+  const handleSpeechToggle = useCallback(async () => {
+    if (!isMac || !speechVisible || disabled || isStreaming) {
+      if (isMac && !speechVisible) {
+        window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkSpeechUnavailable') }));
+      }
+      return;
+    }
+
+    if (isSpeechActive) {
+      pendingSpeechVoiceCommandRef.current = null;
+      const result = await window.electron.speech.stop();
+      if (!result.success) {
+        window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
+      }
+      return;
+    }
+
+    speechBaseValueRef.current = valueRef.current;
+    pendingSpeechVoiceCommandRef.current = null;
+    setSpeechStatus('requesting_permission');
+    const result = await window.electron.speech.start();
+    if (!result.success) {
+      setSpeechStatus('idle');
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
+    }
+  }, [disabled, isMac, isSpeechActive, isStreaming, speechVisible]);
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;
@@ -422,7 +706,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [fileToBase64, workingDirectory]);
 
   const handleIncomingFiles = useCallback(async (fileList: FileList | File[]) => {
-    if (disabled || isStreaming) return;
+    if (disabled || isStreaming || isSpeechActive) return;
     const files = Array.from(fileList ?? []);
     if (files.length === 0) return;
 
@@ -483,10 +767,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if (hasImageWithoutVision) {
       setImageVisionHint(true);
     }
-  }, [addAttachment, addImageAttachmentFromDataUrl, disabled, fileToDataUrl, getNativeFilePath, isStreaming, modelSupportsImage, saveInlineFile]);
+  }, [addAttachment, addImageAttachmentFromDataUrl, disabled, fileToDataUrl, getNativeFilePath, isSpeechActive, isStreaming, modelSupportsImage, saveInlineFile]);
 
   const handleAddFile = useCallback(async () => {
-    if (isAddingFile || disabled || isStreaming) return;
+    if (isAddingFile || disabled || isStreaming || isSpeechActive) return;
     setIsAddingFile(true);
     try {
       const result = await window.electron.dialog.selectFiles({
@@ -522,7 +806,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     } finally {
       setIsAddingFile(false);
     }
-  }, [addAttachment, isAddingFile, disabled, isStreaming, modelSupportsImage]);
+  }, [addAttachment, isAddingFile, disabled, isSpeechActive, isStreaming, modelSupportsImage]);
 
   const handleRemoveAttachment = useCallback((path: string) => {
     dispatch(setDraftAttachments({
@@ -542,7 +826,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     event.preventDefault();
     event.stopPropagation();
     dragDepthRef.current += 1;
-    if (!disabled && !isStreaming) {
+    if (!disabled && !isStreaming && !isSpeechActive) {
       setIsDraggingFiles(true);
     }
   };
@@ -551,7 +835,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if (!hasFileTransfer(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = disabled || isStreaming ? 'none' : 'copy';
+    event.dataTransfer.dropEffect = disabled || isStreaming || isSpeechActive ? 'none' : 'copy';
   };
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
@@ -570,22 +854,25 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     event.stopPropagation();
     dragDepthRef.current = 0;
     setIsDraggingFiles(false);
-    if (disabled || isStreaming) return;
+    if (disabled || isStreaming || isSpeechActive) return;
     void handleIncomingFiles(event.dataTransfer.files);
   };
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (disabled || isStreaming) return;
+    if (disabled || isStreaming || isSpeechActive) return;
     const files = Array.from(event.clipboardData?.files ?? []);
     if (files.length === 0) return;
     event.preventDefault();
     void handleIncomingFiles(files);
-  }, [disabled, handleIncomingFiles, isStreaming]);
+  }, [disabled, handleIncomingFiles, isSpeechActive, isStreaming]);
 
-  const canSubmit = !disabled && (!!value.trim() || attachments.length > 0);
+  const canSubmit = !disabled && !isSpeechActive && (!!value.trim() || attachments.length > 0);
   const enhancedContainerClass = isDraggingFiles
     ? `${containerClass} ring-2 ring-primary/50 border-primary/60`
     : containerClass;
+  const speechButtonTitle = speechStatus === 'idle'
+    ? i18nService.t('coworkSpeechStart')
+    : i18nService.t('coworkSpeechStop');
 
   return (
     <div className="relative">
@@ -633,6 +920,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           </button>
         </div>
       )}
+      {isMac && speechVisible && speechStatus !== 'idle' && (
+        <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs text-primary">
+          {speechStatus === 'requesting_permission'
+            ? i18nService.t('coworkSpeechRequestingPermission')
+            : i18nService.t('coworkSpeechListening')}
+        </div>
+      )}
       <div
         className={enhancedContainerClass}
         onDragEnter={handleDragEnter}
@@ -654,7 +948,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={placeholder}
-              disabled={disabled}
+              disabled={disabled || isSpeechActive}
               rows={isLarge ? 2 : 1}
               className={textareaClass}
               style={{ minHeight: `${minHeight}px` }}
@@ -691,6 +985,22 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   </>
                 )}
                 {showModelSelector && !remoteManaged && <ModelSelector dropdownDirection="up" />}
+                {isMac && speechVisible && !remoteManaged && (
+                  <button
+                    type="button"
+                    onClick={handleSpeechToggle}
+                    className={`flex items-center justify-center p-1.5 rounded-lg text-sm transition-colors ${
+                      isSpeechActive
+                        ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
+                        : 'text-secondary hover:bg-surface-raised hover:text-foreground'
+                    }`}
+                    title={speechButtonTitle}
+                    aria-label={speechButtonTitle}
+                    disabled={disabled || isStreaming}
+                  >
+                    {isSpeechActive ? <StopIcon className="h-4 w-4" /> : <MicrophoneIcon className="h-4 w-4" />}
+                  </button>
+                )}
                 {!remoteManaged && (
                   <button
                     type="button"
@@ -698,7 +1008,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     className="flex items-center justify-center p-1.5 rounded-lg text-sm text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
                     title={i18nService.t('coworkAddFile')}
                     aria-label={i18nService.t('coworkAddFile')}
-                    disabled={disabled || isStreaming || isAddingFile}
+                    disabled={disabled || isStreaming || isAddingFile || isSpeechActive}
                   >
                     <PaperClipIcon className="h-4 w-4" />
                   </button>
@@ -746,20 +1056,36 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={placeholder}
-              disabled={disabled}
+              disabled={disabled || isSpeechActive}
               rows={1}
               className={textareaClass}
             />
 
             {!remoteManaged && (
               <div className="flex items-center gap-1">
+                {isMac && speechVisible && (
+                  <button
+                    type="button"
+                    onClick={handleSpeechToggle}
+                    className={`flex-shrink-0 p-1.5 rounded-lg transition-colors ${
+                      isSpeechActive
+                        ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
+                        : 'text-secondary hover:bg-surface-raised hover:text-foreground'
+                    }`}
+                    title={speechButtonTitle}
+                    aria-label={speechButtonTitle}
+                    disabled={disabled || isStreaming}
+                  >
+                    {isSpeechActive ? <StopIcon className="h-4 w-4" /> : <MicrophoneIcon className="h-4 w-4" />}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleAddFile}
                   className="flex-shrink-0 p-1.5 rounded-lg text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
                   title={i18nService.t('coworkAddFile')}
                   aria-label={i18nService.t('coworkAddFile')}
-                  disabled={disabled || isStreaming || isAddingFile}
+                  disabled={disabled || isStreaming || isAddingFile || isSpeechActive}
                 >
                   <PaperClipIcon className="h-4 w-4" />
                 </button>

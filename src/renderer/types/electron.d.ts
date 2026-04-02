@@ -14,6 +14,67 @@ interface ApiStreamResponse {
   error?: string;
 }
 
+interface SpeechAvailability {
+  enabled?: boolean;
+  supported: boolean;
+  platform: string;
+  permission: 'not-determined' | 'denied' | 'granted' | 'restricted' | 'unsupported';
+  speechAuthorization: 'not-determined' | 'denied' | 'granted' | 'restricted' | 'unsupported';
+  microphoneAuthorization: 'not-determined' | 'denied' | 'granted' | 'restricted' | 'unsupported';
+  locale?: string;
+  listening: boolean;
+  error?: string;
+}
+
+interface SpeechStateEvent {
+  type: 'listening' | 'partial' | 'final' | 'stopped' | 'error';
+  text?: string;
+  code?: string;
+  message?: string;
+}
+
+interface WakeInputStatus {
+  enabled: boolean;
+  supported: boolean;
+  platform: string;
+  status: 'disabled' | 'idle' | 'listening' | 'wake_triggered' | 'dictating' | 'cooldown' | 'error';
+  wakeWord: string;
+  submitCommand: string;
+  cancelCommand: string;
+  sessionTimeoutMs: number;
+  listening: boolean;
+  error?: string;
+}
+
+interface WakeInputDictationRequest {
+  submitCommand: string;
+  cancelCommand: string;
+  sessionTimeoutMs: number;
+}
+
+interface TtsAvailability {
+  enabled?: boolean;
+  supported: boolean;
+  platform: string;
+  speaking: boolean;
+  error?: string;
+}
+
+interface TtsVoice {
+  identifier: string;
+  name: string;
+  language: string;
+  quality: 'default' | 'enhanced' | 'premium' | 'personal' | 'unknown';
+  isPersonalVoice: boolean;
+}
+
+interface TtsStateEvent {
+  type: 'idle' | 'speaking' | 'stopped' | 'error';
+  voiceId?: string;
+  code?: string;
+  message?: string;
+}
+
 // Cowork types for IPC
 interface CoworkSession {
   id: string;
@@ -385,6 +446,25 @@ interface IElectronAPI {
     saveInlineFile: (options: { dataBase64: string; fileName?: string; mimeType?: string; cwd?: string }) => Promise<{ success: boolean; path: string | null; error?: string }>;
     readFileAsDataUrl: (filePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
   };
+  speech: {
+    getAvailability: () => Promise<SpeechAvailability>;
+    start: (options?: { locale?: string }) => Promise<{ success: boolean; error?: string }>;
+    stop: () => Promise<{ success: boolean; error?: string }>;
+    onStateChanged: (callback: (data: SpeechStateEvent) => void) => () => void;
+  };
+  wakeInput: {
+    getStatus: () => Promise<WakeInputStatus>;
+    updateConfig: (config: Partial<WakeInputStatus>) => Promise<{ success: boolean; status?: WakeInputStatus; error?: string }>;
+    onStateChanged: (callback: (data: WakeInputStatus) => void) => () => void;
+    onDictationRequested: (callback: (data: WakeInputDictationRequest) => void) => () => void;
+  };
+  tts: {
+    getAvailability: () => Promise<TtsAvailability>;
+    getVoices: () => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
+    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => Promise<{ success: boolean; error?: string }>;
+    stop: () => Promise<{ success: boolean; error?: string }>;
+    onStateChanged: (callback: (data: TtsStateEvent) => void) => () => void;
+  };
   shell: {
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
@@ -486,7 +566,9 @@ interface IElectronAPI {
     loginWithPassword: (
       input: AuthPasswordLoginInput
     ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
-    getFeishuAuthorizeUrl: () => Promise<{ success: boolean; url?: string; error?: string }>;
+    openFeishuScanWindow: (
+      input: { authorizeUrl?: string; scanSessionId?: string }
+    ) => Promise<{ success: boolean; error?: string }>;
     createFeishuScanSession: () => Promise<{
       success: boolean;
       session?: FeishuScanSession;
@@ -522,6 +604,7 @@ interface IElectronAPI {
     getPendingBridgeCode: () => Promise<{ code: string } | null>;
     onCallback: (callback: (data: AuthCallbackPayload) => void) => () => void;
     onBridgeCode: (callback: (data: { code: string }) => void) => () => void;
+    onSessionInvalidated: (callback: (data: { reason?: string }) => void) => () => void;
     onQuotaChanged: (callback: () => void) => () => void;
   }
   enterprise: {

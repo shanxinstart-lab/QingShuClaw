@@ -72,9 +72,18 @@
       "CFBundleIconName": "icon",
       "NSCalendarsUsageDescription": "QingShuClaw 需要访问您的日历来帮助您查看和管理日程安排，例如查找事件、创建会议等。",
       "NSRemindersUsageDescription": "QingShuClaw 需要访问您的提醒事项来帮助您管理待办事项。",
-      "NSAppleEventsUsageDescription": "QingShuClaw 需要使用 Apple Events 来控制 Calendar 应用执行自动化操作。"
+      "NSAppleEventsUsageDescription": "QingShuClaw 需要使用 Apple Events 来控制 Calendar 应用执行自动化操作。",
+      "NSMicrophoneUsageDescription": "QingShuClaw 需要访问麦克风以支持聊天输入框中的语音输入。",
+      "NSSpeechRecognitionUsageDescription": "QingShuClaw 需要使用语音识别将您的语音实时转换为聊天输入文本。"
     },
     "extraResources": [
+      {
+        "from": "build/generated/macos-speech",
+        "to": "macos-speech",
+        "filter": [
+          "**/*"
+        ]
+      },
       {
         "from": "SKILLs",
         "to": "SKILLs",

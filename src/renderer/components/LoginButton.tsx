@@ -1,17 +1,44 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSelector } from 'react-redux';
+import { QRCodeSVG } from 'qrcode.react';
 import { RootState } from '../store';
+import { AppCustomEvent } from '../constants/app';
 import { authService } from '../services/auth';
 import { i18nService } from '../services/i18n';
 import type { CreditItem } from '../store/slices/authSlice';
 import {
   AuthBackend,
+  AuthLoginMode,
   FeishuScanSessionStatus,
   type AuthBackend as AuthBackendType,
+  type AuthLoginMode as AuthLoginModeType,
+  type FeishuScanSession,
 } from '../../common/auth';
 
 const FEISHU_LOGIN_WAIT_SECONDS = 60;
 const FEISHU_LOGIN_POLL_INTERVAL_MS = 1500;
+const getFeishuCountdown = (expiredAt?: number): number => {
+  if (!expiredAt) {
+    return FEISHU_LOGIN_WAIT_SECONDS;
+  }
+  return Math.max(0, Math.ceil((expiredAt - Date.now()) / 1000));
+};
+
+const isReusableFeishuScanSession = (session?: FeishuScanSession | null): session is FeishuScanSession => {
+  if (!session?.scanSessionId) {
+    return false;
+  }
+
+  if (!session.qrCodeContent && !session.authorizeUrl) {
+    return false;
+  }
+
+  if (!session.expiredAt) {
+    return true;
+  }
+
+  return session.expiredAt - Date.now() > 3000;
+};
 
 const getSubscriptionBadge = (label: string) => {
   // Determine badge style based on label
@@ -103,7 +130,11 @@ const CreditItemRow: React.FC<{ item: CreditItem; isEn: boolean }> = ({ item, is
 };
 
 const showToast = (message: string) => {
-  window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+  window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, { detail: message }));
+};
+
+const showLoginWelcome = () => {
+  window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowLoginWelcome));
 };
 
 const AVATAR_TONES = [
@@ -137,6 +168,36 @@ const getAvatarTone = (seed: string): string => {
   return AVATAR_TONES[hash % AVATAR_TONES.length];
 };
 
+const normalizeIdentityText = (value?: string | null): string => {
+  const normalized = (value || '').trim();
+  if (!normalized || /^(null|undefined)$/i.test(normalized)) {
+    return '';
+  }
+  return normalized;
+};
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+const hasLocalOnlyScanCallback = (authorizeUrl?: string | null): boolean => {
+  const normalizedAuthorizeUrl = (authorizeUrl || '').trim();
+  if (!normalizedAuthorizeUrl) {
+    return false;
+  }
+
+  try {
+    const authorizeUri = new URL(normalizedAuthorizeUrl);
+    const redirectUri = authorizeUri.searchParams.get('redirect_uri');
+    if (!redirectUri) {
+      return false;
+    }
+
+    const callbackUri = new URL(redirectUri);
+    return LOOPBACK_HOSTS.has(callbackUri.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+};
+
 const UserAvatar: React.FC<{
   avatarUrl?: string | null;
   displayName?: string | null;
@@ -158,112 +219,239 @@ const UserAvatar: React.FC<{
   );
 };
 
-const LobsterWaitingIndicator: React.FC = () => {
+const LobsterWaitingIndicator: React.FC = () => (
+  <div className="qs-lobster-waiting-shell" aria-hidden="true">
+    <div className="qs-lobster-grid" />
+    <div className="qs-lobster-scan-ring">
+      <div className="qs-lobster-scan-sweep" />
+    </div>
+    <div className="qs-lobster-ripple qs-lobster-ripple-1" />
+    <div className="qs-lobster-ripple qs-lobster-ripple-2" />
+    <div className="qs-lobster-ripple qs-lobster-ripple-3" />
+    <div className="qs-lobster-trace qs-lobster-trace-a">
+      <span className="qs-lobster-trace-tail" />
+      <span className="qs-lobster-trace-head" />
+    </div>
+    <div className="qs-lobster-trace qs-lobster-trace-b">
+      <span className="qs-lobster-trace-tail" />
+      <span className="qs-lobster-trace-head" />
+    </div>
+    <div className="qs-lobster-core">
+      <svg viewBox="0 0 96 96" className="qs-lobster-mark" fill="none">
+        <path
+          d="M48 20c4.9 0 8.8 3.9 8.8 8.8v10.4c5.8 2.2 9.9 7.8 9.9 14.4 0 5.6-2.9 10.6-7.3 13.5l4.5 10.9c0.9 2.1-0.1 4.5-2.2 5.4-2.1 0.9-4.5-0.1-5.4-2.2l-3.8-9.4h-8.9l-3.8 9.4c-0.9 2.1-3.3 3.1-5.4 2.2-2.1-0.9-3.1-3.3-2.2-5.4L36.6 67c-4.4-2.9-7.3-7.9-7.3-13.5 0-6.6 4.1-12.2 9.9-14.4V28.8c0-4.9 3.9-8.8 8.8-8.8Z"
+          fill="currentColor"
+          opacity="0.94"
+        />
+        <path
+          d="M34.7 46.6 22.8 40c-3-1.7-6.7-0.6-8.4 2.4-1.7 3-0.6 6.7 2.4 8.4l10.8 6.1m33.7-10.3L73.2 40c3-1.7 6.7-0.6 8.4 2.4 1.7 3 0.6 6.7-2.4 8.4l-10.8 6.1"
+          stroke="currentColor"
+          strokeWidth="5.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M37 22 30 13m29 9 7-9M41.5 14.5 36 7m18.5 7.5L60 7"
+          stroke="currentColor"
+          strokeWidth="4"
+          strokeLinecap="round"
+        />
+        <circle cx="41" cy="47.5" r="2.8" fill="#F8FAFC" />
+        <circle cx="55" cy="47.5" r="2.8" fill="#F8FAFC" />
+        <path
+          d="M43.5 58.5c2.2 1.8 6.8 1.8 9 0"
+          stroke="#F8FAFC"
+          strokeWidth="3.2"
+          strokeLinecap="round"
+        />
+      </svg>
+    </div>
+  </div>
+);
+
+const FeishuSdkQrPanel: React.FC<{
+  authorizeUrl?: string | null;
+  qrCodeContent?: string | null;
+}> = ({ authorizeUrl, qrCodeContent }) => {
+  const qrValue = (qrCodeContent || authorizeUrl || '').trim();
+  const loadState: 'loading' | 'ready' | 'error' = qrValue
+    ? 'ready'
+    : authorizeUrl || qrCodeContent
+      ? 'error'
+      : 'loading';
+
   return (
-    <div className="qs-lobster-waiting-shell" aria-hidden="true">
-      <div className="qs-lobster-grid" />
-      <div className="qs-lobster-scan-ring">
-        <div className="qs-lobster-scan-sweep" />
-      </div>
-      <div className="qs-lobster-ripple qs-lobster-ripple-1" />
-      <div className="qs-lobster-ripple qs-lobster-ripple-2" />
-      <div className="qs-lobster-ripple qs-lobster-ripple-3" />
-
-      <div className="qs-lobster-trace qs-lobster-trace-a">
-        <span className="qs-lobster-trace-tail" />
-        <span className="qs-lobster-trace-head" />
-      </div>
-      <div className="qs-lobster-trace qs-lobster-trace-b">
-        <span className="qs-lobster-trace-tail" />
-        <span className="qs-lobster-trace-head" />
-      </div>
-
-      <div className="qs-lobster-core">
-        <svg viewBox="0 0 96 96" className="qs-lobster-mark" fill="none">
-          <path
-            d="M48 20c4.9 0 8.8 3.9 8.8 8.8v10.4c5.8 2.2 9.9 7.8 9.9 14.4 0 5.6-2.9 10.6-7.3 13.5l4.5 10.9c0.9 2.1-0.1 4.5-2.2 5.4-2.1 0.9-4.5-0.1-5.4-2.2l-3.8-9.4h-8.9l-3.8 9.4c-0.9 2.1-3.3 3.1-5.4 2.2-2.1-0.9-3.1-3.3-2.2-5.4L36.6 67c-4.4-2.9-7.3-7.9-7.3-13.5 0-6.6 4.1-12.2 9.9-14.4V28.8c0-4.9 3.9-8.8 8.8-8.8Z"
-            fill="currentColor"
-            opacity="0.94"
+    <div className="relative overflow-hidden rounded-[18px] bg-white shadow-[0_8px_24px_rgba(15,23,42,0.06)] ring-1 ring-slate-900/5">
+      {loadState === 'ready' && (
+        <div className="flex h-[206px] w-[206px] items-center justify-center bg-white p-3">
+          <QRCodeSVG
+            value={qrValue}
+            size={182}
+            marginSize={1}
+            bgColor="#FFFFFF"
+            fgColor="#111827"
+            level="M"
           />
-          <path
-            d="M34.7 46.6 22.8 40c-3-1.7-6.7-0.6-8.4 2.4-1.7 3-0.6 6.7 2.4 8.4l10.8 6.1m33.7-10.3L73.2 40c3-1.7 6.7-0.6 8.4 2.4 1.7 3 0.6 6.7-2.4 8.4l-10.8 6.1"
-            stroke="currentColor"
-            strokeWidth="5.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M37 22 30 13m29 9 7-9M41.5 14.5 36 7m18.5 7.5L60 7"
-            stroke="currentColor"
-            strokeWidth="4"
-            strokeLinecap="round"
-          />
-          <circle cx="41" cy="47.5" r="2.8" fill="#F8FAFC" />
-          <circle cx="55" cy="47.5" r="2.8" fill="#F8FAFC" />
-          <path
-            d="M43.5 58.5c2.2 1.8 6.8 1.8 9 0"
-            stroke="#F8FAFC"
-            strokeWidth="3.2"
-            strokeLinecap="round"
-          />
-        </svg>
-      </div>
+        </div>
+      )}
+      {loadState !== 'ready' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/92 backdrop-blur-[1px]">
+          <div className="scale-[0.72]">
+            <LobsterWaitingIndicator />
+          </div>
+          <div className="mt-1 px-5 text-[11px] leading-5 text-claude-textSecondary">
+            {loadState === 'error'
+              ? i18nService.t('authFeishuScanQrUnavailable')
+              : i18nService.t('authFeishuScanLoading')}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+const QtbLoginPanel: React.FC<{
+  onClose: () => void;
+  authBackend: AuthBackendType;
+  initialScanSession?: FeishuScanSession | null;
+  initialScanLoading?: boolean;
+}> = ({ onClose, authBackend, initialScanSession = null, initialScanLoading = false }) => {
   const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [isWaitingFeishuLogin, setIsWaitingFeishuLogin] = useState(false);
+  const [notice, setNotice] = useState(
+    initialScanLoading ? i18nService.t('authFeishuScanLoading') : ''
+  );
+  const [loginMode, setLoginMode] = useState<AuthLoginModeType>(AuthLoginMode.Scan);
   const [feishuCountdown, setFeishuCountdown] = useState(FEISHU_LOGIN_WAIT_SECONDS);
-  const [feishuScanSessionId, setFeishuScanSessionId] = useState('');
-  const [submittingMode, setSubmittingMode] = useState<'password' | 'feishu' | null>(null);
-  const inputsDisabled = submittingMode !== null || isWaitingFeishuLogin;
+  const [feishuScanSession, setFeishuScanSession] = useState<FeishuScanSession | null>(
+    initialScanSession
+  );
+  const [isCreatingFeishuSession, setIsCreatingFeishuSession] = useState(false);
+  const [submittingMode, setSubmittingMode] = useState<'password' | 'browser' | null>(null);
+  const autoScanRequestedRef = useRef(false);
+  const inputsDisabled = submittingMode === 'password';
+  const localOnlyScanCallback = hasLocalOnlyScanCallback(feishuScanSession?.authorizeUrl);
 
   const completeFeishuLogin = () => {
-    setIsWaitingFeishuLogin(false);
+    autoScanRequestedRef.current = false;
+    setFeishuScanSession(null);
     setNotice('');
     setFeishuCountdown(FEISHU_LOGIN_WAIT_SECONDS);
-    setFeishuScanSessionId('');
+    showLoginWelcome();
     showToast(i18nService.t('authLoginSuccess'));
     onClose();
   };
 
   useEffect(() => {
-    if (!isWaitingFeishuLogin || !isLoggedIn) {
+    if (!isLoggedIn) {
       return;
     }
 
     completeFeishuLogin();
-  }, [isLoggedIn, isWaitingFeishuLogin, onClose]);
+  }, [isLoggedIn, onClose]);
 
   useEffect(() => {
-    if (!isWaitingFeishuLogin) {
+    if (loginMode !== AuthLoginMode.Scan) {
       return;
     }
 
-    if (feishuCountdown <= 0) {
-      setIsWaitingFeishuLogin(false);
-      setNotice(i18nService.t('authFeishuLoginTimeout'));
-      setFeishuScanSessionId('');
+    if (initialScanLoading && !feishuScanSession) {
+      setNotice(i18nService.t('authFeishuScanLoading'));
+    }
+  }, [initialScanLoading, feishuScanSession, loginMode]);
+
+  useEffect(() => {
+    if (
+      loginMode !== AuthLoginMode.Scan
+      || feishuScanSession
+      || !isReusableFeishuScanSession(initialScanSession)
+    ) {
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      setFeishuCountdown((current) => current - 1);
-    }, 1000);
+    setFeishuScanSession(initialScanSession);
+    setNotice(i18nService.t('authFeishuScanReadyTip'));
+  }, [initialScanSession, feishuScanSession, loginMode]);
+
+  useEffect(() => {
+    if (authBackend !== AuthBackend.Qtb || loginMode !== AuthLoginMode.Scan) {
+      autoScanRequestedRef.current = false;
+      return;
+    }
+
+    if (
+      initialScanLoading
+      || isReusableFeishuScanSession(initialScanSession)
+      || isCreatingFeishuSession
+      || feishuScanSession
+      || autoScanRequestedRef.current
+    ) {
+      return;
+    }
+
+    let disposed = false;
+    autoScanRequestedRef.current = true;
+
+    const createDefaultScanSession = async () => {
+      setError('');
+      setNotice(i18nService.t('authFeishuScanLoading'));
+      try {
+        const session = await createFeishuScanSession();
+        if (!disposed && session) {
+          setFeishuScanSession(session);
+          setNotice(i18nService.t('authFeishuScanReadyTip'));
+          return;
+        }
+
+        autoScanRequestedRef.current = false;
+      } catch (loginError) {
+        if (disposed) {
+          return;
+        }
+        autoScanRequestedRef.current = false;
+        setError(
+          loginError instanceof Error
+            ? loginError.message
+            : i18nService.t('authLoginFailed')
+        );
+      }
+    };
+
+    void createDefaultScanSession();
 
     return () => {
-      window.clearTimeout(timer);
+      disposed = true;
     };
-  }, [feishuCountdown, isWaitingFeishuLogin]);
+  }, [
+    authBackend,
+    initialScanLoading,
+    initialScanSession,
+    loginMode,
+    isCreatingFeishuSession,
+    feishuScanSession,
+  ]);
 
   useEffect(() => {
-    if (!isWaitingFeishuLogin || !feishuScanSessionId) {
+    if (!feishuScanSession?.expiredAt) {
+      setFeishuCountdown(FEISHU_LOGIN_WAIT_SECONDS);
+      return;
+    }
+
+    const syncCountdown = () => {
+      setFeishuCountdown(getFeishuCountdown(feishuScanSession.expiredAt));
+    };
+
+    syncCountdown();
+    const timer = window.setInterval(syncCountdown, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [feishuScanSession?.expiredAt]);
+
+  useEffect(() => {
+    if (!feishuScanSession?.scanSessionId || isLoggedIn) {
       return;
     }
 
@@ -272,10 +460,12 @@ const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
     const pollLoginState = async () => {
       try {
-        const session = await authService.pollFeishuScanSession(feishuScanSessionId);
-        if (disposed || !isWaitingFeishuLogin) {
+        const session = await authService.pollFeishuScanSession(feishuScanSession.scanSessionId);
+        if (disposed) {
           return;
         }
+
+        setFeishuScanSession(session);
 
         if (session.authenticated) {
           completeFeishuLogin();
@@ -287,24 +477,24 @@ const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         } else if (session.status === FeishuScanSessionStatus.Bound) {
           setNotice(i18nService.t('authFeishuLoginBindingTip'));
         } else if (session.status === FeishuScanSessionStatus.Pending) {
-          setNotice(i18nService.t('authFeishuLoginPendingTip'));
+          setNotice(i18nService.t('authFeishuScanReadyTip'));
         } else if (session.status === FeishuScanSessionStatus.Failed) {
-          setIsWaitingFeishuLogin(false);
-          setFeishuScanSessionId('');
           setError(session.errorMessage || i18nService.t('authLoginFailed'));
           return;
         } else if (session.status === FeishuScanSessionStatus.Expired) {
-          setIsWaitingFeishuLogin(false);
-          setFeishuScanSessionId('');
-          setNotice(i18nService.t('authFeishuLoginTimeout'));
+          if (authBackend === AuthBackend.Qtb && loginMode === AuthLoginMode.Scan) {
+            autoScanRequestedRef.current = false;
+            setNotice(i18nService.t('authFeishuScanExpiredRefreshing'));
+            setFeishuScanSession(null);
+          } else {
+            setNotice(i18nService.t('authFeishuLoginTimeout'));
+          }
           return;
         }
       } catch (pollError) {
         if (disposed) {
           return;
         }
-        setIsWaitingFeishuLogin(false);
-        setFeishuScanSessionId('');
         setError(
           pollError instanceof Error
             ? pollError.message
@@ -326,7 +516,25 @@ const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         window.clearTimeout(timer);
       }
     };
-  }, [feishuScanSessionId, isWaitingFeishuLogin, onClose]);
+  }, [authBackend, feishuScanSession?.scanSessionId, isLoggedIn, loginMode, onClose]);
+
+  const createFeishuScanSession = async (forceRefresh = false) => {
+    setIsCreatingFeishuSession(true);
+    setError('');
+    try {
+      const session = await authService.createFeishuScanSession(forceRefresh);
+      return session;
+    } catch (sessionError) {
+      setError(
+        sessionError instanceof Error
+          ? sessionError.message
+          : i18nService.t('authLoginFailed')
+      );
+      return null;
+    } finally {
+      setIsCreatingFeishuSession(false);
+    }
+  };
 
   const handlePasswordLogin = async () => {
     const normalizedUsername = username.trim();
@@ -338,10 +546,10 @@ const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     setSubmittingMode('password');
     setError('');
     setNotice('');
-    setIsWaitingFeishuLogin(false);
-    setFeishuScanSessionId('');
     try {
       await authService.loginWithPassword(normalizedUsername, password);
+      showLoginWelcome();
+      showToast(i18nService.t('authLoginSuccess'));
       onClose();
     } catch (loginError) {
       setError(
@@ -354,29 +562,24 @@ const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   };
 
-  const handleFeishuLogin = async () => {
-    setSubmittingMode('feishu');
+  const handleBrowserFeishuLogin = async () => {
+    setSubmittingMode('browser');
     setError('');
     setNotice('');
-    console.info('[Auth] Starting Feishu login from the sidebar panel');
     try {
-      const session = await authService.createFeishuScanSession();
-      if (!session.authorizeUrl) {
-        throw new Error(i18nService.t('authLoginFailed'));
+      const session = await createFeishuScanSession(true);
+      if (!session?.authorizeUrl) {
+        throw new Error(i18nService.t('authFeishuScanQrUnavailable'));
       }
 
-      const openResult = await window.electron.auth.login(session.authorizeUrl);
-      if (!openResult.success) {
-        throw new Error(openResult.error || i18nService.t('authLoginFailed'));
-      }
-      console.info('[Auth] Feishu login request opened successfully');
+      autoScanRequestedRef.current = true;
+      setLoginMode(AuthLoginMode.Scan);
+      setFeishuScanSession(session);
       setNotice(i18nService.t('authFeishuLoginPendingTip'));
-      setIsWaitingFeishuLogin(true);
-      setFeishuCountdown(FEISHU_LOGIN_WAIT_SECONDS);
-      setFeishuScanSessionId(session.scanSessionId);
+      await window.electron.shell.openExternal(session.authorizeUrl);
       showToast(i18nService.t('authOpenFeishuLogin'));
     } catch (loginError) {
-      console.error('[Auth] Feishu login request failed:', loginError);
+      autoScanRequestedRef.current = false;
       setError(
         loginError instanceof Error
           ? loginError.message
@@ -387,140 +590,181 @@ const QtbLoginPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   };
 
-  const handleCancelFeishuWaiting = () => {
-    setIsWaitingFeishuLogin(false);
-    setFeishuCountdown(FEISHU_LOGIN_WAIT_SECONDS);
-    setFeishuScanSessionId('');
+  const handleRefreshFeishuScan = async () => {
+    autoScanRequestedRef.current = false;
+    setError('');
+    setNotice(i18nService.t('authFeishuScanLoading'));
+    const session = await createFeishuScanSession(true);
+    if (session) {
+      setFeishuScanSession(session);
+      setNotice(i18nService.t('authFeishuScanReadyTip'));
+    }
+  };
+
+  const switchLoginMode = (nextMode: AuthLoginModeType) => {
+    if (nextMode === loginMode) {
+      return;
+    }
+    setLoginMode(nextMode);
+    setError('');
     setNotice('');
+    autoScanRequestedRef.current = false;
+    if (nextMode === AuthLoginMode.Scan) {
+      setFeishuScanSession(null);
+    }
   };
 
   return (
-    <div className="absolute bottom-full left-0 mb-2 w-[18rem] rounded-2xl border border-claude-border bg-claude-surface p-4 shadow-popover dark:border-claude-darkBorder dark:bg-claude-darkSurface z-[70] popover-enter">
-      <div className="mb-3">
+    <div className={`absolute bottom-full left-0 z-[70] mb-2 rounded-2xl border border-claude-border bg-claude-surface p-4 shadow-popover dark:border-claude-darkBorder dark:bg-claude-darkSurface popover-enter ${loginMode === AuthLoginMode.Scan ? 'w-[19rem]' : 'w-[16.5rem]'}`}>
+      <div className="mb-2 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium tracking-[0.02em] text-emerald-700 ring-1 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/15">
+        灵工打卡
+      </div>
+      <div className="mb-3 flex items-center justify-between gap-3">
         <div className="text-sm font-semibold text-claude-text dark:text-claude-darkText">
           {i18nService.t('authLoginPanelTitle')}
         </div>
-        <div className="mt-1 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-          {i18nService.t('authLoginPanelHint')}
-        </div>
+        <button
+          type="button"
+          onClick={() => switchLoginMode(loginMode === AuthLoginMode.Scan ? AuthLoginMode.Manual : AuthLoginMode.Scan)}
+          className="rounded-full px-1.5 py-0.5 text-[10px] font-medium text-claude-textSecondary/75 transition-colors hover:text-claude-text dark:text-claude-darkTextSecondary/75 dark:hover:text-claude-darkText"
+        >
+          {loginMode === AuthLoginMode.Scan
+            ? i18nService.t('authLoginModeManual')
+            : i18nService.t('authLoginModeScan')}
+        </button>
       </div>
 
-      <div className="space-y-2.5">
-        <label className="block">
-          <div className="mb-1 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-            {i18nService.t('authUsername')}
-          </div>
-          <input
-            type="text"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            disabled={inputsDisabled}
-            placeholder={i18nService.t('authUsernamePlaceholder')}
-            className="w-full rounded-xl border border-claude-border bg-white px-3 py-2 text-sm text-claude-text outline-none transition-colors focus:border-claude-accent disabled:cursor-not-allowed disabled:opacity-60 dark:border-claude-darkBorder dark:bg-claude-darkSurfaceHover dark:text-claude-darkText"
-          />
-        </label>
-
-        <label className="block">
-          <div className="mb-1 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
-            {i18nService.t('password')}
-          </div>
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            disabled={inputsDisabled}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !inputsDisabled) {
-                void handlePasswordLogin();
-              }
-            }}
-            placeholder={i18nService.t('authPasswordPlaceholder')}
-            className="w-full rounded-xl border border-claude-border bg-white px-3 py-2 text-sm text-claude-text outline-none transition-colors focus:border-claude-accent disabled:cursor-not-allowed disabled:opacity-60 dark:border-claude-darkBorder dark:bg-claude-darkSurfaceHover dark:text-claude-darkText"
-          />
-        </label>
-
-        {error && (
-          <div className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-500/10 dark:text-red-300">
-            {error}
-          </div>
-        )}
-
-        {isWaitingFeishuLogin ? (
-          <div className="rounded-xl bg-emerald-50 px-3 py-3 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+      {loginMode === AuthLoginMode.Scan ? (
+        <div className="space-y-2.5">
+          <div className="rounded-[20px] bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.09),_transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.98),rgba(249,252,251,0.96))] px-4 pb-4 pt-4 ring-1 ring-emerald-100/70 dark:bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.12),_transparent_54%),linear-gradient(180deg,rgba(8,18,16,0.98),rgba(10,24,21,0.96))] dark:ring-emerald-500/10">
             <div className="flex flex-col items-center text-center">
-              <LobsterWaitingIndicator />
-              <div className="mt-1 text-xs font-medium tracking-[0.08em] text-emerald-800/80 dark:text-emerald-200/80">
-                QINGSHU CLAW LINK
+              <FeishuSdkQrPanel
+                authorizeUrl={feishuScanSession?.authorizeUrl}
+                qrCodeContent={feishuScanSession?.qrCodeContent}
+              />
+              <div className="mt-3 text-[11px] leading-5 text-claude-textSecondary dark:text-claude-darkTextSecondary">
+                {notice || i18nService.t('authFeishuScanPanelHint')}
               </div>
-              <div className="mt-2 text-sm font-semibold text-emerald-900 dark:text-emerald-100">
-                {i18nService.t('authFeishuLoginWaitingTitle')}
-              </div>
-              <div className="mt-2 text-xs leading-5 opacity-90">
-                {notice || i18nService.t('authFeishuLoginPendingTip')}
-              </div>
-              <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-[11px] font-medium text-emerald-700 shadow-sm ring-1 ring-emerald-200/70 dark:bg-emerald-950/40 dark:text-emerald-200 dark:ring-emerald-400/20">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]" />
+              <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white/68 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200/60 dark:bg-emerald-950/24 dark:text-emerald-200 dark:ring-emerald-400/10">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 {i18nService.t('authFeishuLoginCountdown').replace('{seconds}', String(feishuCountdown))}
               </div>
             </div>
+
+            <div className="mt-3 flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handleRefreshFeishuScan()}
+                disabled={isCreatingFeishuSession || submittingMode !== null}
+                className="text-[10px] font-medium text-emerald-700/90 transition-colors hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 dark:text-emerald-200/90 dark:hover:text-emerald-100"
+              >
+                {isCreatingFeishuSession
+                  ? i18nService.t('authFeishuScanLoading')
+                  : i18nService.t('authFeishuScanRefresh')}
+              </button>
+              <button
+                type="button"
+                onClick={() => switchLoginMode(AuthLoginMode.Manual)}
+                className="text-[10px] font-medium text-claude-textSecondary/90 transition-colors hover:text-claude-text dark:text-claude-darkTextSecondary/90 dark:hover:text-claude-darkText"
+              >
+                {i18nService.t('authLoginModeManual')}
+              </button>
+            </div>
           </div>
-        ) : notice && !error ? (
-          <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
-            {notice}
-          </div>
-        ) : null}
 
-        <button
-          type="button"
-          onClick={() => void handlePasswordLogin()}
-          disabled={inputsDisabled}
-          className="w-full rounded-xl bg-claude-accent px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {submittingMode === 'password'
-            ? i18nService.t('authLoggingIn')
-            : i18nService.t('authPasswordLogin')}
-        </button>
+          {error && (
+            <div className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-500/10 dark:text-red-300">
+              {error}
+            </div>
+          )}
 
-        <button
-          type="button"
-          onClick={() => void handleFeishuLogin()}
-          disabled={submittingMode !== null}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-claude-border px-3 py-2 text-sm font-medium text-claude-text transition-colors hover:bg-claude-surfaceHover disabled:cursor-not-allowed disabled:opacity-60 dark:border-claude-darkBorder dark:text-claude-darkText dark:hover:bg-claude-darkSurfaceHover"
-        >
-          <svg viewBox="0 0 1024 1024" width="16" height="16" aria-hidden="true">
-            <path
-              d="M512 0C229.2 0 0 229.2 0 512s229.2 512 512 512 512-229.2 512-512S794.8 0 512 0z"
-              fill="#3370FF"
+          {localOnlyScanCallback && (
+            <div className="rounded-xl bg-amber-50/90 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">
+              {i18nService.t('authFeishuScanLocalCallbackHint')}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <label className="block">
+            <div className="mb-1 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
+              {i18nService.t('authUsername')}
+            </div>
+            <input
+              type="text"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              disabled={inputsDisabled}
+              placeholder={i18nService.t('authUsernamePlaceholder')}
+              className="w-full rounded-xl border border-claude-border bg-white px-3 py-2 text-sm text-claude-text outline-none transition-colors focus:border-claude-accent disabled:cursor-not-allowed disabled:opacity-60 dark:border-claude-darkBorder dark:bg-claude-darkSurfaceHover dark:text-claude-darkText"
             />
-            <path
-              d="M706.4 324.8L512 276.8l-194.4 48c-12.8 3.2-20.8 16-17.6 28.8l48 194.4c3.2 12.8 16 20.8 28.8 17.6l194.4-48 194.4 48c12.8 3.2 25.6-4.8 28.8-17.6l48-194.4c3.2-12.8-4.8-25.6-17.6-28.8z"
-              fill="#fff"
-            />
-            <path
-              d="M512 512L317.6 560c-12.8 3.2-20.8 16-17.6 28.8l48 194.4c3.2 12.8 16 20.8 28.8 17.6L512 752l135.2 48.8c12.8 3.2 25.6-4.8 28.8-17.6l48-194.4c3.2-12.8-4.8-25.6-17.6-28.8L512 512z"
-              fill="#fff"
-              opacity="0.6"
-            />
-          </svg>
-          <span>
-            {submittingMode === 'feishu'
-              ? i18nService.t('authOpenFeishuLogin')
-              : isWaitingFeishuLogin
-                ? i18nService.t('authFeishuLoginRetry')
-              : i18nService.t('authFeishuLogin')}
-          </span>
-        </button>
+          </label>
 
-        {isWaitingFeishuLogin && (
+          <label className="block">
+            <div className="mb-1 text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
+              {i18nService.t('password')}
+            </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              disabled={inputsDisabled}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !inputsDisabled) {
+                  void handlePasswordLogin();
+                }
+              }}
+              placeholder={i18nService.t('authPasswordPlaceholder')}
+              className="w-full rounded-xl border border-claude-border bg-white px-3 py-2 text-sm text-claude-text outline-none transition-colors focus:border-claude-accent disabled:cursor-not-allowed disabled:opacity-60 dark:border-claude-darkBorder dark:bg-claude-darkSurfaceHover dark:text-claude-darkText"
+            />
+          </label>
+
+          {error && (
+            <div className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-500/10 dark:text-red-300">
+              {error}
+            </div>
+          )}
+
           <button
             type="button"
-            onClick={handleCancelFeishuWaiting}
-            className="w-full rounded-xl px-3 py-2 text-sm font-medium text-claude-textSecondary transition-colors hover:bg-claude-surfaceHover dark:text-claude-darkTextSecondary dark:hover:bg-claude-darkSurfaceHover"
+            onClick={() => void handlePasswordLogin()}
+            disabled={inputsDisabled}
+            className="mt-1 w-full rounded-xl bg-claude-accent px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {i18nService.t('cancel')}
+            {submittingMode === 'password'
+              ? i18nService.t('authLoggingIn')
+              : i18nService.t('authPasswordLogin')}
           </button>
-        )}
-      </div>
+
+          <button
+            type="button"
+            onClick={() => void handleBrowserFeishuLogin()}
+            disabled={submittingMode === 'browser' || isCreatingFeishuSession}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-claude-border px-3 py-2 text-sm font-medium text-claude-text transition-colors hover:bg-claude-surfaceHover disabled:cursor-not-allowed disabled:opacity-60 dark:border-claude-darkBorder dark:text-claude-darkText dark:hover:bg-claude-darkSurfaceHover"
+          >
+            <svg viewBox="0 0 1024 1024" width="16" height="16" aria-hidden="true">
+              <path
+                d="M512 0C229.2 0 0 229.2 0 512s229.2 512 512 512 512-229.2 512-512S794.8 0 512 0z"
+                fill="#3370FF"
+              />
+              <path
+                d="M706.4 324.8L512 276.8l-194.4 48c-12.8 3.2-20.8 16-17.6 28.8l48 194.4c3.2 12.8 16 20.8 28.8 17.6l194.4-48 194.4 48c12.8 3.2 25.6-4.8 28.8-17.6l48-194.4c3.2-12.8-4.8-25.6-17.6-28.8z"
+                fill="#fff"
+              />
+              <path
+                d="M512 512L317.6 560c-12.8 3.2-20.8 16-17.6 28.8l48 194.4c3.2 12.8 16 20.8 28.8 17.6L512 752l135.2 48.8c12.8 3.2 25.6-4.8 28.8-17.6l48-194.4c3.2-12.8-4.8-25.6-17.6-28.8L512 512z"
+                fill="#fff"
+                opacity="0.6"
+              />
+            </svg>
+            <span>
+              {submittingMode === 'browser'
+                ? i18nService.t('authOpenFeishuLogin')
+                : i18nService.t('authFeishuScanOpenBrowser')}
+            </span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -564,7 +808,16 @@ const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> 
   };
 
   const phoneSuffix = user?.phone ? user.phone.slice(-4) : '';
-  const secondaryIdentity = user?.email || (phoneSuffix ? `****${phoneSuffix}` : '');
+  const primaryIdentity = normalizeIdentityText(
+    user?.nickname || user?.displayName || user?.name || user?.email
+  );
+  const secondaryCandidates = [
+    normalizeIdentityText(user?.email),
+    normalizeIdentityText(user?.name),
+    normalizeIdentityText(user?.displayName),
+  ];
+  const secondaryIdentity = secondaryCandidates.find((value) => value && value !== primaryIdentity)
+    || (phoneSuffix ? `****${phoneSuffix}` : '');
 
   const totalCredits = profileSummary?.totalCreditsRemaining ?? 0;
   const creditItems = profileSummary?.creditItems ?? [];
@@ -582,7 +835,7 @@ const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> 
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-sm font-medium dark:text-claude-darkText text-claude-text truncate">
-                {user?.nickname || phoneSuffix}
+                {primaryIdentity || phoneSuffix}
               </div>
               {secondaryIdentity && (
                 <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary mt-0.5 truncate">
@@ -598,7 +851,7 @@ const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> 
       ) : (
         <div className="px-4 py-3 border-b dark:border-claude-darkBorder border-claude-border">
           <div className="text-sm font-medium dark:text-claude-darkText text-claude-text truncate">
-            {user?.nickname || phoneSuffix}
+            {primaryIdentity || phoneSuffix}
           </div>
           {secondaryIdentity && (
             <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary mt-0.5">
@@ -698,6 +951,8 @@ const LoginButton: React.FC = () => {
   const { isLoggedIn, isLoading, user } = useSelector((state: RootState) => state.auth);
   const [showMenu, setShowMenu] = useState(false);
   const [authBackend, setAuthBackend] = useState<AuthBackendType>(AuthBackend.LegacyLobster);
+  const [prefetchedScanSession, setPrefetchedScanSession] = useState<FeishuScanSession | null>(null);
+  const [isPrefetchingScanSession, setIsPrefetchingScanSession] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -740,13 +995,32 @@ const LoginButton: React.FC = () => {
     if (isLoggedIn) {
       setShowMenu(!showMenu);
     } else if (authBackend === AuthBackend.Qtb) {
-      setShowMenu(!showMenu);
+      const nextShowMenu = !showMenu;
+      setShowMenu(nextShowMenu);
+
+      if (nextShowMenu) {
+        setPrefetchedScanSession(null);
+        setIsPrefetchingScanSession(true);
+        authService.createFeishuScanSession()
+          .then((session) => {
+            setPrefetchedScanSession(session);
+          })
+          .catch(() => {
+            setPrefetchedScanSession(null);
+          })
+          .finally(() => {
+            setIsPrefetchingScanSession(false);
+          });
+      }
     } else {
       await authService.login();
     }
   };
 
   const phoneSuffix = user?.phone ? user.phone.slice(-4) : '';
+  const primaryIdentity = normalizeIdentityText(
+    user?.nickname || user?.displayName || user?.name || user?.email
+  );
 
   return (
     <div ref={containerRef} className="relative">
@@ -759,9 +1033,9 @@ const LoginButton: React.FC = () => {
           <>
             <UserAvatar
               avatarUrl={user?.avatarUrl}
-              displayName={user?.nickname || user?.displayName || user?.name || user?.email}
+              displayName={primaryIdentity}
             />
-            <span className="truncate max-w-[80px]">{user?.nickname || `****${phoneSuffix}`}</span>
+            <span className="truncate max-w-[80px]">{primaryIdentity || `****${phoneSuffix}`}</span>
           </>
         ) : (
           <>
@@ -774,7 +1048,12 @@ const LoginButton: React.FC = () => {
         <UserMenu authBackend={authBackend} onClose={() => setShowMenu(false)} />
       )}
       {showMenu && !isLoggedIn && authBackend === AuthBackend.Qtb && (
-        <QtbLoginPanel onClose={() => setShowMenu(false)} />
+        <QtbLoginPanel
+          authBackend={authBackend}
+          initialScanSession={prefetchedScanSession}
+          initialScanLoading={isPrefetchingScanSession}
+          onClose={() => setShowMenu(false)}
+        />
       )}
     </div>
   );

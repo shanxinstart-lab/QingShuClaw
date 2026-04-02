@@ -3,6 +3,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState, store } from './store';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
+import LoginWelcomeOverlay from './components/LoginWelcomeOverlay';
 import Toast from './components/Toast';
 import WindowTitleBar from './components/window/WindowTitleBar';
 import { CoworkView } from './components/cowork';
@@ -31,14 +32,18 @@ import { matchesShortcut } from './services/shortcuts';
 import AppUpdateBadge from './components/update/AppUpdateBadge';
 import AppUpdateModal from './components/update/AppUpdateModal';
 import PrivacyDialog from './components/PrivacyDialog';
+import { AppCustomEvent } from './constants/app';
 
 const App: React.FC = () => {
+  const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
+  const platform = electronApi?.platform ?? 'unknown';
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions>({});
   const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'mcp' | 'agents'>('cowork');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [showLoginWelcome, setShowLoginWelcome] = useState(false);
   const [, forceLanguageRefresh] = useState(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
@@ -52,13 +57,14 @@ const App: React.FC = () => {
     disableUpdate?: boolean;
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const loginWelcomeTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
   const dispatch = useDispatch();
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
   const pendingPermissions = useSelector((state: RootState) => state.cowork.pendingPermissions);
   const pendingPermission = pendingPermissions[0] ?? null;
-  const isWindows = window.electron.platform === 'win32';
+  const isWindows = platform === 'win32';
 
   const waitWithTimeout = useCallback(
     async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
@@ -92,15 +98,18 @@ const App: React.FC = () => {
     const initializeApp = async () => {
       try {
         console.info('[App] initializeApp: start');
+        if (!electronApi) {
+          throw new Error(i18nService.t('initializationElectronUnavailable'));
+        }
         // 标记平台，用于 CSS 条件样式（如 Windows 标题栏按钮区域留白）
-        document.documentElement.classList.add(`platform-${window.electron.platform}`);
+        document.documentElement.classList.add(`platform-${platform}`);
 
         // 初始化配置
         console.info('[App] initializeApp: configService.init');
         await waitWithTimeout(configService.init(), 5000, 'configService.init');
 
         // Load enterprise config if present
-        const entConfig = await window.electron.enterprise.getConfig();
+        const entConfig = await electronApi.enterprise.getConfig();
         setEnterpriseConfig(entConfig);
 
         // 初始化主题
@@ -161,7 +170,7 @@ const App: React.FC = () => {
         }
 
         // 检查隐私协议是否已同意（必须在 setIsInitialized 之前）
-        const agreed = await window.electron.store.get('privacy_agreed');
+        const agreed = await electronApi.store.get('privacy_agreed');
         setPrivacyAgreed(agreed === true);
 
         setIsInitialized(true);
@@ -174,13 +183,13 @@ const App: React.FC = () => {
 
       } catch (error) {
         console.error('Failed to initialize app:', error);
-        setInitError(i18nService.t('initializationError'));
+        setInitError(error instanceof Error && error.message ? error.message : i18nService.t('initializationError'));
         setIsInitialized(true);
       }
     };
 
     void initializeApp();
-  }, [dispatch, waitWithTimeout]);
+  }, [dispatch, electronApi, platform, waitWithTimeout]);
 
   useEffect(() => {
     const unsubscribe = i18nService.subscribe(() => {
@@ -193,14 +202,17 @@ const App: React.FC = () => {
 
   // Network status monitoring
   useEffect(() => {
+    if (!electronApi) {
+      return;
+    }
     const handleOnline = () => {
       console.log('[Renderer] Network online');
-      window.electron.networkStatus.send('online');
+      electronApi.networkStatus.send('online');
     };
 
     const handleOffline = () => {
       console.log('[Renderer] Network offline');
-      window.electron.networkStatus.send('offline');
+      electronApi.networkStatus.send('offline');
     };
 
     window.addEventListener('online', handleOnline);
@@ -210,7 +222,7 @@ const App: React.FC = () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [electronApi]);
 
   useEffect(() => {
     if (!isInitialized || !selectedModel?.id) return;
@@ -274,6 +286,15 @@ const App: React.FC = () => {
     }, 0);
   }, [dispatch, mainView, currentSessionId]);
 
+  const handleFocusCoworkInput = useCallback((clear = false) => {
+    setMainView('cowork');
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.FocusCoworkInput, {
+        detail: { clear },
+      }));
+    }, 0);
+  }, []);
+
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
     if (toastTimerRef.current) {
@@ -290,8 +311,11 @@ const App: React.FC = () => {
   }, [showToast]);
 
   const runUpdateCheck = useCallback(async () => {
+    if (!electronApi) {
+      return;
+    }
     try {
-      const currentVersion = await window.electron.appInfo.getVersion();
+      const currentVersion = await electronApi.appInfo.getVersion();
       const nextUpdate = await checkForAppUpdate(currentVersion);
       setUpdateInfo(nextUpdate);
       if (!nextUpdate) {
@@ -302,7 +326,7 @@ const App: React.FC = () => {
       setUpdateInfo(null);
       setShowUpdateModal(false);
     }
-  }, []);
+  }, [electronApi]);
 
   const handleOpenUpdateModal = useCallback(() => {
     if (!updateInfo) return;
@@ -326,8 +350,12 @@ const App: React.FC = () => {
     // If the URL is a fallback page (not a direct file download), open in browser
     if (updateInfo.url.includes('#') || updateInfo.url.endsWith('/download-list')) {
       setShowUpdateModal(false);
+      if (!electronApi) {
+        showToast(i18nService.t('updateOpenFailed'));
+        return;
+      }
       try {
-        const result = await window.electron.shell.openExternal(updateInfo.url);
+        const result = await electronApi.shell.openExternal(updateInfo.url);
         if (!result.success) {
           showToast(i18nService.t('updateOpenFailed'));
         }
@@ -342,12 +370,18 @@ const App: React.FC = () => {
     setDownloadProgress(null);
     setUpdateError(null);
 
-    const unsubscribe = window.electron.appUpdate.onDownloadProgress((progress) => {
+    if (!electronApi) {
+      setUpdateModalState('error');
+      setUpdateError(i18nService.t('initializationElectronUnavailable'));
+      return;
+    }
+
+    const unsubscribe = electronApi.appUpdate.onDownloadProgress((progress) => {
       setDownloadProgress(progress);
     });
 
     try {
-      const downloadResult = await window.electron.appUpdate.download(updateInfo.url);
+      const downloadResult = await electronApi.appUpdate.download(updateInfo.url);
       unsubscribe();
 
       if (!downloadResult.success) {
@@ -361,7 +395,7 @@ const App: React.FC = () => {
       }
 
       setUpdateModalState('installing');
-      const installResult = await window.electron.appUpdate.install(downloadResult.filePath!);
+      const installResult = await electronApi.appUpdate.install(downloadResult.filePath!);
 
       if (!installResult.success) {
         setUpdateModalState('error');
@@ -378,13 +412,16 @@ const App: React.FC = () => {
       setUpdateModalState('error');
       setUpdateError(msg || i18nService.t('updateDownloadFailed'));
     }
-  }, [updateInfo, showToast]);
+  }, [electronApi, updateInfo, showToast]);
 
   const handleCancelDownload = useCallback(async () => {
-    await window.electron.appUpdate.cancelDownload();
+    if (!electronApi) {
+      return;
+    }
+    await electronApi.appUpdate.cancelDownload();
     setUpdateModalState('info');
     setDownloadProgress(null);
-  }, []);
+  }, [electronApi]);
 
   const handleRetryUpdate = useCallback(() => {
     setUpdateModalState('info');
@@ -393,14 +430,17 @@ const App: React.FC = () => {
   }, []);
 
   const handlePrivacyAccept = useCallback(async () => {
-    await window.electron.store.set('privacy_agreed', true);
+    if (!electronApi) {
+      return;
+    }
+    await electronApi.store.set('privacy_agreed', true);
     setPrivacyAgreed(true);
-  }, []);
+  }, [electronApi]);
 
   const handlePrivacyReject = useCallback(() => {
     // 立刻隐藏窗口，让用户感觉立即关闭
-    window.electron.window.close();
-  }, []);
+    electronApi?.window.close();
+  }, [electronApi]);
 
   const handlePermissionResponse = useCallback(async (result: CoworkPermissionResult) => {
     if (!pendingPermission) return;
@@ -479,6 +519,9 @@ const App: React.FC = () => {
       if (toastTimerRef.current) {
         window.clearTimeout(toastTimerRef.current);
       }
+      if (loginWelcomeTimerRef.current) {
+        window.clearTimeout(loginWelcomeTimerRef.current);
+      }
     };
   }, []);
 
@@ -488,25 +531,78 @@ const App: React.FC = () => {
       const message = (e as CustomEvent<string>).detail;
       if (message) showToast(message);
     };
-    window.addEventListener('app:showToast', handler);
-    return () => window.removeEventListener('app:showToast', handler);
+    window.addEventListener(AppCustomEvent.ShowToast, handler);
+    return () => window.removeEventListener(AppCustomEvent.ShowToast, handler);
   }, [showToast]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (showLoginWelcome) {
+        return;
+      }
+
+      setShowLoginWelcome(true);
+      if (loginWelcomeTimerRef.current) {
+        window.clearTimeout(loginWelcomeTimerRef.current);
+      }
+      loginWelcomeTimerRef.current = window.setTimeout(() => {
+        setShowLoginWelcome(false);
+        loginWelcomeTimerRef.current = null;
+      }, 2400);
+    };
+
+    window.addEventListener(AppCustomEvent.ShowLoginWelcome, handler);
+    return () => {
+      window.removeEventListener(AppCustomEvent.ShowLoginWelcome, handler);
+    };
+  }, [showLoginWelcome]);
 
   // 监听托盘菜单打开设置的 IPC 事件
   useEffect(() => {
-    const unsubscribe = window.electron.ipcRenderer.on('app:openSettings', () => {
+    if (!electronApi) {
+      return;
+    }
+    const unsubscribe = electronApi.ipcRenderer.on('app:openSettings', () => {
       handleShowSettings();
     });
     return unsubscribe;
-  }, [handleShowSettings]);
+  }, [electronApi, handleShowSettings]);
 
   // 监听托盘菜单新建任务的 IPC 事件
   useEffect(() => {
-    const unsubscribe = window.electron.ipcRenderer.on('app:newTask', () => {
+    if (!electronApi) {
+      return;
+    }
+    const unsubscribe = electronApi.ipcRenderer.on('app:newTask', () => {
       handleNewChat();
     });
     return unsubscribe;
-  }, [handleNewChat]);
+  }, [electronApi, handleNewChat]);
+
+  useEffect(() => {
+    if (!electronApi) {
+      return;
+    }
+    const unsubscribe = electronApi.ipcRenderer.on('app:focusCoworkInput', (_payload?: { clear?: boolean }) => {
+      handleFocusCoworkInput(Boolean(_payload?.clear));
+    });
+    return unsubscribe;
+  }, [electronApi, handleFocusCoworkInput]);
+
+  useEffect(() => {
+    if (!electronApi) {
+      return;
+    }
+    const unsubscribe = electronApi.wakeInput.onDictationRequested((request) => {
+      handleFocusCoworkInput(false);
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
+          detail: request,
+        }));
+      }, 0);
+    });
+    return unsubscribe;
+  }, [electronApi, handleFocusCoworkInput]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -642,6 +738,9 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen overflow-hidden flex flex-col bg-surface-raised">
+      {showLoginWelcome && (
+        <LoginWelcomeOverlay onClose={() => setShowLoginWelcome(false)} />
+      )}
       {toastMessage && (
         <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
       )}

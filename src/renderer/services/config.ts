@@ -1,4 +1,12 @@
-import { AppConfig, CONFIG_KEYS, defaultConfig, isCustomProvider } from '../config';
+import {
+  AppConfig,
+  CONFIG_KEYS,
+  DEFAULT_SPEECH_INPUT_CONFIG,
+  DEFAULT_TTS_CONFIG,
+  DEFAULT_WAKE_INPUT_CONFIG,
+  defaultConfig,
+  isCustomProvider,
+} from '../config';
 import { localStore } from './store';
 
 const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | 'gemini' | null => {
@@ -72,6 +80,27 @@ const normalizeProvidersConfig = (providers: AppConfig['providers']): AppConfig[
     ])
   ) as AppConfig['providers'];
 };
+
+const mergeSpeechInputConfig = (
+  speechInput?: AppConfig['speechInput']
+): NonNullable<AppConfig['speechInput']> => ({
+  ...DEFAULT_SPEECH_INPUT_CONFIG,
+  ...(speechInput ?? {}),
+});
+
+const mergeWakeInputConfig = (
+  wakeInput?: AppConfig['wakeInput']
+): NonNullable<AppConfig['wakeInput']> => ({
+  ...DEFAULT_WAKE_INPUT_CONFIG,
+  ...(wakeInput ?? {}),
+});
+
+const mergeTtsConfig = (
+  tts?: AppConfig['tts']
+): NonNullable<AppConfig['tts']> => ({
+  ...DEFAULT_TTS_CONFIG,
+  ...(tts ?? {}),
+});
 
 /**
  * Migrate legacy single `custom` provider to `custom_0`.
@@ -202,6 +231,9 @@ class ConfigService {
             ...defaultConfig.shortcuts!,
             ...(storedConfig.shortcuts ?? {}),
           } as AppConfig['shortcuts'],
+          speechInput: mergeSpeechInputConfig(storedConfig.speechInput),
+          wakeInput: mergeWakeInputConfig(storedConfig.wakeInput),
+          tts: mergeTtsConfig(storedConfig.tts),
           providers: mergedProviders as AppConfig['providers'],
         });
       }
@@ -216,10 +248,32 @@ class ConfigService {
 
   async updateConfig(newConfig: Partial<AppConfig>) {
     const normalizedProviders = normalizeProvidersConfig(newConfig.providers as AppConfig['providers'] | undefined);
+    const mergedSpeechInput = newConfig.speechInput
+      ? mergeSpeechInputConfig({
+          ...this.config.speechInput,
+          ...newConfig.speechInput,
+        })
+      : this.config.speechInput;
+    const mergedWakeInput = newConfig.wakeInput
+      ? mergeWakeInputConfig({
+          ...this.config.wakeInput,
+          ...newConfig.wakeInput,
+        })
+      : this.config.wakeInput;
+    const mergedTts = newConfig.tts
+      ? mergeTtsConfig({
+          ...this.config.tts,
+          ...newConfig.tts,
+        })
+      : this.config.tts;
+
     this.config = {
       ...this.config,
       ...newConfig,
       ...(normalizedProviders ? { providers: normalizedProviders } : {}),
+      ...(newConfig.speechInput ? { speechInput: mergedSpeechInput } : {}),
+      ...(newConfig.wakeInput ? { wakeInput: mergedWakeInput } : {}),
+      ...(newConfig.tts ? { tts: mergedTts } : {}),
     };
     await localStore.setItem(CONFIG_KEYS.APP_CONFIG, this.config);
   }

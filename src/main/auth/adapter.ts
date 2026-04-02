@@ -25,6 +25,7 @@ type AuthAdapterDeps = {
   backend: AuthBackend;
   fetchFn: FetchFn;
   openExternal: OpenExternalFn;
+  onAuthSessionInvalidated?: (reason: string) => void;
   resolveApiBaseUrl: () => string | null;
   resolveWebBaseUrl: () => string | null;
   getAuthTokens: () => StoredAuthTokens | null;
@@ -43,6 +44,10 @@ export interface AuthAdapter {
   loginWithPassword(
     input: AuthPasswordLoginInput
   ): Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+  getFeishuScanWindowUrl(input: {
+    authorizeUrl?: string;
+    scanSessionId?: string;
+  }): Promise<{ success: boolean; url?: string; error?: string }>;
   getFeishuAuthorizeUrl(): Promise<{ success: boolean; url?: string; error?: string }>;
   createFeishuScanSession(): Promise<{
     success: boolean;
@@ -165,6 +170,9 @@ type QtbBridgeSession = Partial<DesktopBridgeSessionPayload> & {
 };
 
 const QTB_LOGIN_PASSWORD_ENCRYPTION_KEY = CryptoJS.enc.Utf8.parse('supersonic@2024');
+const QTB_ACCESS_ERROR_CODE = 403;
+const QTB_AUTHENTICATION_FAILED_PATTERN = /authentication failed|please login/i;
+const QTB_DESKTOP_FEISHU_SCAN_PATH = '/login/desktop-scan';
 
 const buildUnavailableError = (backend: AuthBackend): string =>
   `Auth backend ${backend} is not implemented yet in QingShuClaw`;
@@ -192,13 +200,26 @@ const decodeJwtPayload = <T>(token: string): T | null => {
   }
 };
 
+const normalizeIdentityValue = (value?: string | null): string => {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized || /^(null|undefined)$/i.test(normalized)) {
+    return '';
+  }
+  return normalized;
+};
+
 const normalizeQtbUser = (user: QtbUser, claims?: QtbTokenClaims | null) => {
-  const displayName = user.displayName || claims?.token_user_display_name || '';
-  const name = user.name || claims?.token_user_name || '';
-  const email = user.email || claims?.token_user_email || '';
+  const displayName = normalizeIdentityValue(
+    user.displayName || claims?.token_user_display_name || ''
+  );
+  const name = normalizeIdentityValue(user.name || claims?.token_user_name || '');
+  const email = normalizeIdentityValue(user.email || claims?.token_user_email || '');
   const nickname = displayName || name || email || 'QTB User';
+  const userId = normalizeIdentityValue(
+    String(user.id ?? claims?.token_user_id ?? name ?? email ?? '')
+  );
   return {
-    userId: String(user.id ?? claims?.token_user_id ?? name ?? email ?? ''),
+    userId,
     phone: '',
     nickname,
     avatarUrl: '',
@@ -232,6 +253,14 @@ const buildQtbAuthHeaders = (
   auth: `Bearer ${accessToken}`,
 });
 
+const isQtbAccessError = (body?: QtbResult<unknown> | null): boolean => {
+  if (!body) {
+    return false;
+  }
+  return body.code === QTB_ACCESS_ERROR_CODE
+    || QTB_AUTHENTICATION_FAILED_PATTERN.test(body.msg || '');
+};
+
 export const createUnavailableAuthAdapter = (
   backend: AuthBackend,
   deps: Pick<AuthAdapterDeps, 'clearAuthTokens' | 'clearServerModelMetadata'>
@@ -243,6 +272,9 @@ export const createUnavailableAuthAdapter = (
     return { success: false, error: buildUnavailableError(backend) };
   },
   async loginWithPassword() {
+    return { success: false, error: buildUnavailableError(backend) };
+  },
+  async getFeishuScanWindowUrl() {
     return { success: false, error: buildUnavailableError(backend) };
   },
   async getFeishuAuthorizeUrl() {
@@ -367,6 +399,13 @@ export const createLegacyLobsterAuthAdapter = (deps: AuthAdapterDeps): AuthAdapt
       return {
         success: false,
         error: `Auth backend ${deps.backend} does not support password login`,
+      };
+    },
+
+    async getFeishuScanWindowUrl() {
+      return {
+        success: false,
+        error: `Auth backend ${deps.backend} does not support Feishu scan login`,
       };
     },
 
@@ -667,22 +706,133 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
     });
   };
 
-  const fetchCurrentUser = async (accessToken: string): Promise<QtbUser> => {
-    const response = await deps.fetchFn(`${resolveApiBaseUrl()}/api/auth/user/getCurrentUser`, {
+  const refreshQtbAccessToken = async (): Promise<string | null> => {
+    const tokens = deps.getAuthTokens();
+    if (!tokens?.refreshToken) {
+      return null;
+    }
+
+    const tryBridgeRefresh = async () => {
+      const body = await fetchQtbResult<QtbBridgeSession>('/api/qingshu-claw/auth/bridge/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: tokens.refreshToken }),
+      });
+      if (body.code !== 200 || !body.data?.accessToken) {
+        return null;
+      }
+      deps.saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
+      return body.data.accessToken;
+    };
+
+    const tryQingShuRefresh = async () => {
+      const body = await fetchQtbResult<QtbAuthResponse>('/api/datachat/qingshu/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: tokens.refreshToken }),
+      });
+      if (body.code !== 200 || !body.data?.accessToken) {
+        return null;
+      }
+      deps.saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
+      return body.data.accessToken;
+    };
+
+    const refreshedToken = await tryBridgeRefresh().catch((): null => null)
+      || await tryQingShuRefresh().catch((): null => null);
+
+    if (!refreshedToken) {
+      deps.onAuthSessionInvalidated?.('refresh-failed');
+    }
+
+    return refreshedToken;
+  };
+
+  const fetchQtbResultWithSession = async <T>(
+    path: string,
+    options?: RequestInit,
+    accessToken?: string | null
+  ): Promise<QtbResult<T>> => {
+    const activeToken = accessToken || deps.getAuthTokens()?.accessToken;
+    if (!activeToken) {
+      throw new Error('No QTB auth token available');
+    }
+
+    let body = await fetchQtbResultWithAuth<T>(activeToken, path, options);
+    if (!isQtbAccessError(body)) {
+      return body;
+    }
+
+    const refreshedAccessToken = await refreshQtbAccessToken();
+    if (!refreshedAccessToken) {
+      return body;
+    }
+
+    body = await fetchQtbResultWithAuth<T>(refreshedAccessToken, path, options);
+    return body;
+  };
+
+  const fetchCurrentUser = async (accessToken?: string | null): Promise<QtbUser> => {
+    const activeToken = accessToken || deps.getAuthTokens()?.accessToken;
+    if (!activeToken) {
+      throw new Error('No QTB auth token available');
+    }
+
+    let response = await deps.fetchFn(`${resolveApiBaseUrl()}/api/auth/user/getCurrentUser`, {
       method: 'GET',
-      headers: buildQtbAuthHeaders(accessToken),
+      headers: buildQtbAuthHeaders(activeToken),
     });
     if (!response.ok) {
       throw new Error(`QTB current user request failed: ${response.status}`);
     }
-    return await response.json() as QtbUser;
+
+    let body = await response.json() as QtbUser | QtbResult<QtbUser>;
+    if (
+      typeof body === 'object'
+      && body !== null
+      && 'code' in body
+      && isQtbAccessError(body as QtbResult<QtbUser>)
+    ) {
+      const refreshedAccessToken = await refreshQtbAccessToken();
+      if (!refreshedAccessToken) {
+        throw new Error((body as QtbResult<QtbUser>).msg || 'authentication failed, please login');
+      }
+      response = await deps.fetchFn(`${resolveApiBaseUrl()}/api/auth/user/getCurrentUser`, {
+        method: 'GET',
+        headers: buildQtbAuthHeaders(refreshedAccessToken),
+      });
+      if (!response.ok) {
+        throw new Error(`QTB current user request failed: ${response.status}`);
+      }
+      body = await response.json() as QtbUser | QtbResult<QtbUser>;
+    }
+
+    if (
+      typeof body === 'object'
+      && body !== null
+      && 'data' in body
+      && (body as QtbResult<QtbUser>).data
+    ) {
+      return (body as QtbResult<QtbUser>).data as QtbUser;
+    }
+
+    return body as QtbUser;
   };
 
-  const fetchQtbQuota = async (accessToken: string): Promise<QtbQuota> => {
-    const body = await fetchQtbResultWithAuth<QtbQuota>(accessToken, '/api/qingshu-claw/auth/quota', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
+  const fetchQtbQuota = async (accessToken?: string | null): Promise<QtbQuota> => {
+    const activeToken = accessToken || deps.getAuthTokens()?.accessToken;
+    if (!activeToken) {
+      throw new Error('No QTB auth token available');
+    }
+
+    const body = await fetchQtbResultWithSession<QtbQuota>(
+      '/api/qingshu-claw/auth/quota',
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      },
+      activeToken
+    );
 
     if (body.code !== 200 || !body.data) {
       throw new Error(body.msg || 'Failed to fetch QTB quota');
@@ -762,6 +912,32 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
     }
   };
 
+  const getFeishuScanWindowUrl = async (input: {
+    authorizeUrl?: string;
+    scanSessionId?: string;
+  }) => {
+    const normalizedScanSessionId = input.scanSessionId?.trim();
+    if (normalizedScanSessionId) {
+      return {
+        success: true,
+        url: `${resolveWebBaseUrl()}${QTB_DESKTOP_FEISHU_SCAN_PATH}?scanSessionId=${encodeURIComponent(normalizedScanSessionId)}`,
+      };
+    }
+
+    const normalizedAuthorizeUrl = input.authorizeUrl?.trim();
+    if (normalizedAuthorizeUrl) {
+      return {
+        success: true,
+        url: normalizedAuthorizeUrl,
+      };
+    }
+
+    return {
+      success: false,
+      error: 'Failed to resolve Feishu scan window URL',
+    };
+  };
+
   return {
     async getBackend() {
       return { success: true, backend: deps.backend };
@@ -797,23 +973,27 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
           password: encryptQtbPassword(input.password),
         };
 
-        const body = await fetchQtbResult<string>('/api/auth/user/login', {
+        const body = await fetchQtbResult<QtbBridgeSession>('/api/qingshu-claw/auth/password-login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
 
-        if (body.code !== 200 || !body.data) {
+        if (body.code !== 200 || !body.data?.accessToken || !body.data?.refreshToken) {
           return { success: false, error: body.msg || 'QTB password login failed' };
         }
 
-        return await buildLoginSuccess(body.data);
+        return await buildLoginSuccess(body.data.accessToken, body.data.refreshToken);
       } catch (error) {
         return {
           success: false,
           error: error instanceof Error ? error.message : 'QTB password login failed',
         };
       }
+    },
+
+    async getFeishuScanWindowUrl(input) {
+      return getFeishuScanWindowUrl(input);
     },
 
     async getFeishuAuthorizeUrl() {
@@ -951,13 +1131,7 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
 
     async createBridgeTicket(input) {
       try {
-        const accessToken = deps.getAuthTokens()?.accessToken;
-        if (!accessToken) {
-          return { success: false, error: 'No QTB auth token available' };
-        }
-
-        const body = await fetchQtbResultWithAuth<QtbBridgeTicket>(
-          accessToken,
+        const body = await fetchQtbResultWithSession<QtbBridgeTicket>(
           '/api/qingshu-claw/auth/bridge/tickets',
           {
             method: 'POST',
@@ -1036,12 +1210,7 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
 
     async getQuota() {
       try {
-        const accessToken = deps.getAuthTokens()?.accessToken;
-        if (!accessToken) {
-          return { success: false };
-        }
-
-        const quota = await fetchQtbQuota(accessToken);
+        const quota = await fetchQtbQuota();
         return { success: true, quota };
       } catch {
         return { success: false };
@@ -1050,13 +1219,7 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
 
     async getProfileSummary() {
       try {
-        const accessToken = deps.getAuthTokens()?.accessToken;
-        if (!accessToken) {
-          return { success: false };
-        }
-
-        const body = await fetchQtbResultWithAuth<QtbProfileSummary>(
-          accessToken,
+        const body = await fetchQtbResultWithSession<QtbProfileSummary>(
           '/api/qingshu-claw/auth/profile-summary',
           {
             method: 'GET',
@@ -1075,46 +1238,31 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
     },
 
     async logout() {
-      deps.clearAuthTokens();
-      deps.clearServerModelMetadata();
+      try {
+        const tokens = deps.getAuthTokens();
+        const activeToken = tokens?.accessToken;
+        if (activeToken) {
+          await Promise.allSettled([
+            deps.fetchFn(`${resolveApiBaseUrl()}/api/auth/logout`, {
+              method: 'POST',
+              headers: buildQtbAuthHeaders(activeToken),
+            }),
+            deps.fetchFn(`${resolveApiBaseUrl()}/api/datachat/qingshu/auth/logout`, {
+              method: 'POST',
+              headers: buildQtbAuthHeaders(activeToken),
+            }),
+          ]);
+        }
+      } finally {
+        deps.clearAuthTokens();
+        deps.clearServerModelMetadata();
+      }
       return { success: true };
     },
 
     async refreshToken() {
       try {
-        const tokens = deps.getAuthTokens();
-        if (!tokens?.refreshToken) {
-          return { success: false };
-        }
-
-        const tryBridgeRefresh = async () => {
-          const body = await fetchQtbResult<QtbBridgeSession>('/api/qingshu-claw/auth/bridge/refresh', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-          });
-          if (body.code !== 200 || !body.data?.accessToken) {
-            return null;
-          }
-          deps.saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
-          return body.data.accessToken;
-        };
-
-        const tryQingShuRefresh = async () => {
-          const body = await fetchQtbResult<QtbAuthResponse>('/api/datachat/qingshu/auth/refresh', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-          });
-          if (body.code !== 200 || !body.data?.accessToken) {
-            return null;
-          }
-          deps.saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
-          return body.data.accessToken;
-        };
-
-        const refreshedAccessToken = await tryBridgeRefresh().catch((): null => null)
-          || await tryQingShuRefresh().catch((): null => null);
+        const refreshedAccessToken = await refreshQtbAccessToken();
         if (!refreshedAccessToken) {
           return { success: false };
         }
@@ -1131,13 +1279,7 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
 
     async getModels() {
       try {
-        const accessToken = deps.getAuthTokens()?.accessToken;
-        if (!accessToken) {
-          return { success: false, error: 'No QTB auth token available' };
-        }
-
-        const body = await fetchQtbResultWithAuth<QtbModel[]>(
-          accessToken,
+        const body = await fetchQtbResultWithSession<QtbModel[]>(
           '/api/qingshu-claw/models/available',
           {
             method: 'GET',
@@ -1146,15 +1288,25 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
         );
 
         if (body.code !== 200 || !body.data) {
+          console.warn('[QtbAuth] server models request failed:', {
+            code: body.code,
+            message: body.msg || 'unknown error',
+          });
           return {
             success: false,
             error: body.msg || 'Failed to fetch QTB server models',
           };
         }
 
+        if (body.data.length === 0) {
+          console.log('[QtbAuth] server models request returned an empty list');
+        } else {
+          console.log(`[QtbAuth] loaded ${body.data.length} server models`);
+        }
         deps.updateServerModelMetadata(body.data);
         return { success: true, models: body.data };
       } catch (error) {
+        console.error('[QtbAuth] server models request crashed:', error);
         return {
           success: false,
           error: error instanceof Error ? error.message : 'Failed to fetch QTB server models',

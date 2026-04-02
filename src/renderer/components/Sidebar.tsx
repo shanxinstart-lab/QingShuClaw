@@ -33,6 +33,25 @@ interface SidebarProps {
   hideLogin?: boolean;
 }
 
+const renderBrandHighlight = (text: string) => {
+  const match = /(灵工打卡|Linggong Daka)/.exec(text);
+  if (!match || match.index < 0) {
+    return text;
+  }
+
+  const brandText = match[0];
+  const before = text.slice(0, match.index);
+  const after = text.slice(match.index + brandText.length);
+
+  return (
+    <>
+      {before}
+      <span className="text-emerald-600 dark:text-emerald-400">{brandText}</span>
+      {after}
+    </>
+  );
+};
+
 const Sidebar: React.FC<SidebarProps> = ({
   onShowSettings,
   activeView,
@@ -308,22 +327,27 @@ const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
       ) : (
-        <div className="px-3 pb-3 pt-1 flex items-center gap-1">
-          {!hideLogin && (
-            <>
-              <LoginButton />
-              <div className="flex-1" />
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => onShowSettings()}
-            className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors"
-            aria-label={i18nService.t('settings')}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="M14 17H5" /><path d="M19 7h-9" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></svg>
-            {i18nService.t('settings')}
-          </button>
+        <div className="px-3 pb-3 pt-1">
+          <div className="flex items-center gap-1">
+            {!hideLogin && (
+              <>
+                <LoginButton />
+                <div className="flex-1" />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => onShowSettings()}
+              className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors"
+              aria-label={i18nService.t('settings')}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="M14 17H5" /><path d="M19 7h-9" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></svg>
+              {i18nService.t('settings')}
+            </button>
+          </div>
+          <div className="px-2.5 pt-2 text-[11px] tracking-[0.14em] text-secondary/75 uppercase">
+            {renderBrandHighlight(i18nService.t('productBrandSignature'))}
+          </div>
         </div>
       )}
       {/* Batch Delete Confirmation Modal */}

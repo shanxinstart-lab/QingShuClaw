@@ -91,6 +91,25 @@ import {
   type AuthConfig,
   type AuthPasswordLoginInput,
 } from '../common/auth';
+import { MacSpeechService, broadcastSpeechState } from './libs/macSpeechService';
+import { MacTtsService, broadcastTtsState } from './libs/macTtsService';
+import { WakeInputService } from './libs/wakeInputService';
+import {
+  SpeechErrorCode,
+  SpeechFeatureFlagKey,
+  SpeechIpcChannel,
+  SpeechStateType,
+  SpeechPermissionStatus,
+  type SpeechStartOptions,
+} from '../shared/speech/constants';
+import {
+  WakeInputIpcChannel,
+  type WakeInputConfig,
+} from '../shared/wakeInput/constants';
+import {
+  TtsIpcChannel,
+  type TtsSpeakOptions,
+} from '../shared/tts/constants';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -181,6 +200,109 @@ const describeUrlForLog = (value: string): string => {
   } catch {
     return value;
   }
+};
+
+const getUrlOrigin = (value?: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+};
+
+const isAllowedAuthWindowUrl = (value: string, allowedOrigins: Set<string>): boolean => {
+  try {
+    const parsed = new URL(value);
+    return allowedOrigins.has(parsed.origin);
+  } catch {
+    return false;
+  }
+};
+
+const isIgnorableAuthWindowLoadError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /ERR_ABORTED/i.test(error.message) || /\(-3\)/.test(error.message);
+};
+
+const loadAuthWindowUrl = async (window: BrowserWindow, targetUrl: string): Promise<void> => {
+  try {
+    await window.loadURL(targetUrl);
+  } catch (error) {
+    if (isIgnorableAuthWindowLoadError(error)) {
+      console.warn('[Auth] Ignored auth window navigation interruption during Feishu redirect:', error);
+      return;
+    }
+    throw error;
+  }
+};
+
+const openAuthPopupWindow = async (
+  targetUrl: string,
+  options: { title?: string; allowedOrigins?: string[] } = {}
+): Promise<void> => {
+  const allowedOrigins = new Set<string>(
+    [
+      'https://open.feishu.cn',
+      'https://accounts.feishu.cn',
+      'https://passport.feishu.cn',
+      ...(options.allowedOrigins || []),
+    ].filter(Boolean)
+  );
+
+  if (authWindow && !authWindow.isDestroyed()) {
+    authWindow.setTitle(options.title || '飞书扫码登录');
+    if (authWindow.webContents.getURL() !== targetUrl) {
+      await loadAuthWindowUrl(authWindow, targetUrl);
+    }
+    authWindow.show();
+    authWindow.focus();
+    return;
+  }
+
+  authWindow = new BrowserWindow({
+    width: 460,
+    height: 760,
+    minWidth: 420,
+    minHeight: 620,
+    title: options.title || '飞书扫码登录',
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    modal: false,
+    autoHideMenuBar: true,
+    show: false,
+    backgroundColor: getInitialTheme() === 'dark' ? '#0F1117' : '#F8F9FB',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      devTools: isDev,
+      spellcheck: false,
+    },
+  });
+
+  authWindow.setMenu(null);
+  authWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  authWindow.webContents.on('will-navigate', (event, navUrl) => {
+    if (!isAllowedAuthWindowUrl(navUrl, allowedOrigins)) {
+      event.preventDefault();
+      void shell.openExternal(navUrl);
+    }
+  });
+  authWindow.on('closed', () => {
+    authWindow = null;
+  });
+  authWindow.once('ready-to-show', () => {
+    authWindow?.show();
+  });
+
+  await loadAuthWindowUrl(authWindow, targetUrl);
 };
 
 const truncateIpcString = (value: string, maxChars: number): string => {
@@ -1542,6 +1664,8 @@ const getAppIconPath = (): string | undefined => {
 
 // 保存对主窗口的引用
 let mainWindow: BrowserWindow | null = null;
+let authWindow: BrowserWindow | null = null;
+const macSpeechService = new MacSpeechService();
 
 let isQuitting = false;
 
@@ -1554,7 +1678,110 @@ type AppConfigSettings = {
   language?: string;
   useSystemProxy?: boolean;
   auth?: Partial<AuthConfig>;
+  wakeInput?: Partial<WakeInputConfig>;
 };
+
+const DEFAULT_WAKE_INPUT_CONFIG: WakeInputConfig = {
+  enabled: false,
+  wakeWord: '打开青书爪',
+  submitCommand: '发送',
+  cancelCommand: '取消',
+  sessionTimeoutMs: 20_000,
+};
+
+const mergeWakeInputConfig = (config?: Partial<WakeInputConfig>): WakeInputConfig => ({
+  ...DEFAULT_WAKE_INPUT_CONFIG,
+  ...(config ?? {}),
+});
+
+let foregroundSpeechOrigin: 'manual' | 'wake' | null = null;
+
+const isMacSpeechInputEnabled = (): boolean => {
+  const envOverride = process.env.LOBSTERAI_ENABLE_MAC_SPEECH_INPUT?.trim().toLowerCase();
+  if (envOverride === '0' || envOverride === 'false') {
+    return false;
+  }
+  if (envOverride === '1' || envOverride === 'true') {
+    return true;
+  }
+  return getStore().get<boolean>(SpeechFeatureFlagKey.MacInputEnabled) !== false;
+};
+
+const wakeInputService = new WakeInputService({
+  config: DEFAULT_WAKE_INPUT_CONFIG,
+  platform: process.platform,
+  startListening: async () => {
+    if (!isMacSpeechInputEnabled()) {
+      return { success: false, error: SpeechErrorCode.HelperUnavailable };
+    }
+    return macSpeechService.start();
+  },
+  stopListening: async () => {
+    return macSpeechService.stop();
+  },
+});
+const macTtsService = new MacTtsService();
+
+const showMainWindow = (): void => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  if (!mainWindow.isFocused()) {
+    mainWindow.focus();
+  }
+};
+
+const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('app:focusCoworkInput', { clear: options?.clear === true });
+};
+
+wakeInputService.on('stateChanged', (status) => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send(WakeInputIpcChannel.StateChanged, status);
+    }
+  }
+});
+
+wakeInputService.on('dictationRequested', (request) => {
+  showMainWindow();
+  focusCoworkInputInMainWindow({ clear: false });
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
+  }
+});
+
+macSpeechService.onStateChanged((event) => {
+  if (wakeInputService.isBackgroundModeActive()) {
+    void wakeInputService.handleSpeechState(event);
+    return;
+  }
+
+  if (foregroundSpeechOrigin) {
+    broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
+    if (event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
+      const finishedOrigin = foregroundSpeechOrigin;
+      foregroundSpeechOrigin = null;
+      wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
+    }
+    return;
+  }
+
+  broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
+});
+
+macTtsService.on('stateChanged', (event) => {
+  broadcastTtsState(BrowserWindow.getAllWindows(), TtsIpcChannel.StateChanged, event);
+});
 
 const getUseSystemProxyFromConfig = (config?: { useSystemProxy?: boolean }): boolean => {
   return config?.useSystemProxy === true;
@@ -1725,6 +1952,15 @@ if (!gotTheLock) {
     pendingBridgeCode = null;
     return bridgeCode;
   });
+
+  const clearPendingAuthState = () => {
+    pendingAuthCallback = null;
+    pendingBridgeCode = null;
+    if (authWindow && !authWindow.isDestroyed()) {
+      authWindow.close();
+    }
+    authWindow = null;
+  };
 
   // macOS: handle open-url event for deep links
   app.on('open-url', (event, url) => {
@@ -1949,6 +2185,16 @@ if (!gotTheLock) {
     getStore().delete('auth_tokens');
   };
 
+  const clearLocalAuthSession = (reason: string) => {
+    clearAuthTokens();
+    clearServerModelMetadata();
+    clearPendingAuthState();
+    console.warn(`[Auth] Cleared the local auth session, reason=${reason}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('auth:sessionInvalidated', { reason });
+    }
+  };
+
   /**
    * Normalize quota data from various server response formats into a unified shape.
    */
@@ -2002,12 +2248,28 @@ if (!gotTheLock) {
       console.log(`[Auth] Opening the system browser for ${describeUrlForLog(url)}`);
       await shell.openExternal(url);
     };
+    const fetchForAuth = async (url: string, options?: RequestInit): Promise<Response> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => {
+        controller.abort(new Error('Auth request timed out after 15s'));
+      }, 15000);
+
+      try {
+        return await session.defaultSession.fetch(url, {
+          ...options,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
 
     if (backendConfig.backend === AuthBackend.Qtb) {
       return createQtbAuthAdapter({
         backend: backendConfig.backend,
-        fetchFn: (url, options) => net.fetch(url, options),
+        fetchFn: fetchForAuth,
         openExternal: openExternalForAuth,
+        onAuthSessionInvalidated: clearLocalAuthSession,
         resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
         resolveWebBaseUrl: () => backendConfig.webBaseUrl,
         getAuthTokens,
@@ -2021,8 +2283,9 @@ if (!gotTheLock) {
 
     return createLegacyLobsterAuthAdapter({
       backend: backendConfig.backend,
-      fetchFn: (url, options) => net.fetch(url, options),
+      fetchFn: fetchForAuth,
       openExternal: openExternalForAuth,
+      onAuthSessionInvalidated: clearLocalAuthSession,
       resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
       resolveWebBaseUrl: () => backendConfig.webBaseUrl,
       getAuthTokens,
@@ -2053,9 +2316,38 @@ if (!gotTheLock) {
     return getCurrentAuthAdapter().loginWithPassword(input);
   });
 
-  ipcMain.handle('auth:getFeishuAuthorizeUrl', async () => {
-    return getCurrentAuthAdapter().getFeishuAuthorizeUrl();
-  });
+  ipcMain.handle(
+    'auth:openFeishuScanWindow',
+    async (_event, input: { authorizeUrl?: string; scanSessionId?: string } = {}) => {
+      try {
+        const adapter = getCurrentAuthAdapter();
+        const result = await adapter.getFeishuScanWindowUrl(input);
+        if (!result.success || !result.url) {
+          return {
+            success: false,
+            error: result.error || 'Failed to resolve Feishu scan window URL',
+          };
+        }
+
+        const backendConfig = getCurrentAuthBackendConfig();
+        const allowedOrigins = [
+          getUrlOrigin(result.url),
+          getUrlOrigin(backendConfig.apiBaseUrl),
+          getUrlOrigin(backendConfig.webBaseUrl),
+        ].filter((value): value is string => Boolean(value));
+        await openAuthPopupWindow(result.url, {
+          title: '飞书扫码登录',
+          allowedOrigins,
+        });
+        return { success: true };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to open Feishu scan window',
+        };
+      }
+    }
+  );
 
   ipcMain.handle('auth:createFeishuScanSession', async () => {
     return getCurrentAuthAdapter().createFeishuScanSession();
@@ -2096,7 +2388,11 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:logout', async () => {
-    return getCurrentAuthAdapter().logout();
+    try {
+      return await getCurrentAuthAdapter().logout();
+    } finally {
+      clearLocalAuthSession('logout');
+    }
   });
 
   ipcMain.handle('auth:refreshToken', async () => {
@@ -3689,6 +3985,69 @@ if (!gotTheLock) {
     }
   );
 
+  ipcMain.handle(SpeechIpcChannel.GetAvailability, async () => {
+    if (!isMacSpeechInputEnabled()) {
+      return {
+        enabled: false,
+        supported: false,
+        platform: process.platform,
+        permission: SpeechPermissionStatus.Unsupported,
+        speechAuthorization: SpeechPermissionStatus.Unsupported,
+        microphoneAuthorization: SpeechPermissionStatus.Unsupported,
+        listening: false,
+      };
+    }
+    return macSpeechService.getAvailability();
+  });
+
+  ipcMain.handle(SpeechIpcChannel.Start, async (_event, options?: SpeechStartOptions) => {
+    if (!isMacSpeechInputEnabled()) {
+      return { success: false, error: SpeechErrorCode.HelperUnavailable };
+    }
+    const origin = await wakeInputService.prepareForegroundSpeechStart();
+    const result = await macSpeechService.start(options);
+    if (result.success) {
+      foregroundSpeechOrigin = origin;
+      return result;
+    }
+    wakeInputService.handleForegroundSpeechEnded(origin);
+    return result;
+  });
+
+  ipcMain.handle(SpeechIpcChannel.Stop, async () => {
+    return macSpeechService.stop();
+  });
+
+  ipcMain.handle(WakeInputIpcChannel.GetStatus, async () => {
+    return wakeInputService.getStatus();
+  });
+
+  ipcMain.handle(WakeInputIpcChannel.UpdateConfig, async (_event, partialConfig?: Partial<WakeInputConfig>) => {
+    const config = wakeInputService.updateConfig(mergeWakeInputConfig(partialConfig));
+    return { success: true, status: config };
+  });
+
+  ipcMain.handle(TtsIpcChannel.GetAvailability, async () => {
+    return macTtsService.getAvailability();
+  });
+
+  ipcMain.handle(TtsIpcChannel.GetVoices, async () => {
+    try {
+      const voices = await macTtsService.getVoices();
+      return { success: true, voices };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to list TTS voices.' };
+    }
+  });
+
+  ipcMain.handle(TtsIpcChannel.Speak, async (_event, options?: TtsSpeakOptions) => {
+    return macTtsService.speak(options ?? { text: '' });
+  });
+
+  ipcMain.handle(TtsIpcChannel.Stop, async () => {
+    return macTtsService.stop();
+  });
+
   // Shell handlers - 打开文件/文件夹
   ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
     try {
@@ -4199,6 +4558,8 @@ if (!gotTheLock) {
     });
 
     stopOpenClawTokenProxy();
+    macSpeechService.dispose();
+    macTtsService.dispose();
 
     // Stop skill services.
     const skillServices = getSkillServiceManager();
@@ -4526,6 +4887,21 @@ if (!gotTheLock) {
       console.error('Failed to start OpenAI compatibility proxy:', error);
     });
 
+    const wakeInputConfig = mergeWakeInputConfig(appConfig?.wakeInput);
+    wakeInputService.updateConfig(wakeInputConfig);
+    const speechAvailability = isMacSpeechInputEnabled()
+      ? await macSpeechService.getAvailability()
+      : {
+          supported: false,
+          permission: SpeechPermissionStatus.Unsupported,
+          error: SpeechErrorCode.HelperUnavailable,
+        };
+    await wakeInputService.syncAvailability({
+      supported: Boolean(speechAvailability.supported) && speechAvailability.permission === SpeechPermissionStatus.Granted,
+      error: speechAvailability.error,
+    });
+    await wakeInputService.startBackgroundListening();
+
     // 设置安全策略
     setContentSecurityPolicy();
 
@@ -4583,6 +4959,7 @@ if (!gotTheLock) {
 
     let lastLanguage = getStore().get<AppConfigSettings>('app_config')?.language;
     let lastUseSystemProxy = getUseSystemProxyFromConfig(getStore().get<AppConfigSettings>('app_config'));
+    let lastWakeInputConfig = JSON.stringify(mergeWakeInputConfig(getStore().get<AppConfigSettings>('app_config')?.wakeInput));
     getStore().onDidChange<AppConfigSettings>('app_config', (newConfig, oldConfig) => {
       updateTitleBarOverlay();
       // 仅在语言变更时刷新托盘菜单文本
@@ -4605,6 +4982,20 @@ if (!gotTheLock) {
         });
       }
       lastUseSystemProxy = currentUseSystemProxy;
+
+      const currentWakeInputConfig = JSON.stringify(mergeWakeInputConfig(newConfig?.wakeInput));
+      if (currentWakeInputConfig !== lastWakeInputConfig) {
+        lastWakeInputConfig = currentWakeInputConfig;
+        wakeInputService.updateConfig(mergeWakeInputConfig(newConfig?.wakeInput));
+        void macSpeechService.getAvailability().then((availability) => {
+          return wakeInputService.syncAvailability({
+            supported: availability.supported && availability.permission === SpeechPermissionStatus.Granted,
+            error: availability.error,
+          }).then(() => wakeInputService.startBackgroundListening());
+        }).catch((error) => {
+          console.error('[WakeInput] Failed to refresh availability after config change:', error);
+        });
+      }
     });
 
     // 在 macOS 上，当点击 dock 图标时显示已有窗口或重新创建

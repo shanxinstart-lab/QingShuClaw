@@ -7,6 +7,8 @@ const asar = require('@electron/asar');
 const { ensurePortablePythonRuntime, checkRuntimeHealth } = require('./setup-python-runtime.js');
 const { syncLocalOpenClawExtensions } = require('./sync-local-openclaw-extensions.cjs');
 const { packMultipleSources } = require('./pack-openclaw-tar.cjs');
+const { buildMacosSpeechHelper } = require('./build-macos-speech-helper.cjs');
+const { buildMacosTtsHelper } = require('./build-macos-tts-helper.cjs');
 
 function isWindowsTarget(context) {
   return context?.electronPlatformName === 'win32';
@@ -486,6 +488,21 @@ async function beforePack(context) {
   ensureBundledOpenClawRuntime(context);
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();
+
+  if (isMacTarget(context)) {
+    const generatedDir = path.join(__dirname, '..', 'build', 'generated', 'macos-speech');
+    const targetArch = resolveTargetArch(context);
+    const helperPath = buildMacosSpeechHelper({
+      arch: targetArch,
+      outputDir: generatedDir,
+    });
+    console.log(`[electron-builder-hooks] Built macOS speech helper for ${targetArch}: ${helperPath}`);
+    const ttsHelperPath = buildMacosTtsHelper({
+      arch: targetArch,
+      outputDir: generatedDir,
+    });
+    console.log(`[electron-builder-hooks] Built macOS TTS helper for ${targetArch}: ${ttsHelperPath}`);
+  }
 
   if (isWindowsTarget(context)) {
     // Pack all large resource directories into a single tar for faster NSIS

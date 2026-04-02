@@ -2,12 +2,27 @@ build/*
 !build/entitlements.mac.plist
 !build/icons/
 !build/icons/**
+build/generated/
 release/
-node_modules
-dist
-dist-electron
+dist/
+dist-electron/
+coverage/
+.nyc_output/
+.cache/
+.turbo/
+
+node_modules/
+**/node_modules/
+**/dist/
+**/dist-electron/
+
 .DS_Store
-.env 
+.env
+.env.*
+!.env.example
+!.env.sample
+.env.local
+.env.*.local
 .claude/
 __pycache__/
 .codebuddy/
@@ -20,6 +35,7 @@ build-tar/
 
 # Bundled PortableGit for Windows builds (downloaded via scripts/setup-mingit.js)
 resources/mingit/
+resources/macos-speech/
 resources/MinGit-*.zip
 resources/PortableGit-*.7z.exe
 resources/python-win/
@@ -30,6 +46,7 @@ SKILLs/**/.connection
 SKILLs/**/.server.log
 SKILLs/**/.server.pid
 SKILLs/**/.venv/
+SKILLs/**/package-lock.json
 
 package-lock.json
 
@@ -41,8 +58,15 @@ nul
 
 # editorconfig files
 .vscode/
+.idea/**
 
 sandbox/
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt
+*.cer
 
 # Accidentally committed git hook files outside git-hooks/
 **/**/post-commit

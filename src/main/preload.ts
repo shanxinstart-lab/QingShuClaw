@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import type { Platform } from '../shared/platform';
+import { SpeechIpcChannel } from '../shared/speech/constants';
+import { WakeInputIpcChannel } from '../shared/wakeInput/constants';
+import { TtsIpcChannel } from '../shared/tts/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -294,6 +297,41 @@ contextBridge.exposeInMainWorld('electron', {
     readFileAsDataUrl: (filePath: string) =>
       ipcRenderer.invoke('dialog:readFileAsDataUrl', filePath),
   },
+  speech: {
+    getAvailability: () => ipcRenderer.invoke(SpeechIpcChannel.GetAvailability),
+    start: (options?: { locale?: string }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
+    stop: () => ipcRenderer.invoke(SpeechIpcChannel.Stop),
+    onStateChanged: (callback: (data: { type: string; text?: string; code?: string; message?: string }) => void) => {
+      const handler = (_event: any, data: { type: string; text?: string; code?: string; message?: string }) => callback(data);
+      ipcRenderer.on(SpeechIpcChannel.StateChanged, handler);
+      return () => ipcRenderer.removeListener(SpeechIpcChannel.StateChanged, handler);
+    },
+  },
+  wakeInput: {
+    getStatus: () => ipcRenderer.invoke(WakeInputIpcChannel.GetStatus),
+    updateConfig: (config: Record<string, unknown>) => ipcRenderer.invoke(WakeInputIpcChannel.UpdateConfig, config),
+    onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
+      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on(WakeInputIpcChannel.StateChanged, handler);
+      return () => ipcRenderer.removeListener(WakeInputIpcChannel.StateChanged, handler);
+    },
+    onDictationRequested: (callback: (data: Record<string, unknown>) => void) => {
+      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on(WakeInputIpcChannel.DictationRequested, handler);
+      return () => ipcRenderer.removeListener(WakeInputIpcChannel.DictationRequested, handler);
+    },
+  },
+  tts: {
+    getAvailability: () => ipcRenderer.invoke(TtsIpcChannel.GetAvailability),
+    getVoices: () => ipcRenderer.invoke(TtsIpcChannel.GetVoices),
+    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
+    stop: () => ipcRenderer.invoke(TtsIpcChannel.Stop),
+    onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
+      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on(TtsIpcChannel.StateChanged, handler);
+      return () => ipcRenderer.removeListener(TtsIpcChannel.StateChanged, handler);
+    },
+  },
   shell: {
     openPath: (filePath: string) => ipcRenderer.invoke('shell:openPath', filePath),
     showItemInFolder: (filePath: string) => ipcRenderer.invoke('shell:showItemInFolder', filePath),
@@ -419,7 +457,8 @@ contextBridge.exposeInMainWorld('electron', {
     login: (loginUrl?: string) => ipcRenderer.invoke('auth:login', { loginUrl }),
     loginWithPassword: (input: { username: string; password: string }) =>
       ipcRenderer.invoke('auth:loginWithPassword', input),
-    getFeishuAuthorizeUrl: () => ipcRenderer.invoke('auth:getFeishuAuthorizeUrl'),
+    openFeishuScanWindow: (input: { authorizeUrl?: string; scanSessionId?: string }) =>
+      ipcRenderer.invoke('auth:openFeishuScanWindow', input),
     createFeishuScanSession: () => ipcRenderer.invoke('auth:createFeishuScanSession'),
     pollFeishuScanSession: (scanSessionId: string) =>
       ipcRenderer.invoke('auth:pollFeishuScanSession', { scanSessionId }),
@@ -446,6 +485,11 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = (_event: any, data: { code: string }) => callback(data);
       ipcRenderer.on('auth:bridgeCode', handler);
       return () => ipcRenderer.removeListener('auth:bridgeCode', handler);
+    },
+    onSessionInvalidated: (callback: (data: { reason?: string }) => void) => {
+      const handler = (_event: any, data: { reason?: string }) => callback(data);
+      ipcRenderer.on('auth:sessionInvalidated', handler);
+      return () => ipcRenderer.removeListener('auth:sessionInvalidated', handler);
     },
     onQuotaChanged: (callback: () => void) => {
       const handler = () => callback();
