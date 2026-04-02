@@ -5,7 +5,8 @@
 
 import React, { useState } from 'react';
 import { XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
-import { EyeIcon, EyeSlashIcon, SignalIcon, TrashIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { EyeIcon, EyeSlashIcon, SignalIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import TrashIcon from '../icons/TrashIcon';
 import type { DingTalkInstanceConfig, DingTalkInstanceStatus, DingTalkOpenClawConfig, IMConnectivityTestResult } from '../../types/im';
 import { i18nService } from '../../services/i18n';
 import { PlatformRegistry } from '@shared/platform';
@@ -229,10 +230,10 @@ const DingTalkInstanceSettings: React.FC<DingTalkInstanceSettingsProps> = ({
         <button
           type="button"
           onClick={onDelete}
-          className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0"
+          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0"
           title={language === 'zh' ? '删除此实例' : 'Delete this instance'}
         >
-          <TrashIcon className="h-3.5 w-3.5" />
+          <TrashIcon className="h-4 w-4" />
           {language === 'zh' ? '删除' : 'Delete'}
         </button>
       </div>
