@@ -19,7 +19,6 @@ const blockedPathRules = [
   { pattern: /(^|\/)\.nyc_output\//, reason: '禁止提交 nyc 输出目录' },
   { pattern: /(^|\/)build\/generated\//, reason: '禁止提交 build/generated 生成产物' },
   { pattern: /(^|\/)build-tar\//, reason: '禁止提交 build-tar 打包中间产物' },
-  { pattern: /(^|\/)resources\/macos-speech\//, reason: '禁止提交本地生成的 macOS speech 资源' },
   { pattern: /(^|\/)resources\/mingit\//, reason: '禁止提交本地下载的 MinGit 运行时' },
   { pattern: /(^|\/)vendor\/openclaw-runtime\//, reason: '禁止直接提交本地 OpenClaw 运行时目录' },
   { pattern: /(^|\/)vendor\/openclaw-plugins\//, reason: '禁止直接提交本地 OpenClaw 插件目录' },
