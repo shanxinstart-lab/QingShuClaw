@@ -307,6 +307,13 @@ contextBridge.exposeInMainWorld('electron', {
       return () => ipcRenderer.removeListener(SpeechIpcChannel.StateChanged, handler);
     },
   },
+  speechFollowUp: {
+    arm: (payload: { sessionId: string | null; config: Record<string, unknown> }) =>
+      ipcRenderer.invoke(SpeechIpcChannel.FollowUpArm, payload),
+    disarm: () => ipcRenderer.invoke(SpeechIpcChannel.FollowUpDisarm),
+    setActiveSession: (payload: { sessionId: string | null }) =>
+      ipcRenderer.invoke(SpeechIpcChannel.FollowUpSetActiveSession, payload),
+  },
   wakeInput: {
     getStatus: () => ipcRenderer.invoke(WakeInputIpcChannel.GetStatus),
     updateConfig: (config: Record<string, unknown>) => ipcRenderer.invoke(WakeInputIpcChannel.UpdateConfig, config),

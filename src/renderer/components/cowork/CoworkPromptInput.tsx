@@ -18,7 +18,7 @@ import { CoworkImageAttachment } from '../../types/cowork';
 import { getCompactFolderName } from '../../utils/path';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
 import { SpeechErrorCode } from '../../../shared/speech/constants';
-import { DEFAULT_SPEECH_INPUT_CONFIG } from '../../config';
+import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_WAKE_INPUT_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
@@ -104,6 +104,7 @@ type WakeDictationCommandConfig = {
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
 };
 
 const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInputProps>(
@@ -146,6 +147,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const pendingSpeechVoiceCommandRef = useRef<PendingSpeechVoiceCommand>(null);
     const wakeDictationConfigRef = useRef<WakeDictationCommandConfig | null>(null);
     const wakeDictationTimerRef = useRef<number | null>(null);
+    const pendingWakeDictationStartRef = useRef<WakeDictationCommandConfig | null>(null);
 
   // 暴露方法给父组件
   React.useImperativeHandle(ref, () => ({
@@ -178,6 +180,102 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     ...DEFAULT_SPEECH_INPUT_CONFIG,
     ...(configService.getConfig().speechInput ?? {}),
   }), []);
+
+  const getFollowUpDictationConfig = useCallback((
+    wakeConfigOverride?: WakeDictationCommandConfig | null,
+  ): WakeDictationCommandConfig | null => {
+    const speechInputConfig = {
+      ...DEFAULT_SPEECH_INPUT_CONFIG,
+      ...(configService.getConfig().speechInput ?? {}),
+    };
+    if (!speechInputConfig.autoRestartAfterReply) {
+      return null;
+    }
+
+    const wakeInputConfig = {
+      ...DEFAULT_WAKE_INPUT_CONFIG,
+      ...(configService.getConfig().wakeInput ?? {}),
+    };
+
+    if (wakeConfigOverride) {
+      return {
+        ...wakeConfigOverride,
+        autoRestartAfterReply: true,
+      };
+    }
+
+    return {
+      submitCommand: speechInputConfig.submitCommand,
+      cancelCommand: speechInputConfig.stopCommand,
+      sessionTimeoutMs: wakeInputConfig.sessionTimeoutMs,
+      autoRestartAfterReply: true,
+    };
+  }, []);
+
+  const armWakeFollowUpDictation = useCallback((config: WakeDictationCommandConfig | null) => {
+    if (!config?.autoRestartAfterReply) {
+      console.log('[WakeFollowUp] Disarmed follow-up dictation because auto restart is disabled.');
+      void window.electron.speechFollowUp.disarm().catch((error) => {
+        console.error('[WakeFollowUp] Failed to disarm speech follow-up:', error);
+      });
+      return;
+    }
+    console.log('[WakeFollowUp] Emitting arm request from prompt input.', {
+      sessionId: sessionId ?? null,
+      config,
+    });
+    void window.electron.speechFollowUp.arm({
+      sessionId: sessionId ?? null,
+      config,
+    }).catch((error) => {
+      console.error('[WakeFollowUp] Failed to arm speech follow-up:', error);
+    });
+  }, [sessionId]);
+
+  const disarmWakeFollowUpDictation = useCallback(() => {
+    console.log('[WakeFollowUp] Emitting disarm request from prompt input.');
+    void window.electron.speechFollowUp.disarm().catch((error) => {
+      console.error('[WakeFollowUp] Failed to disarm speech follow-up:', error);
+    });
+  }, []);
+
+  const startWakeDictation = useCallback((detail: WakeDictationCommandConfig) => {
+    console.log('[WakeFollowUp] Starting wake dictation.', {
+      detail,
+      isStreaming,
+      isSpeechActive,
+      speechVisible,
+    });
+    speechBaseValueRef.current = valueRef.current;
+    pendingSpeechVoiceCommandRef.current = null;
+    wakeDictationConfigRef.current = detail;
+    if (wakeDictationTimerRef.current) {
+      window.clearTimeout(wakeDictationTimerRef.current);
+    }
+    wakeDictationTimerRef.current = window.setTimeout(() => {
+      if (speechStatus !== 'idle') {
+        pendingSpeechVoiceCommandRef.current = null;
+        wakeDictationConfigRef.current = null;
+        void window.electron.speech.stop().catch(() => undefined);
+      }
+      wakeDictationTimerRef.current = null;
+    }, detail.sessionTimeoutMs);
+    setSpeechStatus('requesting_permission');
+    void window.electron.speech.start().then((result) => {
+      if (!result.success) {
+        setSpeechStatus('idle');
+        wakeDictationConfigRef.current = null;
+        if (wakeDictationTimerRef.current) {
+          window.clearTimeout(wakeDictationTimerRef.current);
+          wakeDictationTimerRef.current = null;
+        }
+        disarmWakeFollowUpDictation();
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: resolveSpeechErrorMessage(result.error, result.error),
+        }));
+      }
+    });
+  }, [disarmWakeFollowUpDictation, speechStatus]);
 
   // Load skills on mount
   useEffect(() => {
@@ -302,6 +400,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         case 'error':
           setSpeechStatus('idle');
           pendingSpeechVoiceCommandRef.current = null;
+          disarmWakeFollowUpDictation();
           window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(event.code, event.message) }));
           break;
       }
@@ -312,7 +411,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       unsubscribe();
       void window.electron.speech.stop().catch(() => undefined);
     };
-  }, [getSpeechVoiceCommandConfig, isMac]);
+  }, [disarmWakeFollowUpDictation, getSpeechVoiceCommandConfig, isMac]);
 
   // Sync value from draft when sessionId changes
   useEffect(() => {
@@ -337,6 +436,26 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [isStreaming, isSpeechActive]);
 
   useEffect(() => {
+    const pendingWakeDictation = pendingWakeDictationStartRef.current;
+    if (!pendingWakeDictation) {
+      return;
+    }
+    if (disabled || isStreaming || !isMac || !speechVisible || isSpeechActive) {
+      console.log('[WakeFollowUp] Pending dictation is still waiting for prompt input readiness.', {
+        disabled,
+        isStreaming,
+        isMac,
+        speechVisible,
+        isSpeechActive,
+      });
+      return;
+    }
+    console.log('[WakeFollowUp] Replaying pending dictation start.');
+    pendingWakeDictationStartRef.current = null;
+    startWakeDictation(pendingWakeDictation);
+  }, [disabled, isMac, isSpeechActive, isStreaming, speechVisible, startWakeDictation]);
+
+  useEffect(() => {
     if (value !== draftPrompt) {
       const timer = setTimeout(() => {
         dispatch(setDraftPrompt({ sessionId: draftKey, draft: value }));
@@ -345,7 +464,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
   }, [value, draftPrompt, dispatch, draftKey]);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (wakeConfigOverride?: WakeDictationCommandConfig | null) => {
     if (showFolderSelector && !workingDirectory?.trim()) {
       setShowFolderRequiredWarning(true);
       return;
@@ -398,14 +517,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       });
     }
     const result = await onSubmit(finalPrompt, skillPrompt, imageAtts.length > 0 ? imageAtts : undefined);
-    if (result === false) return;
+    if (result === false) {
+      disarmWakeFollowUpDictation();
+      return;
+    }
+    armWakeFollowUpDictation(getFollowUpDictationConfig(wakeConfigOverride ?? wakeDictationConfigRef.current));
     setValue('');
     speechBaseValueRef.current = '';
     pendingSpeechVoiceCommandRef.current = null;
     dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
     dispatch(clearDraftAttachments(draftKey));
     setImageVisionHint(false);
-  }, [value, isStreaming, disabled, isSpeechActive, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch]);
+  }, [value, isStreaming, disabled, isSpeechActive, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch, armWakeFollowUpDictation, disarmWakeFollowUpDictation, getFollowUpDictationConfig]);
 
   useEffect(() => {
     if (speechStatus !== 'idle') {
@@ -419,60 +542,50 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         window.clearTimeout(wakeDictationTimerRef.current);
         wakeDictationTimerRef.current = null;
       }
+      disarmWakeFollowUpDictation();
       return;
     }
 
+    const submittedWakeConfig = wakeDictationConfigRef.current;
     pendingSpeechVoiceCommandRef.current = null;
     wakeDictationConfigRef.current = null;
     if (wakeDictationTimerRef.current) {
       window.clearTimeout(wakeDictationTimerRef.current);
       wakeDictationTimerRef.current = null;
     }
-    void handleSubmit();
-  }, [handleSubmit, speechStatus]);
+    void handleSubmit(submittedWakeConfig);
+  }, [disarmWakeFollowUpDictation, handleSubmit, speechStatus]);
 
   useEffect(() => {
     const handleWakeDictationStart = (event: Event) => {
       const detail = (event as CustomEvent<WakeDictationCommandConfig>).detail;
-      if (!detail || disabled || isStreaming || !isMac || !speechVisible) {
+      if (!detail || !isMac) {
         return;
       }
-
-      speechBaseValueRef.current = valueRef.current;
-      pendingSpeechVoiceCommandRef.current = null;
-      wakeDictationConfigRef.current = detail;
-      if (wakeDictationTimerRef.current) {
-        window.clearTimeout(wakeDictationTimerRef.current);
+      if (disabled) {
+        pendingWakeDictationStartRef.current = null;
+        console.log('[WakeFollowUp] Ignored wake dictation start because prompt input is disabled.');
+        return;
       }
-      wakeDictationTimerRef.current = window.setTimeout(() => {
-        if (speechStatus !== 'idle') {
-          pendingSpeechVoiceCommandRef.current = null;
-          wakeDictationConfigRef.current = null;
-          void window.electron.speech.stop().catch(() => undefined);
-        }
-        wakeDictationTimerRef.current = null;
-      }, detail.sessionTimeoutMs);
-      setSpeechStatus('requesting_permission');
-      void window.electron.speech.start().then((result) => {
-        if (!result.success) {
-          setSpeechStatus('idle');
-          wakeDictationConfigRef.current = null;
-          if (wakeDictationTimerRef.current) {
-            window.clearTimeout(wakeDictationTimerRef.current);
-            wakeDictationTimerRef.current = null;
-          }
-          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
-            detail: resolveSpeechErrorMessage(result.error, result.error),
-          }));
-        }
-      });
+      if (isStreaming || isSpeechActive || !speechVisible) {
+        console.log('[WakeFollowUp] Queued wake dictation start until prompt input is ready.', {
+          isStreaming,
+          isSpeechActive,
+          speechVisible,
+          detail,
+        });
+        pendingWakeDictationStartRef.current = detail;
+        return;
+      }
+      pendingWakeDictationStartRef.current = null;
+      startWakeDictation(detail);
     };
 
     window.addEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
     return () => {
       window.removeEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
     };
-  }, [disabled, isMac, isStreaming, speechStatus, speechVisible]);
+  }, [disabled, isMac, isSpeechActive, isStreaming, speechVisible, startWakeDictation]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -501,6 +614,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   };
 
   const handleStopClick = () => {
+    disarmWakeFollowUpDictation();
     if (onStop) {
       onStop();
     }
@@ -596,6 +710,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     if (isSpeechActive) {
       pendingSpeechVoiceCommandRef.current = null;
+      disarmWakeFollowUpDictation();
       const result = await window.electron.speech.stop();
       if (!result.success) {
         window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
@@ -605,13 +720,15 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     speechBaseValueRef.current = valueRef.current;
     pendingSpeechVoiceCommandRef.current = null;
+    wakeDictationConfigRef.current = null;
+    disarmWakeFollowUpDictation();
     setSpeechStatus('requesting_permission');
     const result = await window.electron.speech.start();
     if (!result.success) {
       setSpeechStatus('idle');
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
     }
-  }, [disabled, isMac, isSpeechActive, isStreaming, speechVisible]);
+  }, [disabled, disarmWakeFollowUpDictation, isMac, isSpeechActive, isStreaming, speechVisible]);
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;
@@ -1036,7 +1153,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 ) : (
                   <button
                     type="button"
-                    onClick={handleSubmit}
+                    onClick={() => {
+                      void handleSubmit();
+                    }}
                     disabled={!canSubmit}
                     className="p-2 rounded-xl bg-primary hover:bg-primary-hover text-white transition-all shadow-subtle hover:shadow-card active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label="Send"
@@ -1104,7 +1223,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             ) : (
               <button
                 type="button"
-                onClick={handleSubmit}
+                onClick={() => {
+                  void handleSubmit();
+                }}
                 disabled={!canSubmit}
                 className="flex-shrink-0 p-2 rounded-lg bg-primary hover:bg-primary-hover text-white transition-all shadow-subtle hover:shadow-card active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 aria-label="Send"

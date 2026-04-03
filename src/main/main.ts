@@ -100,11 +100,14 @@ import {
   SpeechIpcChannel,
   SpeechStateType,
   SpeechPermissionStatus,
+  type SpeechFollowUpActiveSessionRequest,
+  type SpeechFollowUpArmRequest,
   type SpeechStartOptions,
 } from '../shared/speech/constants';
 import {
   WakeInputIpcChannel,
   type WakeInputConfig,
+  type WakeInputDictationRequest,
 } from '../shared/wakeInput/constants';
 import {
   TtsIpcChannel,
@@ -1217,6 +1220,16 @@ const bindCoworkRuntimeForwarder = (): void => {
       if (win.isDestroyed()) return;
       win.webContents.send('cowork:stream:complete', { sessionId, claudeSessionId });
     });
+    const followUpDecision = resolveSpeechFollowUpTriggerForCompletedSession(sessionId);
+    console.log(
+      `[SpeechFollowUp] Session ${sessionId} completed; armed=${speechFollowUpState.armed}, ` +
+        `armed session=${speechFollowUpState.armedSessionId ?? 'none'}, active session=${speechFollowUpState.activeSessionId ?? 'none'}, ` +
+        `trigger=${Boolean(followUpDecision.request)}, reason=${followUpDecision.reason}.`
+    );
+    if (followUpDecision.request) {
+      disarmSpeechFollowUp(`session ${sessionId} finished`);
+      triggerSpeechFollowUpDictation(followUpDecision.request);
+    }
     // If session used a server model, notify renderer to refresh quota
     try {
       const apiConfig = resolveCurrentApiConfig();
@@ -1240,6 +1253,10 @@ const bindCoworkRuntimeForwarder = (): void => {
       if (win.isDestroyed()) return;
       win.webContents.send('cowork:stream:error', { sessionId, error });
     });
+    if (speechFollowUpState.armed) {
+      console.warn(`[SpeechFollowUp] Session ${sessionId} failed; canceling follow-up dictation.`);
+      disarmSpeechFollowUp(`session ${sessionId} failed`);
+    }
   });
 
   coworkRuntimeForwarderBound = true;
@@ -1678,23 +1695,204 @@ type AppConfigSettings = {
   language?: string;
   useSystemProxy?: boolean;
   auth?: Partial<AuthConfig>;
+  speechInput?: {
+    stopCommand?: string;
+    submitCommand?: string;
+    autoRestartAfterReply?: boolean;
+  };
   wakeInput?: Partial<WakeInputConfig>;
 };
 
+const DEFAULT_SPEECH_INPUT_CONFIG = {
+  stopCommand: '停止输入',
+  submitCommand: '结束发送',
+  autoRestartAfterReply: false,
+} as const;
+
 const DEFAULT_WAKE_INPUT_CONFIG: WakeInputConfig = {
   enabled: false,
-  wakeWord: '打开青书爪',
+  wakeWords: ['打开青书爪'],
   submitCommand: '发送',
   cancelCommand: '取消',
   sessionTimeoutMs: 20_000,
+  autoRestartAfterReply: false,
+};
+const FOREGROUND_SPEECH_RETRY_DELAY_MS = 180;
+
+const normalizeWakeWords = (wakeWords?: unknown): string[] => {
+  if (!Array.isArray(wakeWords)) {
+    return [...DEFAULT_WAKE_INPUT_CONFIG.wakeWords];
+  }
+
+  const normalizedWakeWords = wakeWords
+    .map((wakeWord) => typeof wakeWord === 'string' ? wakeWord.trim() : '')
+    .filter((wakeWord, index, items) => Boolean(wakeWord) && items.indexOf(wakeWord) === index);
+
+  return normalizedWakeWords.length > 0
+    ? normalizedWakeWords
+    : [...DEFAULT_WAKE_INPUT_CONFIG.wakeWords];
 };
 
-const mergeWakeInputConfig = (config?: Partial<WakeInputConfig>): WakeInputConfig => ({
-  ...DEFAULT_WAKE_INPUT_CONFIG,
-  ...(config ?? {}),
-});
+const mergeWakeInputConfig = (
+  config?: Partial<WakeInputConfig> & { wakeWord?: string }
+): WakeInputConfig => {
+  const legacyWakeWord = typeof config?.wakeWord === 'string' ? config.wakeWord.trim() : '';
+
+  return {
+    ...DEFAULT_WAKE_INPUT_CONFIG,
+    ...(config ?? {}),
+    wakeWords: normalizeWakeWords(
+      Array.isArray(config?.wakeWords)
+        ? config?.wakeWords
+        : legacyWakeWord
+          ? [legacyWakeWord]
+          : DEFAULT_WAKE_INPUT_CONFIG.wakeWords
+    ),
+  };
+};
 
 let foregroundSpeechOrigin: 'manual' | 'wake' | null = null;
+
+type SpeechFollowUpState = {
+  armed: boolean;
+  armedSessionId: string | null;
+  activeSessionId: string | null;
+  config: WakeInputDictationRequest | null;
+};
+
+const speechFollowUpState: SpeechFollowUpState = {
+  armed: false,
+  armedSessionId: null,
+  activeSessionId: null,
+  config: null,
+};
+
+const isTempSessionId = (sessionId: string | null): boolean => {
+  return Boolean(sessionId && sessionId.startsWith('temp-'));
+};
+
+const disarmSpeechFollowUp = (reason: string): void => {
+  if (!speechFollowUpState.armed && !speechFollowUpState.config) {
+    return;
+  }
+  console.log(`[SpeechFollowUp] Disarmed follow-up dictation because ${reason}.`);
+  speechFollowUpState.armed = false;
+  speechFollowUpState.armedSessionId = null;
+  speechFollowUpState.config = null;
+};
+
+const armSpeechFollowUp = (payload: SpeechFollowUpArmRequest): void => {
+  speechFollowUpState.armed = Boolean(payload.config?.autoRestartAfterReply);
+  speechFollowUpState.armedSessionId = payload.sessionId;
+  speechFollowUpState.config = payload.config;
+  if (!speechFollowUpState.armed) {
+    console.log('[SpeechFollowUp] Ignored arm request because auto restart is disabled.');
+    speechFollowUpState.armedSessionId = null;
+    speechFollowUpState.config = null;
+    return;
+  }
+  console.log(
+    `[SpeechFollowUp] Armed follow-up dictation for session ${payload.sessionId ?? 'pending-session'} ` +
+      `while active session is ${speechFollowUpState.activeSessionId ?? 'none'}.`
+  );
+};
+
+const setSpeechFollowUpActiveSession = (payload: SpeechFollowUpActiveSessionRequest): void => {
+  const previousActiveSessionId = speechFollowUpState.activeSessionId;
+  speechFollowUpState.activeSessionId = payload.sessionId;
+  console.log(`[SpeechFollowUp] Active session updated to ${payload.sessionId ?? 'none'}.`);
+
+  if (
+    speechFollowUpState.armed
+    && speechFollowUpState.config
+    && (!speechFollowUpState.armedSessionId || isTempSessionId(speechFollowUpState.armedSessionId))
+    && (!previousActiveSessionId || isTempSessionId(previousActiveSessionId))
+    && payload.sessionId
+  ) {
+    speechFollowUpState.armedSessionId = payload.sessionId;
+    console.log(`[SpeechFollowUp] Bound the armed follow-up to session ${payload.sessionId}.`);
+  }
+};
+
+const shouldTriggerSpeechFollowUpForSession = (sessionId: string): boolean => {
+  if (!speechFollowUpState.armed || !speechFollowUpState.config) {
+    return false;
+  }
+
+  const { armedSessionId, activeSessionId } = speechFollowUpState;
+  if (armedSessionId === sessionId) {
+    return true;
+  }
+  if (!armedSessionId) {
+    return activeSessionId === sessionId || activeSessionId === null;
+  }
+  if (isTempSessionId(armedSessionId)) {
+    return activeSessionId === sessionId;
+  }
+  return false;
+};
+
+const resolveSpeechFollowUpRequestFromAppConfig = (
+  config?: AppConfigSettings
+): WakeInputDictationRequest | null => {
+  const speechInputConfig = {
+    ...DEFAULT_SPEECH_INPUT_CONFIG,
+    ...(config?.speechInput ?? {}),
+  };
+  if (!speechInputConfig.autoRestartAfterReply) {
+    return null;
+  }
+
+  const wakeInputConfig = mergeWakeInputConfig(config?.wakeInput);
+  const shouldPreferWakeCommands = wakeInputConfig.enabled;
+
+  return {
+    submitCommand: shouldPreferWakeCommands ? wakeInputConfig.submitCommand : speechInputConfig.submitCommand,
+    cancelCommand: shouldPreferWakeCommands ? wakeInputConfig.cancelCommand : speechInputConfig.stopCommand,
+    sessionTimeoutMs: wakeInputConfig.sessionTimeoutMs,
+    autoRestartAfterReply: true,
+  };
+};
+
+const armSpeechFollowUpFromAppConfig = (sessionId: string, reason: string): void => {
+  const config = getStore().get<AppConfigSettings>('app_config');
+  const request = resolveSpeechFollowUpRequestFromAppConfig(config);
+  if (!request) {
+    console.log(`[SpeechFollowUp] Skipped auto-arm for session ${sessionId} because follow-up is disabled (${reason}).`);
+    return;
+  }
+
+  armSpeechFollowUp({
+    sessionId,
+    config: request,
+  });
+  console.log(`[SpeechFollowUp] Auto-armed follow-up dictation from app config for session ${sessionId} (${reason}).`);
+};
+
+const resolveSpeechFollowUpTriggerForCompletedSession = (
+  sessionId: string
+): { request: WakeInputDictationRequest | null; reason: string } => {
+  if (speechFollowUpState.armed && speechFollowUpState.config) {
+    const shouldTrigger = shouldTriggerSpeechFollowUpForSession(sessionId);
+    if (!shouldTrigger) {
+      return { request: null, reason: 'armed state did not match the completed session' };
+    }
+    return { request: speechFollowUpState.config, reason: 'armed follow-up matched' };
+  }
+
+  const config = getStore().get<AppConfigSettings>('app_config');
+  const fallbackRequest = resolveSpeechFollowUpRequestFromAppConfig(config);
+  if (!fallbackRequest) {
+    return { request: null, reason: 'follow-up is disabled in app config' };
+  }
+  if (speechFollowUpState.activeSessionId !== sessionId) {
+    return {
+      request: null,
+      reason: `completed session ${sessionId} is not the active session ${speechFollowUpState.activeSessionId ?? 'none'}`,
+    };
+  }
+  return { request: fallbackRequest, reason: 'app config fallback matched the active session' };
+};
 
 const isMacSpeechInputEnabled = (): boolean => {
   const envOverride = process.env.LOBSTERAI_ENABLE_MAC_SPEECH_INPUT?.trim().toLowerCase();
@@ -1705,6 +1903,21 @@ const isMacSpeechInputEnabled = (): boolean => {
     return true;
   }
   return getStore().get<boolean>(SpeechFeatureFlagKey.MacInputEnabled) !== false;
+};
+
+const syncWakeInputAvailabilityFromSpeech = async (): Promise<void> => {
+  const speechAvailability = isMacSpeechInputEnabled()
+    ? await macSpeechService.getAvailability()
+    : {
+        supported: false,
+        permission: SpeechPermissionStatus.Unsupported,
+        error: SpeechErrorCode.HelperUnavailable,
+      };
+
+  await wakeInputService.syncAvailability({
+    supported: Boolean(speechAvailability.supported) && speechAvailability.permission === SpeechPermissionStatus.Granted,
+    error: speechAvailability.error,
+  });
 };
 
 const wakeInputService = new WakeInputService({
@@ -1726,15 +1939,40 @@ const showMainWindow = (): void => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
+
+  if (process.platform === 'darwin') {
+    const macApp = app as Electron.App & {
+      show?: () => void;
+      isHidden?: () => boolean;
+    };
+    try {
+      app.focus({ steal: true });
+      if (typeof macApp.isHidden === 'function' && macApp.isHidden() && typeof macApp.show === 'function') {
+        macApp.show();
+      }
+      app.dock?.show();
+    } catch (error) {
+      console.warn('[WakeInput] Failed to activate the macOS app before showing the main window:', error);
+    }
+  }
+
   if (mainWindow.isMinimized()) {
     mainWindow.restore();
   }
   if (!mainWindow.isVisible()) {
     mainWindow.show();
   }
+  mainWindow.moveTop();
+  mainWindow.setAlwaysOnTop(true, 'screen-saver');
   if (!mainWindow.isFocused()) {
     mainWindow.focus();
   }
+  setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.setAlwaysOnTop(false);
+  }, 800);
 };
 
 const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
@@ -1742,6 +1980,16 @@ const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
     return;
   }
   mainWindow.webContents.send('app:focusCoworkInput', { clear: options?.clear === true });
+};
+
+const triggerSpeechFollowUpDictation = (request: WakeInputDictationRequest): void => {
+  console.log('[SpeechFollowUp] Triggering follow-up dictation restart.');
+  void macTtsService.stop();
+  showMainWindow();
+  focusCoworkInputInMainWindow({ clear: false });
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
+  }
 };
 
 wakeInputService.on('stateChanged', (status) => {
@@ -1753,6 +2001,7 @@ wakeInputService.on('stateChanged', (status) => {
 });
 
 wakeInputService.on('dictationRequested', (request) => {
+  console.log('[WakeInput] Wake phrase matched, requesting dictation and showing the main window.');
   showMainWindow();
   focusCoworkInputInMainWindow({ clear: false });
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2787,6 +3036,8 @@ if (!gotTheLock) {
         ...session,
         status: 'running' as const,
       };
+      setSpeechFollowUpActiveSession({ sessionId: session.id });
+      armSpeechFollowUpFromAppConfig(session.id, 'session start');
       return { success: true, session: sessionWithMessages };
     } catch (error) {
       return {
@@ -2837,6 +3088,8 @@ if (!gotTheLock) {
       });
 
       const session = getCoworkStore().getSession(options.sessionId);
+      setSpeechFollowUpActiveSession({ sessionId: options.sessionId });
+      armSpeechFollowUpFromAppConfig(options.sessionId, 'session continue');
       return { success: true, session };
     } catch (error) {
       return {
@@ -4005,8 +4258,13 @@ if (!gotTheLock) {
       return { success: false, error: SpeechErrorCode.HelperUnavailable };
     }
     const origin = await wakeInputService.prepareForegroundSpeechStart();
-    const result = await macSpeechService.start(options);
+    let result = await macSpeechService.start(options);
+    if (!result.success && result.error === SpeechErrorCode.AlreadyListening) {
+      await new Promise((resolve) => setTimeout(resolve, FOREGROUND_SPEECH_RETRY_DELAY_MS));
+      result = await macSpeechService.start(options);
+    }
     if (result.success) {
+      await wakeInputService.syncAvailability({ supported: true });
       foregroundSpeechOrigin = origin;
       return result;
     }
@@ -4016,6 +4274,24 @@ if (!gotTheLock) {
 
   ipcMain.handle(SpeechIpcChannel.Stop, async () => {
     return macSpeechService.stop();
+  });
+
+  ipcMain.handle(SpeechIpcChannel.FollowUpArm, async (_event, payload?: SpeechFollowUpArmRequest) => {
+    if (!payload?.config) {
+      return { success: false, error: 'Missing follow-up dictation config.' };
+    }
+    armSpeechFollowUp(payload);
+    return { success: true };
+  });
+
+  ipcMain.handle(SpeechIpcChannel.FollowUpDisarm, async () => {
+    disarmSpeechFollowUp('renderer requested disarm');
+    return { success: true };
+  });
+
+  ipcMain.handle(SpeechIpcChannel.FollowUpSetActiveSession, async (_event, payload?: SpeechFollowUpActiveSessionRequest) => {
+    setSpeechFollowUpActiveSession({ sessionId: payload?.sessionId ?? null });
+    return { success: true };
   });
 
   ipcMain.handle(WakeInputIpcChannel.GetStatus, async () => {
@@ -4889,17 +5165,7 @@ if (!gotTheLock) {
 
     const wakeInputConfig = mergeWakeInputConfig(appConfig?.wakeInput);
     wakeInputService.updateConfig(wakeInputConfig);
-    const speechAvailability = isMacSpeechInputEnabled()
-      ? await macSpeechService.getAvailability()
-      : {
-          supported: false,
-          permission: SpeechPermissionStatus.Unsupported,
-          error: SpeechErrorCode.HelperUnavailable,
-        };
-    await wakeInputService.syncAvailability({
-      supported: Boolean(speechAvailability.supported) && speechAvailability.permission === SpeechPermissionStatus.Granted,
-      error: speechAvailability.error,
-    });
+    await syncWakeInputAvailabilityFromSpeech();
     await wakeInputService.startBackgroundListening();
 
     // 设置安全策略
@@ -4987,12 +5253,7 @@ if (!gotTheLock) {
       if (currentWakeInputConfig !== lastWakeInputConfig) {
         lastWakeInputConfig = currentWakeInputConfig;
         wakeInputService.updateConfig(mergeWakeInputConfig(newConfig?.wakeInput));
-        void macSpeechService.getAvailability().then((availability) => {
-          return wakeInputService.syncAvailability({
-            supported: availability.supported && availability.permission === SpeechPermissionStatus.Granted,
-            error: availability.error,
-          }).then(() => wakeInputService.startBackgroundListening());
-        }).catch((error) => {
+        void syncWakeInputAvailabilityFromSpeech().then(() => wakeInputService.startBackgroundListening()).catch((error) => {
           console.error('[WakeInput] Failed to refresh availability after config change:', error);
         });
       }

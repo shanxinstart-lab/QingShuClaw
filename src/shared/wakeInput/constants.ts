@@ -18,10 +18,11 @@ export type WakeInputStatusType = typeof WakeInputStatusType[keyof typeof WakeIn
 
 export interface WakeInputConfig {
   enabled: boolean;
-  wakeWord: string;
+  wakeWords: string[];
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
 }
 
 export interface WakeInputStatus {
@@ -29,10 +30,11 @@ export interface WakeInputStatus {
   supported: boolean;
   platform: string;
   status: WakeInputStatusType;
-  wakeWord: string;
+  wakeWords: string[];
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
   listening: boolean;
   error?: string;
 }
@@ -41,4 +43,5 @@ export interface WakeInputDictationRequest {
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
 }

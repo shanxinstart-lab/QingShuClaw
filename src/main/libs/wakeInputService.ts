@@ -19,13 +19,107 @@ type WakeInputServiceEvents = {
   dictationRequested: (request: WakeInputDictationRequest) => void;
 };
 
-const includesWakeWord = (text: string, wakeWord: string): boolean => {
-  const normalizedText = (text ?? '').trim();
-  const normalizedWakeWord = (wakeWord ?? '').trim();
-  if (!normalizedText || !normalizedWakeWord) {
+const WAKE_TEXT_NORMALIZE_PATTERN = /[\s,.!?;:，。！？；：、"'“”‘’`~\-_[\](){}<>/\\|]+/gu;
+
+const normalizeWakePhrase = (value: string): string => {
+  return (value ?? '')
+    .trim()
+    .toLocaleLowerCase('zh-CN')
+    .replace(WAKE_TEXT_NORMALIZE_PATTERN, '');
+};
+
+const levenshteinDistance = (left: string, right: string): number => {
+  if (left === right) {
+    return 0;
+  }
+  if (!left) {
+    return right.length;
+  }
+  if (!right) {
+    return left.length;
+  }
+
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = new Array<number>(right.length + 1).fill(0);
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    current[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(
+        previous[rightIndex] + 1,
+        current[rightIndex - 1] + 1,
+        previous[rightIndex - 1] + substitutionCost,
+      );
+    }
+    for (let rightIndex = 0; rightIndex <= right.length; rightIndex += 1) {
+      previous[rightIndex] = current[rightIndex];
+    }
+  }
+
+  return previous[right.length];
+};
+
+const buildWakeTextCandidates = (normalizedText: string, wakeWordLength: number): string[] => {
+  if (normalizedText.length <= wakeWordLength + 1) {
+    return [normalizedText];
+  }
+
+  const candidates = new Set<string>([normalizedText]);
+  const minLength = Math.max(1, wakeWordLength - 1);
+  const maxLength = Math.min(normalizedText.length, wakeWordLength + 1);
+
+  for (let candidateLength = minLength; candidateLength <= maxLength; candidateLength += 1) {
+    for (let start = 0; start <= normalizedText.length - candidateLength; start += 1) {
+      candidates.add(normalizedText.slice(start, start + candidateLength));
+    }
+  }
+
+  return [...candidates];
+};
+
+const isCloseWakeWord = (normalizedText: string, normalizedWakeWord: string): boolean => {
+  if (normalizedText.includes(normalizedWakeWord)) {
+    return true;
+  }
+  if (normalizedWakeWord.length < 3) {
     return false;
   }
-  return normalizedText.includes(normalizedWakeWord);
+
+  const maxDistance = normalizedWakeWord.length >= 5 ? 1 : 0;
+  if (maxDistance === 0) {
+    return false;
+  }
+
+  return buildWakeTextCandidates(normalizedText, normalizedWakeWord.length)
+    .some((candidate) => levenshteinDistance(candidate, normalizedWakeWord) <= maxDistance);
+};
+
+const matchWakeWord = (
+  text: string,
+  wakeWords: string[],
+): { matched: boolean; matchedWakeWord?: string; normalizedText: string } => {
+  const normalizedText = normalizeWakePhrase(text);
+  if (!normalizedText) {
+    return { matched: false, normalizedText };
+  }
+
+  return wakeWords.some((wakeWord) => {
+    const normalizedWakeWord = normalizeWakePhrase(wakeWord);
+    if (!normalizedWakeWord) {
+      return false;
+    }
+    return isCloseWakeWord(normalizedText, normalizedWakeWord);
+  })
+    ? {
+        matched: true,
+        matchedWakeWord: wakeWords.find((wakeWord) => {
+          const normalizedWakeWord = normalizeWakePhrase(wakeWord);
+          return Boolean(normalizedWakeWord) && isCloseWakeWord(normalizedText, normalizedWakeWord);
+        }),
+        normalizedText,
+      }
+    : { matched: false, normalizedText };
 };
 
 export class WakeInputService extends EventEmitter {
@@ -64,10 +158,11 @@ export class WakeInputService extends EventEmitter {
       supported: false,
       platform: options.platform,
       status: WakeInputStatusType.Disabled,
-      wakeWord: this.config.wakeWord,
+      wakeWords: [...this.config.wakeWords],
       submitCommand: this.config.submitCommand,
       cancelCommand: this.config.cancelCommand,
       sessionTimeoutMs: this.config.sessionTimeoutMs,
+      autoRestartAfterReply: this.config.autoRestartAfterReply,
       listening: false,
     };
   }
@@ -106,10 +201,11 @@ export class WakeInputService extends EventEmitter {
       ...this.status,
       enabled: this.config.enabled,
       supported: this.supported,
-      wakeWord: this.config.wakeWord,
+      wakeWords: [...this.config.wakeWords],
       submitCommand: this.config.submitCommand,
       cancelCommand: this.config.cancelCommand,
       sessionTimeoutMs: this.config.sessionTimeoutMs,
+      autoRestartAfterReply: this.config.autoRestartAfterReply,
       status,
       listening: this.speechListening,
       ...(error ? { error } : { error: undefined }),
@@ -260,7 +356,19 @@ export class WakeInputService extends EventEmitter {
     }
 
     if (event.type === 'partial' || event.type === 'final') {
-      if (!includesWakeWord(event.text ?? '', this.config.wakeWord)) {
+      const wakeMatch = matchWakeWord(event.text ?? '', this.config.wakeWords);
+      console.debug(
+        '[WakeInput] Background speech received.',
+        JSON.stringify({
+          type: event.type,
+          text: event.text ?? '',
+          normalizedText: wakeMatch.normalizedText,
+          matched: wakeMatch.matched,
+          matchedWakeWord: wakeMatch.matchedWakeWord,
+        }),
+      );
+
+      if (!wakeMatch.matched) {
         return;
       }
 
@@ -273,6 +381,7 @@ export class WakeInputService extends EventEmitter {
         submitCommand: this.config.submitCommand,
         cancelCommand: this.config.cancelCommand,
         sessionTimeoutMs: this.config.sessionTimeoutMs,
+        autoRestartAfterReply: this.config.autoRestartAfterReply,
       };
       this.emit('dictationRequested', request);
 

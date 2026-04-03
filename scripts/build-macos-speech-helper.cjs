@@ -28,6 +28,9 @@ function buildMacosSpeechHelper(options = {}) {
   const targetArch = normalizeArch(arch);
 
   if (!existsSync(sourcePath)) {
+    if (existsSync(outputPath)) {
+      return outputPath;
+    }
     throw new Error(`Swift helper source not found: ${sourcePath}`);
   }
 

@@ -236,6 +236,7 @@ export interface AppConfig {
   speechInput?: {
     stopCommand: string;
     submitCommand: string;
+    autoRestartAfterReply: boolean;
   };
   wakeInput?: WakeInputConfig;
   tts?: {
@@ -250,14 +251,16 @@ export interface AppConfig {
 export const DEFAULT_SPEECH_INPUT_CONFIG: NonNullable<AppConfig['speechInput']> = {
   stopCommand: '停止输入',
   submitCommand: '结束发送',
+  autoRestartAfterReply: false,
 };
 
 export const DEFAULT_WAKE_INPUT_CONFIG: NonNullable<AppConfig['wakeInput']> = {
   enabled: false,
-  wakeWord: '打开青书爪',
+  wakeWords: ['打开青书爪'],
   submitCommand: '发送',
   cancelCommand: '取消',
   sessionTimeoutMs: 20_000,
+  autoRestartAfterReply: false,
 };
 
 export const DEFAULT_TTS_CONFIG: NonNullable<AppConfig['tts']> = {

@@ -1,8 +1,13 @@
+import type { WakeInputDictationRequest } from '../wakeInput/constants';
+
 export const SpeechIpcChannel = {
   GetAvailability: 'speech:getAvailability',
   Start: 'speech:start',
   Stop: 'speech:stop',
   StateChanged: 'speech:stateChanged',
+  FollowUpArm: 'speech:followUp:arm',
+  FollowUpDisarm: 'speech:followUp:disarm',
+  FollowUpSetActiveSession: 'speech:followUp:setActiveSession',
 } as const;
 
 export const SpeechFeatureFlagKey = {
@@ -63,4 +68,13 @@ export interface SpeechStateEvent {
   text?: string;
   code?: SpeechErrorCode | string;
   message?: string;
+}
+
+export interface SpeechFollowUpArmRequest {
+  sessionId: string | null;
+  config: WakeInputDictationRequest;
+}
+
+export interface SpeechFollowUpActiveSessionRequest {
+  sessionId: string | null;
 }

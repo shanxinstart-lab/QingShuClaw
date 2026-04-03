@@ -89,11 +89,27 @@ const mergeSpeechInputConfig = (
 });
 
 const mergeWakeInputConfig = (
-  wakeInput?: AppConfig['wakeInput']
-): NonNullable<AppConfig['wakeInput']> => ({
-  ...DEFAULT_WAKE_INPUT_CONFIG,
-  ...(wakeInput ?? {}),
-});
+  wakeInput?: AppConfig['wakeInput'] & { wakeWord?: string }
+): NonNullable<AppConfig['wakeInput']> => {
+  const normalizedWakeWords = Array.isArray(wakeInput?.wakeWords)
+    ? wakeInput.wakeWords
+      .map((wakeWord) => typeof wakeWord === 'string' ? wakeWord.trim() : '')
+      .filter((wakeWord, index, items) => Boolean(wakeWord) && items.indexOf(wakeWord) === index)
+    : [];
+  const legacyWakeWord = typeof wakeInput?.wakeWord === 'string'
+    ? wakeInput.wakeWord.trim()
+    : '';
+
+  return {
+    ...DEFAULT_WAKE_INPUT_CONFIG,
+    ...(wakeInput ?? {}),
+    wakeWords: normalizedWakeWords.length > 0
+      ? normalizedWakeWords
+      : legacyWakeWord
+        ? [legacyWakeWord]
+        : [...DEFAULT_WAKE_INPUT_CONFIG.wakeWords],
+  };
+};
 
 const mergeTtsConfig = (
   tts?: AppConfig['tts']

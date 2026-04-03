@@ -56,14 +56,14 @@ const App: React.FC = () => {
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
   } | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
-  const loginWelcomeTimerRef = useRef<number | null>(null);
-  const hasInitialized = useRef(false);
-  const dispatch = useDispatch();
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
   const pendingPermissions = useSelector((state: RootState) => state.cowork.pendingPermissions);
   const pendingPermission = pendingPermissions[0] ?? null;
+  const toastTimerRef = useRef<number | null>(null);
+  const loginWelcomeTimerRef = useRef<number | null>(null);
+  const hasInitialized = useRef(false);
+  const dispatch = useDispatch();
   const isWindows = platform === 'win32';
 
   const waitWithTimeout = useCallback(
@@ -88,7 +88,25 @@ const App: React.FC = () => {
     []
   );
 
+  const disarmWakeFollowUp = useCallback(() => {
+    if (!electronApi) {
+      return;
+    }
+    void electronApi.speechFollowUp.disarm().catch((error) => {
+      console.error('[WakeFollowUp] Failed to disarm speech follow-up:', error);
+    });
+  }, [electronApi]);
+
   // 初始化应用
+  useEffect(() => {
+    if (!electronApi) {
+      return;
+    }
+    void electronApi.speechFollowUp.setActiveSession({ sessionId: currentSessionId ?? null }).catch((error) => {
+      console.error('[WakeFollowUp] Failed to sync active session:', error);
+    });
+  }, [currentSessionId, electronApi]);
+
   useEffect(() => {
     if (hasInitialized.current) {
       return;
@@ -275,6 +293,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleNewChat = useCallback(() => {
+    disarmWakeFollowUp();
     const shouldClearInput = mainView === 'cowork' || !!currentSessionId;
     coworkService.clearSession();
     dispatch(clearSelection());
@@ -284,7 +303,7 @@ const App: React.FC = () => {
         detail: { clear: shouldClearInput },
       }));
     }, 0);
-  }, [dispatch, mainView, currentSessionId]);
+  }, [currentSessionId, disarmWakeFollowUp, dispatch, mainView]);
 
   const handleFocusCoworkInput = useCallback((clear = false) => {
     setMainView('cowork');
@@ -594,6 +613,7 @@ const App: React.FC = () => {
       return;
     }
     const unsubscribe = electronApi.wakeInput.onDictationRequested((request) => {
+      disarmWakeFollowUp();
       handleFocusCoworkInput(false);
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
@@ -602,7 +622,7 @@ const App: React.FC = () => {
       }, 0);
     });
     return unsubscribe;
-  }, [electronApi, handleFocusCoworkInput]);
+  }, [disarmWakeFollowUp, electronApi, handleFocusCoworkInput]);
 
   useEffect(() => {
     if (!isInitialized) return;

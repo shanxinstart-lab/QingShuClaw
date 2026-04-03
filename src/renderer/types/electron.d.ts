@@ -33,23 +33,43 @@ interface SpeechStateEvent {
   message?: string;
 }
 
+interface SpeechFollowUpArmRequest {
+  sessionId: string | null;
+  config: WakeInputDictationRequest;
+}
+
+interface SpeechFollowUpActiveSessionRequest {
+  sessionId: string | null;
+}
+
 interface WakeInputStatus {
   enabled: boolean;
   supported: boolean;
   platform: string;
   status: 'disabled' | 'idle' | 'listening' | 'wake_triggered' | 'dictating' | 'cooldown' | 'error';
-  wakeWord: string;
+  wakeWords: string[];
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
   listening: boolean;
   error?: string;
+}
+
+interface WakeInputConfig {
+  enabled: boolean;
+  wakeWords: string[];
+  submitCommand: string;
+  cancelCommand: string;
+  sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
 }
 
 interface WakeInputDictationRequest {
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  autoRestartAfterReply: boolean;
 }
 
 interface TtsAvailability {
@@ -452,9 +472,14 @@ interface IElectronAPI {
     stop: () => Promise<{ success: boolean; error?: string }>;
     onStateChanged: (callback: (data: SpeechStateEvent) => void) => () => void;
   };
+  speechFollowUp: {
+    arm: (payload: SpeechFollowUpArmRequest) => Promise<{ success: boolean; error?: string }>;
+    disarm: () => Promise<{ success: boolean; error?: string }>;
+    setActiveSession: (payload: SpeechFollowUpActiveSessionRequest) => Promise<{ success: boolean; error?: string }>;
+  };
   wakeInput: {
     getStatus: () => Promise<WakeInputStatus>;
-    updateConfig: (config: Partial<WakeInputStatus>) => Promise<{ success: boolean; status?: WakeInputStatus; error?: string }>;
+    updateConfig: (config: Partial<WakeInputConfig>) => Promise<{ success: boolean; status?: WakeInputStatus; error?: string }>;
     onStateChanged: (callback: (data: WakeInputStatus) => void) => () => void;
     onDictationRequested: (callback: (data: WakeInputDictationRequest) => void) => () => void;
   };

@@ -183,6 +183,18 @@ const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/
 const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
   value === 'openai' ? 'openai' : 'anthropic'
 );
+
+const WAKE_INPUT_SEPARATOR_PATTERN = /[\n,，;；、]+/u;
+
+const stringifyWakeWords = (wakeWords: string[]): string => wakeWords.join('\n');
+
+const parseWakeWords = (value: string): string[] => {
+  return value
+    .split(WAKE_INPUT_SEPARATOR_PATTERN)
+    .map((wakeWord) => wakeWord.trim())
+    .filter((wakeWord, index, items) => Boolean(wakeWord) && items.indexOf(wakeWord) === index);
+};
+
 // MiniMax Portal OAuth constants
 const MINIMAX_OAUTH_CLIENT_ID = '78257093-7e40-4613-99e0-527b14b39113';
 const MINIMAX_OAUTH_SCOPE = 'group_id profile model.completion';
@@ -467,8 +479,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [useSystemProxy, setUseSystemProxy] = useState(false);
   const [speechStopCommand, setSpeechStopCommand] = useState(DEFAULT_SPEECH_INPUT_CONFIG.stopCommand);
   const [speechSubmitCommand, setSpeechSubmitCommand] = useState(DEFAULT_SPEECH_INPUT_CONFIG.submitCommand);
+  const [speechAutoRestartAfterReply, setSpeechAutoRestartAfterReply] = useState(DEFAULT_SPEECH_INPUT_CONFIG.autoRestartAfterReply);
   const [wakeInputEnabled, setWakeInputEnabled] = useState(DEFAULT_WAKE_INPUT_CONFIG.enabled);
-  const [wakeInputWakeWord] = useState(DEFAULT_WAKE_INPUT_CONFIG.wakeWord);
+  const [wakeInputWakeWordsText, setWakeInputWakeWordsText] = useState(stringifyWakeWords(DEFAULT_WAKE_INPUT_CONFIG.wakeWords));
   const [wakeInputSubmitCommand, setWakeInputSubmitCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
   const [wakeInputCancelCommand, setWakeInputCancelCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
   const [wakeInputStatus, setWakeInputStatus] = useState<WakeInputStatus | null>(null);
@@ -676,7 +689,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setUseSystemProxy(config.useSystemProxy ?? false);
       setSpeechStopCommand(config.speechInput?.stopCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.stopCommand);
       setSpeechSubmitCommand(config.speechInput?.submitCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.submitCommand);
+      setSpeechAutoRestartAfterReply(config.speechInput?.autoRestartAfterReply ?? DEFAULT_SPEECH_INPUT_CONFIG.autoRestartAfterReply);
       setWakeInputEnabled(config.wakeInput?.enabled ?? DEFAULT_WAKE_INPUT_CONFIG.enabled);
+      setWakeInputWakeWordsText(stringifyWakeWords(config.wakeInput?.wakeWords ?? DEFAULT_WAKE_INPUT_CONFIG.wakeWords));
       setWakeInputSubmitCommand(config.wakeInput?.submitCommand ?? DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
       setWakeInputCancelCommand(config.wakeInput?.cancelCommand ?? DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
       setTtsEnabled(config.tts?.enabled ?? DEFAULT_TTS_CONFIG.enabled);
@@ -1519,6 +1534,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       }
       const normalizedWakeSubmitCommand = wakeInputSubmitCommand.trim();
       const normalizedWakeCancelCommand = wakeInputCancelCommand.trim();
+      const normalizedWakeWords = parseWakeWords(wakeInputWakeWordsText);
+      if (normalizedWakeWords.length === 0) {
+        setError(i18nService.t('wakeInputWakeWordsRequiredError'));
+        return;
+      }
       if (
         normalizedWakeSubmitCommand
         && normalizedWakeCancelCommand
@@ -1568,13 +1588,15 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         speechInput: {
           stopCommand: normalizedSpeechStopCommand,
           submitCommand: normalizedSpeechSubmitCommand,
+          autoRestartAfterReply: speechAutoRestartAfterReply,
         },
         wakeInput: {
           enabled: wakeInputEnabled,
-          wakeWord: wakeInputWakeWord,
+          wakeWords: normalizedWakeWords,
           submitCommand: normalizedWakeSubmitCommand,
           cancelCommand: normalizedWakeCancelCommand,
           sessionTimeoutMs: DEFAULT_WAKE_INPUT_CONFIG.sessionTimeoutMs,
+          autoRestartAfterReply: DEFAULT_WAKE_INPUT_CONFIG.autoRestartAfterReply,
         },
         tts: {
           enabled: ttsEnabled,
@@ -2427,6 +2449,32 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                         className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
                       />
                     </label>
+
+                    <label className="flex items-start justify-between gap-4 cursor-pointer">
+                      <div className="min-w-0">
+                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {i18nService.t('speechInputAutoRestartAfterReplyLabel')}
+                        </div>
+                        <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {i18nService.t('speechInputAutoRestartAfterReplyHint')}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={speechAutoRestartAfterReply}
+                        onClick={() => setSpeechAutoRestartAfterReply((prev) => !prev)}
+                        className={`relative mt-0.5 inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                          speechAutoRestartAfterReply ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                            speechAutoRestartAfterReply ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
+                      </button>
+                    </label>
                   </div>
 
                   <p className="mt-3 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
@@ -2469,9 +2517,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     </button>
                   </label>
 
-                  <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    {i18nService.t('wakeInputWakeWordLabel')}: {wakeInputWakeWord}
-                  </div>
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('wakeInputWakeWordsLabel')}
+                    </div>
+                    <textarea
+                      value={wakeInputWakeWordsText}
+                      onChange={(event) => setWakeInputWakeWordsText(event.target.value)}
+                      placeholder={i18nService.t('wakeInputWakeWordsPlaceholder')}
+                      rows={3}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                    <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('wakeInputWakeWordsHint')}
+                    </div>
+                  </label>
                   <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
                     {i18nService.t('wakeInputStatusLabel')}: {wakeInputStatus ? i18nService.t(`wakeInputStatus_${wakeInputStatus.status}`) : i18nService.t('loading')}
                   </div>

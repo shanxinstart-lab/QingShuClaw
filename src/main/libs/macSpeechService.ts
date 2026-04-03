@@ -122,6 +122,35 @@ export class MacSpeechService extends EventEmitter {
 
   private activeChildEmittedError = false;
 
+  private waitForChildClose(child: ChildProcessWithoutNullStreams, timeoutMs = 1_500): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        child.removeListener('close', handleClose);
+        resolve();
+      };
+
+      const handleClose = (): void => {
+        finish();
+      };
+
+      child.once('close', handleClose);
+      timer = setTimeout(() => {
+        finish();
+      }, timeoutMs);
+    });
+  }
+
   private ensureHelperBinary(): string {
     const helperPath = app.isPackaged ? resolvePackagedHelperBinaryPath() : resolveDevHelperBinaryPath();
     if (app.isPackaged) {
@@ -385,6 +414,7 @@ export class MacSpeechService extends EventEmitter {
 
     const child = this.activeChild;
     this.stopping = true;
+    const closePromise = this.waitForChildClose(child);
     const killed = child.kill('SIGTERM');
     if (!killed) {
       this.stopping = false;
@@ -394,6 +424,7 @@ export class MacSpeechService extends EventEmitter {
     this.emit('stateChanged', {
       type: SpeechStateType.Stopped,
     } satisfies SpeechStateEvent);
+    await closePromise;
     return { success: true };
   }
 
