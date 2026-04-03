@@ -92,9 +92,10 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
           // Strip IM subtype prefix from delivery.to before passing to OpenClaw.
           // LobsterAI stores conversationIds with subtype prefixes (e.g. "direct:ou_xxx",
           // "group:oc_xxx") but OpenClaw channel adapters expect raw platform IDs
-          // (e.g. "ou_xxx", "oc_xxx").
+          // (e.g. "ou_xxx", "oc_xxx"). Use lastIndexOf to handle IDs that contain
+          // colons themselves (e.g. "direct:prefix:actual_id").
           const rawTo = delivery.to;
-          const colonIdx = rawTo.indexOf(':');
+          const colonIdx = rawTo.lastIndexOf(':');
           if (colonIdx > 0) {
             delivery.to = rawTo.slice(colonIdx + 1);
             console.log('[IPC][scheduledTask:create] stripped IM subtype prefix from delivery.to:',
