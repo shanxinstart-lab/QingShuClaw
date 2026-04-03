@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import {
+  DEFAULT_VOICE_POST_PROCESS_CONFIG,
   isCustomProvider,
   getCustomProviderDefaultName,
   getProviderDisplayName,
@@ -75,4 +76,12 @@ test('getProviderDisplayName: custom provider with undefined displayName uses de
 
 test('getProviderDisplayName: custom provider with no displayName field uses default', () => {
   expect(getProviderDisplayName('custom_3', { apiKey: 'sk-xxx' })).toBe('Custom3');
+});
+
+test('DEFAULT_VOICE_POST_PROCESS_CONFIG: all new voice post-process toggles are off by default', () => {
+  expect(DEFAULT_VOICE_POST_PROCESS_CONFIG).toEqual({
+    sttLlmCorrectionEnabled: false,
+    ttsLlmRewriteEnabled: false,
+    ttsSkipKeywords: [],
+  });
 });

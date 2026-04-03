@@ -3,6 +3,7 @@ import {
   CONFIG_KEYS,
   DEFAULT_SPEECH_INPUT_CONFIG,
   DEFAULT_TTS_CONFIG,
+  DEFAULT_VOICE_POST_PROCESS_CONFIG,
   DEFAULT_WAKE_INPUT_CONFIG,
   defaultConfig,
   isCustomProvider,
@@ -117,6 +118,22 @@ const mergeTtsConfig = (
   ...DEFAULT_TTS_CONFIG,
   ...(tts ?? {}),
 });
+
+const mergeVoicePostProcessConfig = (
+  postProcess?: NonNullable<NonNullable<AppConfig['voice']>['postProcess']>
+): NonNullable<NonNullable<AppConfig['voice']>['postProcess']> => {
+  const nextKeywords = Array.isArray(postProcess?.ttsSkipKeywords)
+    ? postProcess.ttsSkipKeywords
+      .map((keyword) => typeof keyword === 'string' ? keyword.trim() : '')
+      .filter((keyword, index, items) => Boolean(keyword) && items.indexOf(keyword) === index)
+    : DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsSkipKeywords;
+
+  return {
+    ...DEFAULT_VOICE_POST_PROCESS_CONFIG,
+    ...(postProcess ?? {}),
+    ttsSkipKeywords: nextKeywords,
+  };
+};
 
 /**
  * Migrate legacy single `custom` provider to `custom_0`.
@@ -250,6 +267,9 @@ class ConfigService {
           speechInput: mergeSpeechInputConfig(storedConfig.speechInput),
           wakeInput: mergeWakeInputConfig(storedConfig.wakeInput),
           tts: mergeTtsConfig(storedConfig.tts),
+          voice: {
+            postProcess: mergeVoicePostProcessConfig(storedConfig.voice?.postProcess),
+          },
           providers: mergedProviders as AppConfig['providers'],
         });
       }
@@ -282,6 +302,14 @@ class ConfigService {
           ...newConfig.tts,
         })
       : this.config.tts;
+    const mergedVoice = newConfig.voice
+      ? {
+          postProcess: mergeVoicePostProcessConfig({
+            ...this.config.voice?.postProcess,
+            ...newConfig.voice.postProcess,
+          }),
+        }
+      : this.config.voice;
 
     this.config = {
       ...this.config,
@@ -290,6 +318,7 @@ class ConfigService {
       ...(newConfig.speechInput ? { speechInput: mergedSpeechInput } : {}),
       ...(newConfig.wakeInput ? { wakeInput: mergedWakeInput } : {}),
       ...(newConfig.tts ? { tts: mergedTts } : {}),
+      ...(newConfig.voice ? { voice: mergedVoice } : {}),
     };
     await localStore.setItem(CONFIG_KEYS.APP_CONFIG, this.config);
   }

@@ -34,6 +34,7 @@ import type { TtsVoice } from '../../shared/tts/constants';
 import {
   DEFAULT_SPEECH_INPUT_CONFIG,
   DEFAULT_TTS_CONFIG,
+  DEFAULT_VOICE_POST_PROCESS_CONFIG,
   DEFAULT_WAKE_INPUT_CONFIG,
   defaultConfig,
   type AppConfig,
@@ -66,6 +67,13 @@ import {
 } from './icons/providers';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
+
+const parsePostProcessKeywordsInput = (value: string): string[] => {
+  return value
+    .split(/\r?\n/g)
+    .map((keyword) => keyword.trim())
+    .filter((keyword, index, items) => Boolean(keyword) && items.indexOf(keyword) === index);
+};
 
 export type SettingsOpenOptions = {
   initialTab?: TabType;
@@ -490,6 +498,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [ttsVoiceId, setTtsVoiceId] = useState(DEFAULT_TTS_CONFIG.voiceId);
   const [ttsRate, setTtsRate] = useState(DEFAULT_TTS_CONFIG.rate);
   const [ttsVolume, setTtsVolume] = useState(DEFAULT_TTS_CONFIG.volume);
+  const [sttLlmCorrectionEnabled, setSttLlmCorrectionEnabled] = useState(DEFAULT_VOICE_POST_PROCESS_CONFIG.sttLlmCorrectionEnabled);
+  const [ttsLlmRewriteEnabled, setTtsLlmRewriteEnabled] = useState(DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsLlmRewriteEnabled);
+  const [ttsSkipKeywordsText, setTtsSkipKeywordsText] = useState(DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsSkipKeywords.join('\n'));
   const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
   const [qtbApiBaseUrl, setQtbApiBaseUrl] = useState(DEFAULT_QTB_API_BASE_URL);
   const [qtbWebBaseUrl, setQtbWebBaseUrl] = useState(DEFAULT_QTB_WEB_BASE_URL);
@@ -699,6 +710,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setTtsVoiceId(config.tts?.voiceId ?? DEFAULT_TTS_CONFIG.voiceId);
       setTtsRate(config.tts?.rate ?? DEFAULT_TTS_CONFIG.rate);
       setTtsVolume(config.tts?.volume ?? DEFAULT_TTS_CONFIG.volume);
+      setSttLlmCorrectionEnabled(config.voice?.postProcess?.sttLlmCorrectionEnabled ?? DEFAULT_VOICE_POST_PROCESS_CONFIG.sttLlmCorrectionEnabled);
+      setTtsLlmRewriteEnabled(config.voice?.postProcess?.ttsLlmRewriteEnabled ?? DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsLlmRewriteEnabled);
+      setTtsSkipKeywordsText((config.voice?.postProcess?.ttsSkipKeywords ?? DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsSkipKeywords).join('\n'));
       setQtbApiBaseUrl(config.auth?.qtbApiBaseUrl || DEFAULT_QTB_API_BASE_URL);
       setQtbWebBaseUrl(config.auth?.qtbWebBaseUrl || DEFAULT_QTB_WEB_BASE_URL);
       const savedTestMode = config.app?.testMode ?? false;
@@ -1535,6 +1549,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       const normalizedWakeSubmitCommand = wakeInputSubmitCommand.trim();
       const normalizedWakeCancelCommand = wakeInputCancelCommand.trim();
       const normalizedWakeWords = parseWakeWords(wakeInputWakeWordsText);
+      const normalizedTtsSkipKeywords = parsePostProcessKeywordsInput(ttsSkipKeywordsText);
       if (normalizedWakeWords.length === 0) {
         setError(i18nService.t('wakeInputWakeWordsRequiredError'));
         return;
@@ -1604,6 +1619,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           voiceId: ttsVoiceId,
           rate: ttsRate,
           volume: ttsVolume,
+        },
+        voice: {
+          postProcess: {
+            sttLlmCorrectionEnabled,
+            ttsLlmRewriteEnabled,
+            ttsSkipKeywords: normalizedTtsSkipKeywords,
+          },
         },
         shortcuts,
         app: {
@@ -2475,6 +2497,32 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                         />
                       </button>
                     </label>
+
+                    <label className="flex items-start justify-between gap-4 cursor-pointer">
+                      <div className="min-w-0">
+                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {i18nService.t('speechInputLlmCorrectionLabel')}
+                        </div>
+                        <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {i18nService.t('speechInputLlmCorrectionHint')}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={sttLlmCorrectionEnabled}
+                        onClick={() => setSttLlmCorrectionEnabled((prev) => !prev)}
+                        className={`relative mt-0.5 inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                          sttLlmCorrectionEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                            sttLlmCorrectionEnabled ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
+                      </button>
+                    </label>
                   </div>
 
                   <p className="mt-3 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
@@ -2619,6 +2667,32 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     </button>
                   </label>
 
+                  <label className="flex items-start justify-between gap-4 cursor-pointer">
+                    <div className="min-w-0">
+                      <div className="text-sm text-secondary">
+                        {i18nService.t('ttsLlmRewriteLabel')}
+                      </div>
+                      <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                        {i18nService.t('ttsLlmRewriteHint')}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ttsLlmRewriteEnabled}
+                      onClick={() => setTtsLlmRewriteEnabled((prev) => !prev)}
+                      className={`relative mt-0.5 inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        ttsLlmRewriteEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          ttsLlmRewriteEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
                   <div>
                     <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
                       {i18nService.t('ttsVoiceLabel')}
@@ -2665,6 +2739,22 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                       onChange={(event) => setTtsVolume(Number(event.target.value))}
                       className="w-full"
                     />
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('ttsSkipKeywordsLabel')}
+                    </div>
+                    <textarea
+                      value={ttsSkipKeywordsText}
+                      onChange={(event) => setTtsSkipKeywordsText(event.target.value)}
+                      placeholder={i18nService.t('ttsSkipKeywordsPlaceholder')}
+                      rows={4}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                    <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('ttsSkipKeywordsHint')}
+                    </div>
                   </label>
 
                   <p className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">

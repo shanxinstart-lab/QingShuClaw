@@ -1,7 +1,13 @@
 import type { AuthConfig } from '../common/auth';
 import { DEFAULT_AUTH_CONFIG } from '../common/auth';
-import { ProviderRegistry } from '@shared/providers';
+import { ProviderRegistry } from '../shared/providers';
 import type { WakeInputConfig } from '../shared/wakeInput/constants';
+
+export interface VoicePostProcessConfig {
+  sttLlmCorrectionEnabled: boolean;
+  ttsLlmRewriteEnabled: boolean;
+  ttsSkipKeywords: string[];
+}
 
 // 配置类型定义
 export interface AppConfig {
@@ -246,6 +252,9 @@ export interface AppConfig {
     rate: number;
     volume: number;
   };
+  voice?: {
+    postProcess: VoicePostProcessConfig;
+  };
 }
 
 export const DEFAULT_SPEECH_INPUT_CONFIG: NonNullable<AppConfig['speechInput']> = {
@@ -269,6 +278,12 @@ export const DEFAULT_TTS_CONFIG: NonNullable<AppConfig['tts']> = {
   voiceId: '',
   rate: 0.5,
   volume: 1,
+};
+
+export const DEFAULT_VOICE_POST_PROCESS_CONFIG: VoicePostProcessConfig = {
+  sttLlmCorrectionEnabled: false,
+  ttsLlmRewriteEnabled: false,
+  ttsSkipKeywords: [],
 };
 
 /**
@@ -333,6 +348,9 @@ export const defaultConfig: AppConfig = {
   speechInput: DEFAULT_SPEECH_INPUT_CONFIG,
   wakeInput: DEFAULT_WAKE_INPUT_CONFIG,
   tts: DEFAULT_TTS_CONFIG,
+  voice: {
+    postProcess: DEFAULT_VOICE_POST_PROCESS_CONFIG,
+  },
 };
 
 // 配置存储键
