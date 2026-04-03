@@ -35,7 +35,6 @@ build-tar/
 
 # Bundled PortableGit for Windows builds (downloaded via scripts/setup-mingit.js)
 resources/mingit/
-resources/macos-speech/
 resources/MinGit-*.zip
 resources/PortableGit-*.7z.exe
 resources/python-win/
