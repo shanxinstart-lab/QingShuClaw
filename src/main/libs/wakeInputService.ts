@@ -6,8 +6,7 @@ import {
   type WakeInputDictationRequest,
   type WakeInputStatus,
 } from '../../shared/wakeInput/constants';
-
-type ForegroundSpeechOrigin = 'manual' | 'wake';
+import type { ForegroundSpeechOrigin } from './speechErrorRecovery';
 
 const DICTATION_HANDSHAKE_TIMEOUT_MS = 10_000;
 const MANUAL_RESUME_DELAY_MS = 600;
@@ -313,8 +312,9 @@ export class WakeInputService extends EventEmitter {
     await this.stopListening();
   }
 
-  async prepareForegroundSpeechStart(): Promise<ForegroundSpeechOrigin> {
-    const origin: ForegroundSpeechOrigin = this.pendingDictation ? 'wake' : 'manual';
+  async prepareForegroundSpeechStart(preferredOrigin?: ForegroundSpeechOrigin): Promise<ForegroundSpeechOrigin> {
+    const origin: ForegroundSpeechOrigin = preferredOrigin
+      ?? (this.pendingDictation ? 'wake' : 'manual');
     this.clearRetryTimer();
     if (this.speechListening) {
       await this.stopBackgroundListening();
@@ -382,6 +382,7 @@ export class WakeInputService extends EventEmitter {
         cancelCommand: this.config.cancelCommand,
         sessionTimeoutMs: this.config.sessionTimeoutMs,
         autoRestartAfterReply: this.config.autoRestartAfterReply,
+        source: 'wake',
       };
       this.emit('dictationRequested', request);
 

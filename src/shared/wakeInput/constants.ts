@@ -44,4 +44,5 @@ export interface WakeInputDictationRequest {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  source?: 'wake' | 'follow_up';
 }

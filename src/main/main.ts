@@ -93,11 +93,17 @@ import {
 } from '../common/auth';
 import { MacSpeechService, broadcastSpeechState } from './libs/macSpeechService';
 import { MacTtsService, broadcastTtsState } from './libs/macTtsService';
+import {
+  resolveForegroundSpeechRetryDelayMs,
+  shouldRetryForegroundSpeech,
+  type ForegroundSpeechOrigin,
+} from './libs/speechErrorRecovery';
 import { WakeInputService } from './libs/wakeInputService';
 import {
   SpeechErrorCode,
   SpeechFeatureFlagKey,
   SpeechIpcChannel,
+  SpeechStartSource,
   SpeechStateType,
   SpeechPermissionStatus,
   type SpeechFollowUpActiveSessionRequest,
@@ -1751,7 +1757,36 @@ const mergeWakeInputConfig = (
   };
 };
 
-let foregroundSpeechOrigin: 'manual' | 'wake' | null = null;
+let foregroundSpeechOrigin: ForegroundSpeechOrigin | null = null;
+let foregroundSpeechStartOptions: SpeechStartOptions | null = null;
+let foregroundSpeechRecoveryAttempts = 0;
+let foregroundSpeechRecoveryTimer: NodeJS.Timeout | null = null;
+
+const clearForegroundSpeechRecoveryTimer = (): void => {
+  if (foregroundSpeechRecoveryTimer) {
+    clearTimeout(foregroundSpeechRecoveryTimer);
+    foregroundSpeechRecoveryTimer = null;
+  }
+};
+
+const normalizeForegroundSpeechOrigin = (options?: SpeechStartOptions): ForegroundSpeechOrigin | undefined => {
+  if (options?.source === SpeechStartSource.Wake) {
+    return 'wake';
+  }
+  if (options?.source === SpeechStartSource.FollowUp) {
+    return 'follow_up';
+  }
+  if (options?.source === SpeechStartSource.Manual) {
+    return 'manual';
+  }
+  return undefined;
+};
+
+const resetForegroundSpeechRecoveryState = (): void => {
+  clearForegroundSpeechRecoveryTimer();
+  foregroundSpeechRecoveryAttempts = 0;
+  foregroundSpeechStartOptions = null;
+};
 
 type SpeechFollowUpState = {
   armed: boolean;
@@ -1851,6 +1886,7 @@ const resolveSpeechFollowUpRequestFromAppConfig = (
     cancelCommand: shouldPreferWakeCommands ? wakeInputConfig.cancelCommand : speechInputConfig.stopCommand,
     sessionTimeoutMs: wakeInputConfig.sessionTimeoutMs,
     autoRestartAfterReply: true,
+    source: 'follow_up',
   };
 };
 
@@ -1988,7 +2024,10 @@ const triggerSpeechFollowUpDictation = (request: WakeInputDictationRequest): voi
   showMainWindow();
   focusCoworkInputInMainWindow({ clear: false });
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
+    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, {
+      ...request,
+      source: 'follow_up',
+    } satisfies WakeInputDictationRequest);
   }
 };
 
@@ -2016,10 +2055,61 @@ macSpeechService.onStateChanged((event) => {
   }
 
   if (foregroundSpeechOrigin) {
+    if (
+      event.type === SpeechStateType.Error
+      && shouldRetryForegroundSpeech(foregroundSpeechOrigin, foregroundSpeechRecoveryAttempts, event.code)
+    ) {
+      const retryOrigin = foregroundSpeechOrigin;
+      const retryOptions: SpeechStartOptions = {
+        ...(foregroundSpeechStartOptions ?? {}),
+        source: retryOrigin === 'follow_up' ? SpeechStartSource.FollowUp : retryOrigin,
+      };
+      foregroundSpeechRecoveryAttempts += 1;
+      clearForegroundSpeechRecoveryTimer();
+      console.warn(
+        `[MacSpeechService] Recoverable speech interruption detected for ${retryOrigin}; ` +
+          `retrying in ${resolveForegroundSpeechRetryDelayMs(retryOrigin)}ms.`,
+        JSON.stringify({ code: event.code, message: event.message }),
+      );
+      foregroundSpeechRecoveryTimer = setTimeout(() => {
+        foregroundSpeechRecoveryTimer = null;
+        void macSpeechService.start(retryOptions).then(async (result) => {
+          if (result.success) {
+            await wakeInputService.syncAvailability({ supported: true });
+            console.log(`[MacSpeechService] Foreground speech recovered for ${retryOrigin}.`);
+            return;
+          }
+
+          console.warn(
+            `[MacSpeechService] Foreground speech recovery failed for ${retryOrigin}.`,
+            JSON.stringify({ error: result.error }),
+          );
+          const failedOrigin = foregroundSpeechOrigin;
+          resetForegroundSpeechRecoveryState();
+          foregroundSpeechOrigin = null;
+          if (failedOrigin) {
+            wakeInputService.handleForegroundSpeechEnded(failedOrigin);
+          }
+          broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
+        }).catch((error) => {
+          console.error('[MacSpeechService] Foreground speech recovery threw an error:', error);
+          const failedOrigin = foregroundSpeechOrigin;
+          resetForegroundSpeechRecoveryState();
+          foregroundSpeechOrigin = null;
+          if (failedOrigin) {
+            wakeInputService.handleForegroundSpeechEnded(failedOrigin);
+          }
+          broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
+        });
+      }, resolveForegroundSpeechRetryDelayMs(retryOrigin));
+      return;
+    }
+
     broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
     if (event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
       const finishedOrigin = foregroundSpeechOrigin;
       foregroundSpeechOrigin = null;
+      resetForegroundSpeechRecoveryState();
       wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
     }
     return;
@@ -4257,7 +4347,7 @@ if (!gotTheLock) {
     if (!isMacSpeechInputEnabled()) {
       return { success: false, error: SpeechErrorCode.HelperUnavailable };
     }
-    const origin = await wakeInputService.prepareForegroundSpeechStart();
+    const origin = await wakeInputService.prepareForegroundSpeechStart(normalizeForegroundSpeechOrigin(options));
     let result = await macSpeechService.start(options);
     if (!result.success && result.error === SpeechErrorCode.AlreadyListening) {
       await new Promise((resolve) => setTimeout(resolve, FOREGROUND_SPEECH_RETRY_DELAY_MS));
@@ -4265,14 +4355,22 @@ if (!gotTheLock) {
     }
     if (result.success) {
       await wakeInputService.syncAvailability({ supported: true });
+      clearForegroundSpeechRecoveryTimer();
+      foregroundSpeechRecoveryAttempts = 0;
       foregroundSpeechOrigin = origin;
+      foregroundSpeechStartOptions = {
+        ...options,
+        source: origin === 'follow_up' ? SpeechStartSource.FollowUp : origin,
+      };
       return result;
     }
+    resetForegroundSpeechRecoveryState();
     wakeInputService.handleForegroundSpeechEnded(origin);
     return result;
   });
 
   ipcMain.handle(SpeechIpcChannel.Stop, async () => {
+    resetForegroundSpeechRecoveryState();
     return macSpeechService.stop();
   });
 

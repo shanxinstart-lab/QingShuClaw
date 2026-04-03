@@ -42,6 +42,10 @@ export const SpeechErrorCode = {
   MicrophonePermissionDenied: 'microphone_permission_denied',
   StartFailed: 'start_failed',
   RuntimeError: 'runtime_error',
+  SpeechProcessInterrupted: 'speech_process_interrupted',
+  SpeechProcessInvalidated: 'speech_process_invalidated',
+  SpeechRequestCancelled: 'speech_request_cancelled',
+  SpeechNoMatch: 'speech_no_match',
   AlreadyListening: 'already_listening',
   InvalidResponse: 'invalid_response',
 } as const;
@@ -59,8 +63,16 @@ export interface SpeechAvailability {
   error?: string;
 }
 
+export const SpeechStartSource = {
+  Manual: 'manual',
+  Wake: 'wake',
+  FollowUp: 'follow_up',
+} as const;
+export type SpeechStartSource = typeof SpeechStartSource[keyof typeof SpeechStartSource];
+
 export interface SpeechStartOptions {
   locale?: string;
+  source?: SpeechStartSource;
 }
 
 export interface SpeechStateEvent {

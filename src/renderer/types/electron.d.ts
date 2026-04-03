@@ -33,6 +33,8 @@ interface SpeechStateEvent {
   message?: string;
 }
 
+type SpeechStartSource = 'manual' | 'wake' | 'follow_up';
+
 interface SpeechFollowUpArmRequest {
   sessionId: string | null;
   config: WakeInputDictationRequest;
@@ -70,6 +72,7 @@ interface WakeInputDictationRequest {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  source?: 'wake' | 'follow_up';
 }
 
 interface TtsAvailability {
@@ -468,7 +471,7 @@ interface IElectronAPI {
   };
   speech: {
     getAvailability: () => Promise<SpeechAvailability>;
-    start: (options?: { locale?: string }) => Promise<{ success: boolean; error?: string }>;
+    start: (options?: { locale?: string; source?: SpeechStartSource }) => Promise<{ success: boolean; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
     onStateChanged: (callback: (data: SpeechStateEvent) => void) => () => void;
   };

@@ -94,6 +94,42 @@ private func emitAvailability() {
   )
 }
 
+private func formatSpeechDiagnosticMessage(_ message: String, domain: String, code: Int) -> String {
+  let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+  if trimmed.isEmpty {
+    return "\(domain) error \(code)."
+  }
+  return "\(trimmed) [\(domain) \(code)]"
+}
+
+private func mapRecognitionError(_ error: Error) -> (code: String, message: String) {
+  let nsError = error as NSError
+  let message = formatSpeechDiagnosticMessage(
+    nsError.localizedDescription,
+    domain: nsError.domain,
+    code: nsError.code
+  )
+
+  if nsError.domain == "kAFAssistantErrorDomain" {
+    switch nsError.code {
+    case 1101:
+      return ("speech_process_invalidated", message)
+    case 1107:
+      return ("speech_process_interrupted", message)
+    case 1110:
+      return ("speech_no_match", message)
+    default:
+      break
+    }
+  }
+
+  if nsError.domain == "kLSRErrorDomain" && nsError.code == 301 {
+    return ("speech_request_cancelled", message)
+  }
+
+  return ("runtime_error", message)
+}
+
 private final class SpeechCoordinator {
   private let recognizer: SFSpeechRecognizer
   private let audioEngine = AVAudioEngine()
@@ -108,6 +144,12 @@ private final class SpeechCoordinator {
   }
 
   func start() throws {
+    guard recognizer.isAvailable else {
+      throw NSError(domain: "MacSpeechHelper", code: 1001, userInfo: [
+        NSLocalizedDescriptionKey: "Speech recognizer is currently unavailable."
+      ])
+    }
+
     request.shouldReportPartialResults = true
 
     let inputNode = audioEngine.inputNode
@@ -123,10 +165,14 @@ private final class SpeechCoordinator {
 
     task = recognizer.recognitionTask(with: request) { [weak self] result, error in
       guard let self else { return }
+      if self.didFinish {
+        return
+      }
 
       if let error {
         self.stop()
-        emit(type: "error", code: "runtime_error", message: error.localizedDescription)
+        let mappedError = mapRecognitionError(error)
+        emit(type: "error", code: mappedError.code, message: mappedError.message)
         exit(1)
       }
 
@@ -216,7 +262,12 @@ private func runListen() async {
     activeCoordinator = coordinator
   } catch {
     coordinator.stop()
-    emit(type: "error", code: "start_failed", message: error.localizedDescription)
+    let nsError = error as NSError
+    if nsError.domain == "MacSpeechHelper" && nsError.code == 1001 {
+      emit(type: "error", code: "recognizer_unavailable", message: error.localizedDescription)
+    } else {
+      emit(type: "error", code: "start_failed", message: error.localizedDescription)
+    }
     exit(1)
   }
 }

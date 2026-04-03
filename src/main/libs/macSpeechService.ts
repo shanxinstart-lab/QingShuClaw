@@ -11,6 +11,7 @@ import {
   type SpeechStartOptions,
   type SpeechStateEvent,
 } from '../../shared/speech/constants';
+import { resolveSpeechLogLevel } from './speechErrorRecovery';
 
 type HelperAvailabilityResponse = {
   type: 'availability';
@@ -30,6 +31,7 @@ type HelperSpeechEvent = {
 const MAC_SPEECH_HELPER_DIR = 'macos-speech';
 const MAC_SPEECH_HELPER_NAME = 'MacSpeechHelper';
 const DEFAULT_MACOS_SPEECH_VERSION = '12.0';
+const START_STOP_COOLDOWN_MS = 260;
 
 const isSpeechPermissionStatus = (value: unknown): value is SpeechPermissionStatus => {
   return Object.values(SpeechPermissionStatus).includes(value as SpeechPermissionStatus);
@@ -121,6 +123,8 @@ export class MacSpeechService extends EventEmitter {
   private stopping = false;
 
   private activeChildEmittedError = false;
+
+  private lastStopAt = 0;
 
   private waitForChildClose(child: ChildProcessWithoutNullStreams, timeoutMs = 1_500): Promise<void> {
     return new Promise((resolve) => {
@@ -215,10 +219,13 @@ export class MacSpeechService extends EventEmitter {
         const event = sanitizeSpeechEvent(rawEvent);
         if (event.type === SpeechStateType.Error) {
           this.activeChildEmittedError = true;
-          console.warn(
-            '[MacSpeechService] Speech helper reported an error event:',
-            JSON.stringify({ code: event.code, message: event.message }),
-          );
+          const logLevel = resolveSpeechLogLevel(event.code);
+          const payload = JSON.stringify({ code: event.code, message: event.message });
+          if (logLevel === 'debug') {
+            console.debug('[MacSpeechService] Speech helper reported an error event:', payload);
+          } else {
+            console.warn('[MacSpeechService] Speech helper reported an error event:', payload);
+          }
         }
         this.emit('stateChanged', event);
       } catch (error) {
@@ -248,6 +255,15 @@ export class MacSpeechService extends EventEmitter {
     this.stderrBuffer = '';
     this.stopping = false;
     this.activeChildEmittedError = false;
+    this.lastStopAt = Date.now();
+  }
+
+  private async waitForRestartCooldown(): Promise<void> {
+    const elapsed = Date.now() - this.lastStopAt;
+    if (elapsed >= START_STOP_COOLDOWN_MS) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, START_STOP_COOLDOWN_MS - elapsed));
   }
 
   async getAvailability(): Promise<SpeechAvailability> {
@@ -339,6 +355,7 @@ export class MacSpeechService extends EventEmitter {
     }
 
     try {
+      await this.waitForRestartCooldown();
       const args = ['listen'];
       if (options?.locale?.trim()) {
         args.push(options.locale.trim());
@@ -390,7 +407,7 @@ export class MacSpeechService extends EventEmitter {
           } satisfies SpeechStateEvent);
           return;
         }
-        if (shouldEmitStopped) {
+        if (shouldEmitStopped && !emittedError) {
           this.emit('stateChanged', {
             type: SpeechStateType.Stopped,
           } satisfies SpeechStateEvent);

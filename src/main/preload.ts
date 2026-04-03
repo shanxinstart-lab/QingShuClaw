@@ -299,7 +299,7 @@ contextBridge.exposeInMainWorld('electron', {
   },
   speech: {
     getAvailability: () => ipcRenderer.invoke(SpeechIpcChannel.GetAvailability),
-    start: (options?: { locale?: string }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
+    start: (options?: { locale?: string; source?: 'manual' | 'wake' | 'follow_up' }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
     stop: () => ipcRenderer.invoke(SpeechIpcChannel.Stop),
     onStateChanged: (callback: (data: { type: string; text?: string; code?: string; message?: string }) => void) => {
       const handler = (_event: any, data: { type: string; text?: string; code?: string; message?: string }) => callback(data);
