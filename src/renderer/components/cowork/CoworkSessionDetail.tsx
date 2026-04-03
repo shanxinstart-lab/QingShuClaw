@@ -34,6 +34,8 @@ import { configService } from '../../services/config';
 import { DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 import type { TtsAvailability } from '../../../shared/tts/constants';
+import { buildSpeakableAssistantText } from './coworkTtsText';
+import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
@@ -375,24 +377,6 @@ const formatToolInput = (
 
 const hasText = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
-
-const buildSpeakableAssistantText = (content: string): string => {
-  if (!content.trim()) {
-    return '';
-  }
-
-  return content
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`[^`]+`/g, ' ')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
-    .replace(/^>\s?/gm, '')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/^[-*+]\s+/gm, '')
-    .replace(/^\d+\.\s+/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
-};
 
 const getToolResultDisplay = (message: CoworkMessage): string => {
   if (hasText(message.content)) {
@@ -1066,7 +1050,9 @@ const AssistantMessageItem: React.FC<{
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
-  const speakableText = buildSpeakableAssistantText(displayContent);
+  const speakableText = buildSpeakableAssistantText(displayContent, {
+    skipKeywords: configService.getConfig().voice?.postProcess?.ttsSkipKeywords ?? [],
+  });
   const hasSpeakableText = speakableText.length > 0;
 
   return (
@@ -1588,7 +1574,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   }, []);
 
   const playAssistantMessage = useCallback(async (message: CoworkMessage) => {
-    const text = buildSpeakableAssistantText(message.content);
+    const postProcessConfig = configService.getConfig().voice?.postProcess;
+    const text = buildSpeakableAssistantText(message.content, {
+      skipKeywords: postProcessConfig?.ttsSkipKeywords ?? [],
+    });
     if (!text) {
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
         detail: i18nService.t('ttsNoSpeakableContent'),
@@ -1600,9 +1589,18 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       ...DEFAULT_TTS_CONFIG,
       ...(configService.getConfig().tts ?? {}),
     };
+    const speakText = postProcessConfig?.ttsLlmRewriteEnabled
+      ? await voiceTextPostProcessService.rewriteTtsText(text)
+      : text;
+    if (!speakText) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('ttsNoSpeakableContent'),
+      }));
+      return;
+    }
     setTtsPlayingMessageId(message.id);
     const result = await window.electron.tts.speak({
-      text,
+      text: speakText,
       voiceId: ttsConfig.voiceId,
       rate: ttsConfig.rate,
       volume: ttsConfig.volume,
@@ -1628,8 +1626,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       return;
     }
 
+    const skipKeywords = configService.getConfig().voice?.postProcess?.ttsSkipKeywords ?? [];
     const lastAssistantMessage = [...currentSession.messages].reverse().find((message) => (
-      message.type === 'assistant' && buildSpeakableAssistantText(message.content).length > 0
+      message.type === 'assistant' && buildSpeakableAssistantText(message.content, { skipKeywords }).length > 0
     ));
     if (!lastAssistantMessage) {
       return;

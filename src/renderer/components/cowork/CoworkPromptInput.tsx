@@ -18,8 +18,9 @@ import { CoworkImageAttachment } from '../../types/cowork';
 import { getCompactFolderName } from '../../utils/path';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
 import { SpeechErrorCode } from '../../../shared/speech/constants';
-import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_WAKE_INPUT_CONFIG } from '../../config';
+import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_VOICE_POST_PROCESS_CONFIG, DEFAULT_WAKE_INPUT_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
+import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -105,6 +106,7 @@ type WakeDictationCommandConfig = {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  source?: 'wake' | 'follow_up';
 };
 
 const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInputProps>(
@@ -138,11 +140,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [imageVisionHint, setImageVisionHint] = useState(false);
     const [speechStatus, setSpeechStatus] = useState<InputSpeechStatus>('idle');
     const [speechVisible, setSpeechVisible] = useState(window.electron.platform === 'darwin');
+    const [speechCommandNonce, setSpeechCommandNonce] = useState(0);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const folderButtonRef = useRef<HTMLButtonElement>(null);
     const dragDepthRef = useRef(0);
     const valueRef = useRef(value);
+    const speechStatusRef = useRef<InputSpeechStatus>('idle');
     const speechBaseValueRef = useRef('');
     const pendingSpeechVoiceCommandRef = useRef<PendingSpeechVoiceCommand>(null);
     const wakeDictationConfigRef = useRef<WakeDictationCommandConfig | null>(null);
@@ -181,6 +185,25 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     ...(configService.getConfig().speechInput ?? {}),
   }), []);
 
+  const markPendingSpeechVoiceCommand = useCallback((action: PendingSpeechVoiceCommand) => {
+    pendingSpeechVoiceCommandRef.current = action;
+    setSpeechCommandNonce((current) => current + 1);
+  }, []);
+
+  const maybeCorrectFinalSpeechText = useCallback(async (rawText: string): Promise<string> => {
+    const normalized = rawText.trim();
+    if (!normalized) {
+      return '';
+    }
+
+    const postProcessConfig = configService.getConfig().voice?.postProcess ?? DEFAULT_VOICE_POST_PROCESS_CONFIG;
+    if (!postProcessConfig.sttLlmCorrectionEnabled) {
+      return normalized;
+    }
+
+    return voiceTextPostProcessService.correctSttText(normalized);
+  }, []);
+
   const getFollowUpDictationConfig = useCallback((
     wakeConfigOverride?: WakeDictationCommandConfig | null,
   ): WakeDictationCommandConfig | null => {
@@ -201,6 +224,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return {
         ...wakeConfigOverride,
         autoRestartAfterReply: true,
+        source: 'follow_up',
       };
     }
 
@@ -209,6 +233,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       cancelCommand: speechInputConfig.stopCommand,
       sessionTimeoutMs: wakeInputConfig.sessionTimeoutMs,
       autoRestartAfterReply: true,
+      source: 'follow_up',
     };
   }, []);
 
@@ -254,14 +279,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
     wakeDictationTimerRef.current = window.setTimeout(() => {
       if (speechStatus !== 'idle') {
-        pendingSpeechVoiceCommandRef.current = null;
+        markPendingSpeechVoiceCommand(null);
         wakeDictationConfigRef.current = null;
         void window.electron.speech.stop().catch(() => undefined);
       }
       wakeDictationTimerRef.current = null;
     }, detail.sessionTimeoutMs);
     setSpeechStatus('requesting_permission');
-    void window.electron.speech.start().then((result) => {
+    void window.electron.speech.start({ source: detail.source ?? 'wake' }).then((result) => {
       if (!result.success) {
         setSpeechStatus('idle');
         wakeDictationConfigRef.current = null;
@@ -275,7 +300,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         }));
       }
     });
-  }, [disarmWakeFollowUpDictation, speechStatus]);
+  }, [disarmWakeFollowUpDictation, markPendingSpeechVoiceCommand, speechStatus]);
 
   // Load skills on mount
   useEffect(() => {
@@ -308,6 +333,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   useEffect(() => {
     valueRef.current = value;
   }, [value]);
+
+  useEffect(() => {
+    speechStatusRef.current = speechStatus;
+  }, [speechStatus]);
 
   useEffect(() => {
     const handleFocusInput = (event: Event) => {
@@ -372,7 +401,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           setValue(nextValue);
           if (commandResult.action) {
             speechBaseValueRef.current = nextValue;
-            pendingSpeechVoiceCommandRef.current = commandResult.action;
+            markPendingSpeechVoiceCommand(commandResult.action);
             void window.electron.speech.stop().catch(() => undefined);
           }
           break;
@@ -384,14 +413,30 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 submitCommand: wakeDictationConfigRef.current.submitCommand,
               }
             : getSpeechVoiceCommandConfig();
-          const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
-          const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
-          speechBaseValueRef.current = nextValue;
-          setValue(nextValue);
-          if (commandResult.action) {
-            pendingSpeechVoiceCommandRef.current = commandResult.action;
-            void window.electron.speech.stop().catch(() => undefined);
-          }
+          void maybeCorrectFinalSpeechText(event.text || '').then((finalText) => {
+            const commandResult = resolveSpeechVoiceCommand(finalText, currentCommandConfig);
+            const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+            speechBaseValueRef.current = nextValue;
+            setValue(nextValue);
+            if (commandResult.action) {
+              markPendingSpeechVoiceCommand(commandResult.action);
+              if (speechStatusRef.current !== 'idle') {
+                void window.electron.speech.stop().catch(() => undefined);
+              }
+            }
+          }).catch((error) => {
+            console.warn('[CoworkPromptInput] Failed to post-process final speech text:', error);
+            const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
+            const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+            speechBaseValueRef.current = nextValue;
+            setValue(nextValue);
+            if (commandResult.action) {
+              markPendingSpeechVoiceCommand(commandResult.action);
+              if (speechStatusRef.current !== 'idle') {
+                void window.electron.speech.stop().catch(() => undefined);
+              }
+            }
+          });
           break;
         }
         case 'stopped':
@@ -399,7 +444,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           break;
         case 'error':
           setSpeechStatus('idle');
-          pendingSpeechVoiceCommandRef.current = null;
+          markPendingSpeechVoiceCommand(null);
           disarmWakeFollowUpDictation();
           window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(event.code, event.message) }));
           break;
@@ -411,7 +456,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       unsubscribe();
       void window.electron.speech.stop().catch(() => undefined);
     };
-  }, [disarmWakeFollowUpDictation, getSpeechVoiceCommandConfig, isMac]);
+  }, [disarmWakeFollowUpDictation, getSpeechVoiceCommandConfig, isMac, markPendingSpeechVoiceCommand, maybeCorrectFinalSpeechText]);
 
   // Sync value from draft when sessionId changes
   useEffect(() => {
@@ -554,7 +599,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       wakeDictationTimerRef.current = null;
     }
     void handleSubmit(submittedWakeConfig);
-  }, [disarmWakeFollowUpDictation, handleSubmit, speechStatus]);
+  }, [disarmWakeFollowUpDictation, handleSubmit, speechCommandNonce, speechStatus]);
 
   useEffect(() => {
     const handleWakeDictationStart = (event: Event) => {
@@ -688,6 +733,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       case SpeechErrorCode.HelperUnavailable:
       case SpeechErrorCode.UnsupportedPlatform:
         return i18nService.t('coworkSpeechUnavailable');
+      case SpeechErrorCode.SpeechNoMatch:
+        return i18nService.t('coworkSpeechNoMatch');
+      case SpeechErrorCode.SpeechProcessInterrupted:
+      case SpeechErrorCode.SpeechProcessInvalidated:
+        return reason
+          ? i18nService.t('coworkSpeechInterruptedWithReason').replace('{reason}', reason)
+          : i18nService.t('coworkSpeechInterrupted');
       case SpeechErrorCode.StartFailed:
         return reason
           ? i18nService.t('coworkSpeechStartFailedWithReason').replace('{reason}', reason)
@@ -723,7 +775,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     wakeDictationConfigRef.current = null;
     disarmWakeFollowUpDictation();
     setSpeechStatus('requesting_permission');
-    const result = await window.electron.speech.start();
+    const result = await window.electron.speech.start({ source: 'manual' });
     if (!result.success) {
       setSpeechStatus('idle');
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
