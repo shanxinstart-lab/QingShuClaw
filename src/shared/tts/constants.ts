@@ -46,6 +46,14 @@ export interface TtsSpeakOptions {
   volume?: number;
 }
 
+export interface TtsSpeakResult {
+  success: boolean;
+  error?: string;
+  audioDataUrl?: string;
+  audioUrl?: string;
+  provider?: string;
+}
+
 export interface TtsStateEvent {
   type: TtsStateType;
   voiceId?: string;

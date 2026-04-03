@@ -30,6 +30,12 @@ type HelperSpeechEvent = {
 const MAC_SPEECH_HELPER_DIR = 'macos-speech';
 const MAC_SPEECH_HELPER_NAME = 'MacSpeechHelper';
 const DEFAULT_MACOS_SPEECH_VERSION = '12.0';
+const MIN_SPEECH_RESTART_INTERVAL_MS = 600;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+const HELPER_STOP_WAIT_TIMEOUT_MS = 1_500;
 
 const isSpeechPermissionStatus = (value: unknown): value is SpeechPermissionStatus => {
   return Object.values(SpeechPermissionStatus).includes(value as SpeechPermissionStatus);
@@ -121,6 +127,8 @@ export class MacSpeechService extends EventEmitter {
   private stopping = false;
 
   private activeChildEmittedError = false;
+
+  private lastChildClearedAt = 0;
 
   private ensureHelperBinary(): string {
     const helperPath = app.isPackaged ? resolvePackagedHelperBinaryPath() : resolveDevHelperBinaryPath();
@@ -219,6 +227,15 @@ export class MacSpeechService extends EventEmitter {
     this.stderrBuffer = '';
     this.stopping = false;
     this.activeChildEmittedError = false;
+    this.lastChildClearedAt = Date.now();
+  }
+
+  private async waitForRestartCooldown(): Promise<void> {
+    const elapsed = Date.now() - this.lastChildClearedAt;
+    if (elapsed >= MIN_SPEECH_RESTART_INTERVAL_MS) {
+      return;
+    }
+    await delay(MIN_SPEECH_RESTART_INTERVAL_MS - elapsed);
   }
 
   async getAvailability(): Promise<SpeechAvailability> {
@@ -310,6 +327,7 @@ export class MacSpeechService extends EventEmitter {
     }
 
     try {
+      await this.waitForRestartCooldown();
       const args = ['listen'];
       if (options?.locale?.trim()) {
         args.push(options.locale.trim());
@@ -351,6 +369,9 @@ export class MacSpeechService extends EventEmitter {
         const emittedError = this.activeChildEmittedError;
         this.flushStdoutBuffer();
         this.clearActiveChild(child);
+        if (shouldEmitStopped && emittedError) {
+          return;
+        }
         if (shouldEmitStopped && code && code !== 0 && !emittedError) {
           const message = stderr || `Speech helper exited unexpectedly (code: ${code}${signal ? `, signal: ${signal}` : ''}).`;
           console.warn('[MacSpeechService] Speech helper exited unexpectedly:', JSON.stringify({ code, signal, stderr: stderr || undefined }));
@@ -385,16 +406,51 @@ export class MacSpeechService extends EventEmitter {
 
     const child = this.activeChild;
     this.stopping = true;
+    let stoppedStateEmitted = false;
+    const emitStoppedState = (): void => {
+      if (stoppedStateEmitted) {
+        return;
+      }
+      stoppedStateEmitted = true;
+      this.emit('stateChanged', {
+        type: SpeechStateType.Stopped,
+      } satisfies SpeechStateEvent);
+    };
+
     const killed = child.kill('SIGTERM');
     if (!killed) {
       this.stopping = false;
       return { success: false, error: SpeechErrorCode.RuntimeError };
     }
 
-    this.emit('stateChanged', {
-      type: SpeechStateType.Stopped,
-    } satisfies SpeechStateEvent);
-    return { success: true };
+    emitStoppedState();
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: { success: boolean; error?: string }): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+        child.removeListener('close', handleClose);
+        resolve(result);
+      };
+
+      const handleClose = (): void => {
+        finish({ success: true });
+      };
+
+      const timeoutId = setTimeout(() => {
+        console.warn('[MacSpeechService] Timed out while waiting for speech helper to stop.');
+        if (this.activeChild === child) {
+          this.clearActiveChild(child);
+        }
+        finish({ success: true });
+      }, HELPER_STOP_WAIT_TIMEOUT_MS);
+
+      child.once('close', handleClose);
+    });
   }
 
   dispose(): void {

@@ -2,6 +2,7 @@ export const SpeechIpcChannel = {
   GetAvailability: 'speech:getAvailability',
   Start: 'speech:start',
   Stop: 'speech:stop',
+  TranscribeAudio: 'speech:transcribeAudio',
   StateChanged: 'speech:stateChanged',
 } as const;
 
@@ -39,8 +40,24 @@ export const SpeechErrorCode = {
   RuntimeError: 'runtime_error',
   AlreadyListening: 'already_listening',
   InvalidResponse: 'invalid_response',
+  SpeechProcessInterrupted: 'speech_process_interrupted',
+  SpeechProcessInvalidated: 'speech_process_invalidated',
+  SpeechRequestCancelled: 'speech_request_cancelled',
+  SpeechNoMatch: 'speech_no_match',
 } as const;
 export type SpeechErrorCode = typeof SpeechErrorCode[keyof typeof SpeechErrorCode];
+
+const RECOVERABLE_SPEECH_ERROR_CODES = new Set<string>([
+  SpeechErrorCode.SpeechProcessInterrupted,
+  SpeechErrorCode.SpeechProcessInvalidated,
+]);
+
+export const isRecoverableSpeechErrorCode = (value?: string | null): boolean => {
+  if (!value) {
+    return false;
+  }
+  return RECOVERABLE_SPEECH_ERROR_CODES.has(value);
+};
 
 export interface SpeechAvailability {
   enabled?: boolean;
@@ -54,8 +71,29 @@ export interface SpeechAvailability {
   error?: string;
 }
 
+export const SpeechStartSource = {
+  Manual: 'manual',
+  Wake: 'wake',
+  FollowUp: 'follow_up',
+} as const;
+export type SpeechStartSource = typeof SpeechStartSource[keyof typeof SpeechStartSource];
+
 export interface SpeechStartOptions {
   locale?: string;
+  source?: SpeechStartSource;
+}
+
+export interface SpeechTranscribeAudioOptions {
+  audioBase64: string;
+  mimeType: string;
+  source?: SpeechStartSource;
+}
+
+export interface SpeechTranscribeAudioResult {
+  success: boolean;
+  text?: string;
+  error?: string;
+  provider?: string;
 }
 
 export interface SpeechStateEvent {

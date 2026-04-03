@@ -597,7 +597,10 @@ const App: React.FC = () => {
       handleFocusCoworkInput(false);
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
-          detail: request,
+          detail: {
+            ...request,
+            source: 'wake',
+          },
         }));
       }, 0);
     });

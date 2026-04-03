@@ -34,6 +34,8 @@ import { configService } from '../../services/config';
 import { DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 import type { TtsAvailability } from '../../../shared/tts/constants';
+import { buildSpeakableAssistantText } from './coworkTtsText';
+import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
@@ -375,24 +377,6 @@ const formatToolInput = (
 
 const hasText = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
-
-const buildSpeakableAssistantText = (content: string): string => {
-  if (!content.trim()) {
-    return '';
-  }
-
-  return content
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`[^`]+`/g, ' ')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
-    .replace(/^>\s?/gm, '')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/^[-*+]\s+/gm, '')
-    .replace(/^\d+\.\s+/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
-};
 
 const getToolResultDisplay = (message: CoworkMessage): string => {
   if (hasText(message.content)) {
@@ -1443,6 +1427,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
   const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
   const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Rename states
   const [isRenaming, setIsRenaming] = useState(false);
@@ -1463,17 +1448,15 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   }, [currentSession?.id]);
 
   useEffect(() => {
-    if (!isMac) {
-      return;
-    }
     let active = true;
-    void window.electron.tts.getAvailability().then((availability) => {
+    const syncAvailability = () => window.electron.tts.getAvailability().then((availability) => {
       if (active) {
         setTtsAvailability(availability);
       }
     }).catch((error) => {
       console.error('Failed to inspect TTS availability:', error);
     });
+    void syncAvailability();
 
     const unsubscribe = window.electron.tts.onStateChanged((event) => {
       if (!active) {
@@ -1486,12 +1469,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         setTtsPlayingMessageId(null);
       }
     });
+    const unsubscribeVoice = window.electron.voice.onCapabilityChanged(() => {
+      void syncAvailability();
+    });
 
     return () => {
       active = false;
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current = null;
+      }
       unsubscribe();
+      unsubscribeVoice();
     };
-  }, [isMac]);
+  }, []);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -1584,11 +1575,44 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   const stopTtsPlayback = useCallback(async () => {
     setTtsPlayingMessageId(null);
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current.src = '';
+      ttsAudioRef.current = null;
+    }
     await window.electron.tts.stop();
   }, []);
 
+  const getTtsPostProcessConfig = useCallback(() => {
+    const voiceConfig = configService.getConfig().voice;
+    return {
+      ttsLlmRewriteEnabled: voiceConfig?.postProcess?.ttsLlmRewriteEnabled ?? false,
+      ttsSkipKeywords: voiceConfig?.postProcess?.ttsSkipKeywords ?? [],
+    };
+  }, []);
+
+  const buildTtsPlaybackText = useCallback(async (content: string): Promise<string> => {
+    const postProcessConfig = getTtsPostProcessConfig();
+    const cleanedText = buildSpeakableAssistantText(content, {
+      skipKeywords: postProcessConfig.ttsSkipKeywords,
+    });
+    if (!cleanedText) {
+      return '';
+    }
+    if (!postProcessConfig.ttsLlmRewriteEnabled) {
+      return cleanedText;
+    }
+    try {
+      const rewritten = await voiceTextPostProcessService.rewriteTtsScript(cleanedText);
+      return rewritten.trim() || cleanedText;
+    } catch (error) {
+      console.warn('Failed to rewrite TTS script with the current model:', error);
+      return cleanedText;
+    }
+  }, [getTtsPostProcessConfig]);
+
   const playAssistantMessage = useCallback(async (message: CoworkMessage) => {
-    const text = buildSpeakableAssistantText(message.content);
+    const text = await buildTtsPlaybackText(message.content);
     if (!text) {
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
         detail: i18nService.t('ttsNoSpeakableContent'),
@@ -1612,11 +1636,52 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
         detail: result.error || i18nService.t('coworkSpeechUnavailable'),
       }));
+      return;
     }
-  }, []);
+
+    const playableAudioSource = result.audioDataUrl || result.audioUrl;
+    if (playableAudioSource) {
+      try {
+        if (ttsAudioRef.current) {
+          ttsAudioRef.current.pause();
+          ttsAudioRef.current.src = '';
+        }
+
+        const audio = new Audio(playableAudioSource);
+        audio.volume = typeof ttsConfig.volume === 'number' ? ttsConfig.volume : 1;
+        audio.onended = () => {
+          if (ttsAudioRef.current === audio) {
+            ttsAudioRef.current = null;
+          }
+          setTtsPlayingMessageId(null);
+        };
+        audio.onerror = () => {
+          if (ttsAudioRef.current === audio) {
+            ttsAudioRef.current = null;
+          }
+          setTtsPlayingMessageId(null);
+          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+            detail: i18nService.t('coworkSpeechUnavailable'),
+          }));
+        };
+        ttsAudioRef.current = audio;
+        await audio.play();
+      } catch (error) {
+        if (ttsAudioRef.current) {
+          ttsAudioRef.current.pause();
+          ttsAudioRef.current.src = '';
+          ttsAudioRef.current = null;
+        }
+        setTtsPlayingMessageId(null);
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: error instanceof Error ? error.message : i18nService.t('coworkSpeechUnavailable'),
+        }));
+      }
+    }
+  }, [buildTtsPlaybackText]);
 
   useEffect(() => {
-    if (!isMac || !ttsAvailability?.supported || isStreaming || !currentSession) {
+    if (!ttsAvailability?.supported || isStreaming || !currentSession) {
       return;
     }
 
@@ -1628,8 +1693,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       return;
     }
 
+    const ttsPostProcessConfig = getTtsPostProcessConfig();
     const lastAssistantMessage = [...currentSession.messages].reverse().find((message) => (
-      message.type === 'assistant' && buildSpeakableAssistantText(message.content).length > 0
+      message.type === 'assistant'
+      && buildSpeakableAssistantText(message.content, {
+        skipKeywords: ttsPostProcessConfig.ttsSkipKeywords,
+      }).length > 0
     ));
     if (!lastAssistantMessage) {
       return;
@@ -1639,7 +1708,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     }
     lastAutoPlayedMessageIdRef.current = lastAssistantMessage.id;
     void playAssistantMessage(lastAssistantMessage);
-  }, [currentSession, isMac, isStreaming, playAssistantMessage, ttsAvailability]);
+  }, [currentSession, getTtsPostProcessConfig, isStreaming, playAssistantMessage, ttsAvailability]);
 
   const closeMenu = () => {
     setMenuPosition(null);
@@ -2109,7 +2178,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             resolveLocalFilePath={resolveLocalFilePath}
             showTypingIndicator
             showCopyButtons={!isStreaming}
-            showTtsButtons={isMac && !!ttsAvailability?.supported}
+            showTtsButtons={!!ttsAvailability?.supported}
             ttsPlayingMessageId={ttsPlayingMessageId}
             onPlayTts={playAssistantMessage}
             onStopTts={stopTtsPlayback}
@@ -2150,7 +2219,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 mapDisplayText={mapDisplayText}
                 showTypingIndicator={showTypingIndicator}
                 showCopyButtons={!isStreaming}
-                showTtsButtons={isMac && !!ttsAvailability?.supported}
+                showTtsButtons={!!ttsAvailability?.supported}
                 ttsPlayingMessageId={ttsPlayingMessageId}
                 onPlayTts={playAssistantMessage}
                 onStopTts={stopTtsPlayback}

@@ -18,6 +18,7 @@ export type WakeInputStatusType = typeof WakeInputStatusType[keyof typeof WakeIn
 
 export interface WakeInputConfig {
   enabled: boolean;
+  wakeWords: string[];
   wakeWord: string;
   submitCommand: string;
   cancelCommand: string;
@@ -29,6 +30,7 @@ export interface WakeInputStatus {
   supported: boolean;
   platform: string;
   status: WakeInputStatusType;
+  wakeWords: string[];
   wakeWord: string;
   submitCommand: string;
   cancelCommand: string;

@@ -4,6 +4,7 @@ import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { WakeInputIpcChannel } from '../shared/wakeInput/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
+import { VoiceIpcChannel } from '../shared/voice/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -297,10 +298,32 @@ contextBridge.exposeInMainWorld('electron', {
     readFileAsDataUrl: (filePath: string) =>
       ipcRenderer.invoke('dialog:readFileAsDataUrl', filePath),
   },
+  voice: {
+    getCapabilityMatrix: () => ipcRenderer.invoke(VoiceIpcChannel.GetCapabilityMatrix),
+    getConfig: () => ipcRenderer.invoke(VoiceIpcChannel.GetConfig),
+    getLocalWhisperCppStatus: () => ipcRenderer.invoke(VoiceIpcChannel.GetLocalWhisperCppStatus),
+    getLocalQwen3TtsStatus: () => ipcRenderer.invoke(VoiceIpcChannel.GetLocalQwen3TtsStatus),
+    ensureLocalWhisperCppDirectories: () => ipcRenderer.invoke(VoiceIpcChannel.EnsureLocalWhisperCppDirectories),
+    getLocalModelLibrary: () => ipcRenderer.invoke(VoiceIpcChannel.GetLocalModelLibrary),
+    installLocalModel: (modelId: string) => ipcRenderer.invoke(VoiceIpcChannel.InstallLocalModel, modelId),
+    cancelLocalModelInstall: (modelId: string) => ipcRenderer.invoke(VoiceIpcChannel.CancelLocalModelInstall, modelId),
+    updateConfig: (config: Record<string, unknown>) => ipcRenderer.invoke(VoiceIpcChannel.UpdateConfig, config),
+    onCapabilityChanged: (callback: (data: Record<string, unknown>) => void) => {
+      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on(VoiceIpcChannel.CapabilityChanged, handler);
+      return () => ipcRenderer.removeListener(VoiceIpcChannel.CapabilityChanged, handler);
+    },
+    onLocalModelLibraryChanged: (callback: (data: Record<string, unknown>) => void) => {
+      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on(VoiceIpcChannel.LocalModelLibraryChanged, handler);
+      return () => ipcRenderer.removeListener(VoiceIpcChannel.LocalModelLibraryChanged, handler);
+    },
+  },
   speech: {
     getAvailability: () => ipcRenderer.invoke(SpeechIpcChannel.GetAvailability),
-    start: (options?: { locale?: string }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
+    start: (options?: { locale?: string; source?: string }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
     stop: () => ipcRenderer.invoke(SpeechIpcChannel.Stop),
+    transcribeAudio: (options: { audioBase64: string; mimeType: string; source?: string }) => ipcRenderer.invoke(SpeechIpcChannel.TranscribeAudio, options),
     onStateChanged: (callback: (data: { type: string; text?: string; code?: string; message?: string }) => void) => {
       const handler = (_event: any, data: { type: string; text?: string; code?: string; message?: string }) => callback(data);
       ipcRenderer.on(SpeechIpcChannel.StateChanged, handler);

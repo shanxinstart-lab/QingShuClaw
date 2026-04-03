@@ -42,6 +42,30 @@ private func emit(
   FileHandle.standardOutput.write(Data((line + "\n").utf8))
 }
 
+private func classifySpeechError(_ error: Error) -> (code: String, message: String) {
+  let nsError = error as NSError
+  let detailedMessage = "\(nsError.domain) error \(nsError.code): \(nsError.localizedDescription)"
+
+  if nsError.domain == "kAFAssistantErrorDomain" {
+    switch nsError.code {
+    case 1107:
+      return (code: "speech_process_interrupted", message: detailedMessage)
+    case 1101:
+      return (code: "speech_process_invalidated", message: detailedMessage)
+    case 1110:
+      return (code: "speech_no_match", message: detailedMessage)
+    default:
+      break
+    }
+  }
+
+  if nsError.domain == "kLSRErrorDomain", nsError.code == 301 {
+    return (code: "speech_request_cancelled", message: detailedMessage)
+  }
+
+  return (code: "runtime_error", message: detailedMessage)
+}
+
 private func mapSpeechAuthorization(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
   switch status {
   case .authorized:
@@ -110,6 +134,11 @@ private final class SpeechCoordinator {
   func start() throws {
     request.shouldReportPartialResults = true
 
+    guard recognizer.isAvailable else {
+      emit(type: "error", code: "recognizer_unavailable", message: "Speech recognizer is currently unavailable.")
+      exit(1)
+    }
+
     let inputNode = audioEngine.inputNode
     let format = inputNode.outputFormat(forBus: 0)
     inputNode.removeTap(onBus: 0)
@@ -126,7 +155,8 @@ private final class SpeechCoordinator {
 
       if let error {
         self.stop()
-        emit(type: "error", code: "runtime_error", message: error.localizedDescription)
+        let classified = classifySpeechError(error)
+        emit(type: "error", code: classified.code, message: classified.message)
         exit(1)
       }
 
@@ -207,6 +237,11 @@ private func runListen() async {
   let microphoneStatus = await requestMicrophoneAuthorization()
   guard microphoneStatus == .authorized else {
     emit(type: "error", code: "microphone_permission_denied", message: "Microphone permission was denied.")
+    exit(1)
+  }
+
+  guard recognizer.isAvailable else {
+    emit(type: "error", code: "recognizer_unavailable", message: "Speech recognizer is currently unavailable.")
     exit(1)
   }
 

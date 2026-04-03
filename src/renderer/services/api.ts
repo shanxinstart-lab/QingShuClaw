@@ -311,11 +311,12 @@ class ApiService {
     return null;
   }
 
-  async chat(
-    message: string | ChatUserMessageInput,
-    onProgress?: (content: string, reasoning?: string) => void,
-    history: ChatMessagePayload[] = []
-  ): Promise<{ content: string; reasoning?: string }> {
+  private resolveSelectedModelContext(): {
+    selectedModel: ReturnType<typeof store.getState>['model']['selectedModel'];
+    provider: string;
+    supportsImages: boolean;
+    config: ApiConfig;
+  } {
     if (!this.config) {
       throw new ApiError('API configuration not set. Please configure your API settings in the settings menu.');
     }
@@ -325,21 +326,188 @@ class ApiService {
       selectedModel.id,
       selectedModel.providerKey ?? selectedModel.provider
     );
-    const supportsImages = !!selectedModel.supportsImage;
-    const userMessage: ChatUserMessageInput = typeof message === 'string'
-      ? { content: message }
-      : { content: message.content || '', images: message.images };
-
-    // 尝试获取模型对应 provider 的配置
-    let effectiveConfig = this.config;
     const providerConfig = this.getProviderConfig(provider);
-    if (providerConfig) {
-      effectiveConfig = providerConfig;
-    }
+    const effectiveConfig = providerConfig ?? this.config;
 
     if (this.providerRequiresApiKey(provider) && !effectiveConfig.apiKey) {
       throw new ApiError('API key is not configured. Please set your API key in the settings menu.');
     }
+
+    return {
+      selectedModel,
+      provider,
+      supportsImages: !!selectedModel.supportsImage,
+      config: effectiveConfig,
+    };
+  }
+
+  private extractAnthropicResponseText(payload: any): string {
+    const content = Array.isArray(payload?.content) ? payload.content : [];
+    const chunks: string[] = [];
+    content.forEach((item: any) => {
+      if (item?.type === 'text' && typeof item.text === 'string') {
+        chunks.push(item.text);
+      }
+    });
+    return chunks.join('').trim();
+  }
+
+  private extractGeminiResponseText(payload: any): string {
+    const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+    const parts: string[] = [];
+    candidates.forEach((candidate: any) => {
+      const contentParts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+      contentParts.forEach((part: any) => {
+        if (typeof part?.text === 'string') {
+          parts.push(part.text);
+        }
+      });
+    });
+    return parts.join('').trim();
+  }
+
+  async completeText(options: {
+    systemPrompt?: string;
+    userPrompt: string;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<string> {
+    const userPrompt = options.userPrompt.trim();
+    if (!userPrompt) {
+      return '';
+    }
+
+    const { selectedModel, provider, config } = this.resolveSelectedModelContext();
+    const normalizedApiFormat = this.normalizeApiFormat(config.apiFormat);
+
+    if (normalizedApiFormat === 'gemini') {
+      const baseUrl = config.baseUrl.trim().replace(/\/+$/, '') || 'https://generativelanguage.googleapis.com/v1beta';
+      const requestUrl = `${baseUrl}/models/${selectedModel.id}:generateContent`;
+      const text = [options.systemPrompt?.trim(), userPrompt].filter(Boolean).join('\n\n');
+      const response = await window.electron.api.fetch({
+        url: requestUrl,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.apiKey ? { 'x-goog-api-key': config.apiKey } : {}),
+        },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [{ text }],
+          }],
+          generationConfig: {
+            temperature: options.temperature ?? 0.2,
+            maxOutputTokens: options.maxTokens ?? 512,
+          },
+        }),
+      });
+      if (!response.ok) {
+        throw new ApiError(response.statusText || 'API request failed', response.status, response.data);
+      }
+      return this.extractGeminiResponseText(response.data);
+    }
+
+    if (normalizedApiFormat === 'anthropic') {
+      const body: Record<string, unknown> = {
+        model: selectedModel.id,
+        max_tokens: options.maxTokens ?? 512,
+        temperature: options.temperature ?? 0.2,
+        messages: [{ role: 'user', content: userPrompt }],
+      };
+      if (options.systemPrompt?.trim()) {
+        body.system = options.systemPrompt.trim();
+      }
+      const response = await window.electron.api.fetch({
+        url: `${config.baseUrl}/v1/messages`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new ApiError(response.statusText || 'API request failed', response.status, response.data);
+      }
+      return this.extractAnthropicResponseText(response.data);
+    }
+
+    const useResponsesApi = this.shouldUseOpenAIResponsesApi(provider);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (config.apiKey) {
+      if (provider === 'gemini') {
+        headers['x-goog-api-key'] = config.apiKey;
+      } else {
+        headers.Authorization = `Bearer ${config.apiKey}`;
+      }
+    }
+    const requestUrl = useResponsesApi
+      ? this.buildOpenAIResponsesUrl(config.baseUrl)
+      : this.buildOpenAICompatibleChatCompletionsUrl(config.baseUrl);
+    const requestBody: Record<string, unknown> = useResponsesApi
+      ? {
+          model: selectedModel.id,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: userPrompt }] }],
+          max_output_tokens: options.maxTokens ?? 512,
+          temperature: options.temperature ?? 0.2,
+        }
+      : {
+          model: selectedModel.id,
+          messages: [
+            ...(options.systemPrompt?.trim()
+              ? [{ role: 'system', content: options.systemPrompt.trim() }]
+              : []),
+            { role: 'user', content: userPrompt },
+          ],
+          max_tokens: options.maxTokens ?? 512,
+          temperature: options.temperature ?? 0.2,
+          stream: false,
+        };
+    if (useResponsesApi && options.systemPrompt?.trim()) {
+      requestBody.instructions = options.systemPrompt.trim();
+    }
+    const response = await window.electron.api.fetch({
+      url: requestUrl,
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    if (!response.ok) {
+      throw new ApiError(response.statusText || 'API request failed', response.status, response.data);
+    }
+
+    if (useResponsesApi) {
+      return this.extractResponsesOutputText(response.data).trim();
+    }
+
+    const choices = Array.isArray((response.data as any)?.choices) ? (response.data as any).choices : [];
+    const content = choices[0]?.message?.content;
+    if (typeof content === 'string') {
+      return content.trim();
+    }
+    if (Array.isArray(content)) {
+      return content
+        .map((item: any) => (typeof item?.text === 'string' ? item.text : ''))
+        .join('')
+        .trim();
+    }
+
+    throw new ApiError('No content received from the API.');
+  }
+
+  async chat(
+    message: string | ChatUserMessageInput,
+    onProgress?: (content: string, reasoning?: string) => void,
+    history: ChatMessagePayload[] = []
+  ): Promise<{ content: string; reasoning?: string }> {
+    const { selectedModel, provider, supportsImages, config: effectiveConfig } = this.resolveSelectedModelContext();
+    const userMessage: ChatUserMessageInput = typeof message === 'string'
+      ? { content: message }
+      : { content: message.content || '', images: message.images };
 
     // 根据 API 协议格式决定调用方式：
     // - anthropic: Anthropic 兼容协议 (/v1/messages)

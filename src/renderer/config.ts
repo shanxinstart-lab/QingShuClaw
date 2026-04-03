@@ -2,6 +2,13 @@ import type { AuthConfig } from '../common/auth';
 import { DEFAULT_AUTH_CONFIG } from '../common/auth';
 import { ProviderRegistry } from '@shared/providers';
 import type { WakeInputConfig } from '../shared/wakeInput/constants';
+import {
+  DEFAULT_VOICE_CONFIG,
+  deriveLegacySpeechInputConfig,
+  deriveLegacyTtsConfig,
+  deriveLegacyWakeInputConfig,
+  type VoiceConfig,
+} from '../shared/voice/constants';
 
 // 配置类型定义
 export interface AppConfig {
@@ -233,6 +240,7 @@ export interface AppConfig {
     settings: string;
     [key: string]: string | undefined;
   };
+  voice?: VoiceConfig;
   speechInput?: {
     stopCommand: string;
     submitCommand: string;
@@ -247,26 +255,13 @@ export interface AppConfig {
   };
 }
 
-export const DEFAULT_SPEECH_INPUT_CONFIG: NonNullable<AppConfig['speechInput']> = {
-  stopCommand: '停止输入',
-  submitCommand: '结束发送',
-};
+export const DEFAULT_VOICE_SETTINGS: VoiceConfig = DEFAULT_VOICE_CONFIG;
 
-export const DEFAULT_WAKE_INPUT_CONFIG: NonNullable<AppConfig['wakeInput']> = {
-  enabled: false,
-  wakeWord: '打开青书爪',
-  submitCommand: '发送',
-  cancelCommand: '取消',
-  sessionTimeoutMs: 20_000,
-};
+export const DEFAULT_SPEECH_INPUT_CONFIG: NonNullable<AppConfig['speechInput']> = deriveLegacySpeechInputConfig(DEFAULT_VOICE_SETTINGS);
 
-export const DEFAULT_TTS_CONFIG: NonNullable<AppConfig['tts']> = {
-  enabled: true,
-  autoPlayAssistantReply: false,
-  voiceId: '',
-  rate: 0.5,
-  volume: 1,
-};
+export const DEFAULT_WAKE_INPUT_CONFIG: NonNullable<AppConfig['wakeInput']> = deriveLegacyWakeInputConfig(DEFAULT_VOICE_SETTINGS);
+
+export const DEFAULT_TTS_CONFIG: NonNullable<AppConfig['tts']> = deriveLegacyTtsConfig(DEFAULT_VOICE_SETTINGS);
 
 /**
  * Build default provider configs from the shared registry.
@@ -327,6 +322,7 @@ export const defaultConfig: AppConfig = {
     search: 'Ctrl+F',
     settings: 'Ctrl+,',
   },
+  voice: DEFAULT_VOICE_SETTINGS,
   speechInput: DEFAULT_SPEECH_INPUT_CONFIG,
   wakeInput: DEFAULT_WAKE_INPUT_CONFIG,
   tts: DEFAULT_TTS_CONFIG,

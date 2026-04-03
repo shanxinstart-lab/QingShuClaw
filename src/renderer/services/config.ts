@@ -8,6 +8,13 @@ import {
   isCustomProvider,
 } from '../config';
 import { localStore } from './store';
+import {
+  createVoiceConfigFromLegacy,
+  deriveLegacySpeechInputConfig,
+  deriveLegacyTtsConfig,
+  deriveLegacyWakeInputConfig,
+  mergeVoiceConfig,
+} from '../../shared/voice/constants';
 
 const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | 'gemini' | null => {
   if (providerKey === 'openai' || providerKey === 'stepfun' || providerKey === 'youdaozhiyun') {
@@ -101,6 +108,26 @@ const mergeTtsConfig = (
   ...DEFAULT_TTS_CONFIG,
   ...(tts ?? {}),
 });
+
+const buildVoiceConfig = (config: Partial<AppConfig>): NonNullable<AppConfig['voice']> => {
+  return mergeVoiceConfig(createVoiceConfigFromLegacy({
+    voice: config.voice,
+    speechInput: config.speechInput,
+    wakeInput: config.wakeInput,
+    tts: config.tts,
+  }));
+};
+
+const hydrateLegacyVoiceFields = (config: AppConfig): AppConfig => {
+  const voice = buildVoiceConfig(config);
+  return {
+    ...config,
+    voice,
+    speechInput: mergeSpeechInputConfig(deriveLegacySpeechInputConfig(voice)),
+    wakeInput: mergeWakeInputConfig(deriveLegacyWakeInputConfig(voice)),
+    tts: mergeTtsConfig(deriveLegacyTtsConfig(voice)),
+  };
+};
 
 /**
  * Migrate legacy single `custom` provider to `custom_0`.
@@ -215,7 +242,7 @@ class ConfigService {
           );
         }
 
-        this.config = migrateCustomProviders({
+        this.config = hydrateLegacyVoiceFields(migrateCustomProviders({
           ...defaultConfig,
           ...storedConfig,
           api: {
@@ -235,7 +262,7 @@ class ConfigService {
           wakeInput: mergeWakeInputConfig(storedConfig.wakeInput),
           tts: mergeTtsConfig(storedConfig.tts),
           providers: mergedProviders as AppConfig['providers'],
-        });
+        }));
       }
     } catch (error) {
       console.error('Failed to load config:', error);
@@ -248,34 +275,19 @@ class ConfigService {
 
   async updateConfig(newConfig: Partial<AppConfig>) {
     const normalizedProviders = normalizeProvidersConfig(newConfig.providers as AppConfig['providers'] | undefined);
-    const mergedSpeechInput = newConfig.speechInput
-      ? mergeSpeechInputConfig({
-          ...this.config.speechInput,
-          ...newConfig.speechInput,
-        })
-      : this.config.speechInput;
-    const mergedWakeInput = newConfig.wakeInput
-      ? mergeWakeInputConfig({
-          ...this.config.wakeInput,
-          ...newConfig.wakeInput,
-        })
-      : this.config.wakeInput;
-    const mergedTts = newConfig.tts
-      ? mergeTtsConfig({
-          ...this.config.tts,
-          ...newConfig.tts,
-        })
-      : this.config.tts;
-
-    this.config = {
+    const nextConfig = hydrateLegacyVoiceFields({
       ...this.config,
       ...newConfig,
       ...(normalizedProviders ? { providers: normalizedProviders } : {}),
-      ...(newConfig.speechInput ? { speechInput: mergedSpeechInput } : {}),
-      ...(newConfig.wakeInput ? { wakeInput: mergedWakeInput } : {}),
-      ...(newConfig.tts ? { tts: mergedTts } : {}),
-    };
-    await localStore.setItem(CONFIG_KEYS.APP_CONFIG, this.config);
+    } as AppConfig);
+
+    this.config = nextConfig;
+    await localStore.setItem(CONFIG_KEYS.APP_CONFIG, {
+      ...nextConfig,
+      speechInput: undefined,
+      wakeInput: undefined,
+      tts: undefined,
+    });
   }
 
   getApiConfig() {

@@ -5,6 +5,8 @@
   "directories": {
     "output": "release"
   },
+  "npmRebuild": false,
+  "nodeGypRebuild": false,
   "beforePack": "./scripts/electron-builder-hooks.cjs",
   "afterPack": "./scripts/electron-builder-hooks.cjs",
   "files": [
@@ -13,12 +15,16 @@
     {
       "from": "dist",
       "to": "dist",
-      "filter": ["**/*"]
+      "filter": [
+        "**/*"
+      ]
     },
     {
       "from": "dist-electron",
       "to": "dist-electron",
-      "filter": ["**/*"]
+      "filter": [
+        "**/*"
+      ]
     },
     "!**/*.map",
     "!**/*.d.ts",
@@ -50,12 +56,18 @@
       "filter": [
         "**/*"
       ]
+    },
+    {
+      "from": "build/generated/voice-capabilities/voice-capabilities.json",
+      "to": "voice-capabilities.json"
     }
   ],
   "protocols": [
     {
       "name": "QingShuClaw",
-      "schemes": ["lobsterai"]
+      "schemes": [
+        "lobsterai"
+      ]
     }
   ],
   "mac": {
@@ -80,6 +92,13 @@
       {
         "from": "build/generated/macos-speech",
         "to": "macos-speech",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/generated/local-whisper-cpp",
+        "to": "local-whisper-cpp",
         "filter": [
           "**/*"
         ]
@@ -141,7 +160,7 @@
           "!**/tsconfig.*.json",
           "!**/*.test.*",
           "!**/*.spec.*",
-                "!**/tests/**",
+          "!**/tests/**",
           "!**/test/**",
           "!**/__tests__/**"
         ]
@@ -234,7 +253,7 @@
           "!**/tsconfig.*.json",
           "!**/*.test.*",
           "!**/*.spec.*",
-                "!**/tests/**",
+          "!**/tests/**",
           "!**/test/**",
           "!**/__tests__/**"
         ]

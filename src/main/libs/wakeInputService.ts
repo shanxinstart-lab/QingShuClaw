@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import type { SpeechStateEvent } from '../../shared/speech/constants';
+import { isRecoverableSpeechErrorCode, type SpeechStateEvent } from '../../shared/speech/constants';
 import {
   WakeInputStatusType,
   type WakeInputConfig,
@@ -19,13 +19,27 @@ type WakeInputServiceEvents = {
   dictationRequested: (request: WakeInputDictationRequest) => void;
 };
 
-const includesWakeWord = (text: string, wakeWord: string): boolean => {
+const includesWakeWord = (text: string, wakeWords: string[]): { matched: boolean; matchedWakeWord?: string } => {
   const normalizedText = (text ?? '').trim();
-  const normalizedWakeWord = (wakeWord ?? '').trim();
-  if (!normalizedText || !normalizedWakeWord) {
-    return false;
+  if (!normalizedText) {
+    return { matched: false };
   }
-  return normalizedText.includes(normalizedWakeWord);
+
+  for (const wakeWord of wakeWords) {
+    const normalizedWakeWord = (wakeWord ?? '').trim();
+    if (!normalizedWakeWord) {
+      continue;
+    }
+    if (normalizedText.includes(normalizedWakeWord)) {
+      return { matched: true, matchedWakeWord: normalizedWakeWord };
+    }
+  }
+
+  return { matched: false };
+};
+
+const isSilentSpeechTerminationCode = (code?: string): boolean => {
+  return code === 'speech_request_cancelled' || code === 'speech_no_match';
 };
 
 export class WakeInputService extends EventEmitter {
@@ -56,7 +70,7 @@ export class WakeInputService extends EventEmitter {
     stopListening: () => Promise<{ success: boolean; error?: string }>;
   }) {
     super();
-    this.config = { ...options.config };
+    this.config = { ...options.config, wakeWords: [...options.config.wakeWords] };
     this.startListening = options.startListening;
     this.stopListening = options.stopListening;
     this.status = {
@@ -64,6 +78,7 @@ export class WakeInputService extends EventEmitter {
       supported: false,
       platform: options.platform,
       status: WakeInputStatusType.Disabled,
+      wakeWords: [...this.config.wakeWords],
       wakeWord: this.config.wakeWord,
       submitCommand: this.config.submitCommand,
       cancelCommand: this.config.cancelCommand,
@@ -106,6 +121,7 @@ export class WakeInputService extends EventEmitter {
       ...this.status,
       enabled: this.config.enabled,
       supported: this.supported,
+      wakeWords: [...this.config.wakeWords],
       wakeWord: this.config.wakeWord,
       submitCommand: this.config.submitCommand,
       cancelCommand: this.config.cancelCommand,
@@ -128,7 +144,10 @@ export class WakeInputService extends EventEmitter {
   }
 
   getStatus(): WakeInputStatus {
-    return { ...this.status };
+    return {
+      ...this.status,
+      wakeWords: [...this.status.wakeWords],
+    };
   }
 
   isBackgroundModeActive(): boolean {
@@ -140,7 +159,20 @@ export class WakeInputService extends EventEmitter {
     this.config = {
       ...this.config,
       ...partialConfig,
+      wakeWords: Array.isArray(partialConfig.wakeWords) && partialConfig.wakeWords.length > 0
+        ? [...partialConfig.wakeWords]
+        : [...this.config.wakeWords],
     };
+    console.log(
+      '[WakeInput] Updated configuration.',
+      JSON.stringify({
+        enabled: this.config.enabled,
+        wakeWords: this.config.wakeWords,
+        submitCommand: this.config.submitCommand,
+        cancelCommand: this.config.cancelCommand,
+        sessionTimeoutMs: this.config.sessionTimeoutMs,
+      }),
+    );
     if (!this.config.enabled) {
       this.pendingDictation = false;
       this.clearHandshakeTimer();
@@ -161,6 +193,16 @@ export class WakeInputService extends EventEmitter {
 
   async syncAvailability(options: { supported: boolean; error?: string }): Promise<void> {
     this.supported = options.supported;
+    console.log(
+      '[WakeInput] Synced availability.',
+      JSON.stringify({
+        enabled: this.config.enabled,
+        supported: options.supported,
+        speechListening: this.speechListening,
+        pendingDictation: this.pendingDictation,
+        error: options.error,
+      }),
+    );
     if (!options.supported) {
       this.pendingDictation = false;
       this.speechListening = false;
@@ -183,6 +225,15 @@ export class WakeInputService extends EventEmitter {
 
   async startBackgroundListening(): Promise<void> {
     if (!this.config.enabled || !this.supported || this.speechListening || this.pendingDictation) {
+      console.debug(
+        '[WakeInput] Skipped background listening start.',
+        JSON.stringify({
+          enabled: this.config.enabled,
+          supported: this.supported,
+          speechListening: this.speechListening,
+          pendingDictation: this.pendingDictation,
+        }),
+      );
       return;
     }
 
@@ -190,17 +241,23 @@ export class WakeInputService extends EventEmitter {
     this.clearCooldownTimer();
     this.speechListening = false;
     this.setStatus(WakeInputStatusType.Listening);
+    console.log('[WakeInput] Starting background listening.');
 
     const result = await this.startListening();
     if (!result.success) {
       this.speechListening = false;
       this.setStatus(WakeInputStatusType.Error, result.error);
+      console.warn(
+        '[WakeInput] Failed to start background listening.',
+        JSON.stringify({ error: result.error }),
+      );
       this.scheduleBackgroundResume(ERROR_RETRY_DELAY_MS);
       return;
     }
 
     this.speechListening = true;
     this.setStatus(WakeInputStatusType.Listening);
+    console.log('[WakeInput] Background listening started.');
   }
 
   async stopBackgroundListening(): Promise<void> {
@@ -214,12 +271,14 @@ export class WakeInputService extends EventEmitter {
 
     this.speechListening = false;
     this.setStatus(this.config.enabled ? WakeInputStatusType.Idle : WakeInputStatusType.Disabled);
+    console.log('[WakeInput] Stopping background listening.');
     await this.stopListening();
   }
 
   async prepareForegroundSpeechStart(): Promise<ForegroundSpeechOrigin> {
     const origin: ForegroundSpeechOrigin = this.pendingDictation ? 'wake' : 'manual';
     this.clearRetryTimer();
+    console.log('[WakeInput] Preparing foreground speech start.', JSON.stringify({ origin }));
     if (this.speechListening) {
       await this.stopBackgroundListening();
     }
@@ -232,6 +291,7 @@ export class WakeInputService extends EventEmitter {
 
   handleForegroundSpeechEnded(origin: ForegroundSpeechOrigin): void {
     this.speechListening = false;
+    console.log('[WakeInput] Foreground speech ended.', JSON.stringify({ origin, supported: this.supported, enabled: this.config.enabled }));
     if (!this.config.enabled || !this.supported) {
       this.setStatus(WakeInputStatusType.Disabled);
       return;
@@ -256,11 +316,23 @@ export class WakeInputService extends EventEmitter {
 
   async handleSpeechState(event: SpeechStateEvent): Promise<void> {
     if (!this.speechListening) {
+      console.debug('[WakeInput] Ignored speech event because background listening is inactive.', JSON.stringify({ type: event.type }));
       return;
     }
 
     if (event.type === 'partial' || event.type === 'final') {
-      if (!includesWakeWord(event.text ?? '', this.config.wakeWord)) {
+      const matchedWakeWord = includesWakeWord(event.text ?? '', this.config.wakeWords);
+      console.debug(
+        '[WakeInput] Background speech received.',
+        JSON.stringify({
+          type: event.type,
+          text: event.text ?? '',
+          normalizedText: (event.text ?? '').trim(),
+          matched: matchedWakeWord.matched,
+          matchedWakeWord: matchedWakeWord.matchedWakeWord,
+        }),
+      );
+      if (!matchedWakeWord.matched) {
         return;
       }
 
@@ -268,6 +340,10 @@ export class WakeInputService extends EventEmitter {
       this.speechListening = false;
       this.setStatus(WakeInputStatusType.WakeTriggered);
       await this.stopListening();
+      console.log(
+        '[WakeInput] Wake phrase matched, requesting dictation.',
+        JSON.stringify({ wakeWord: matchedWakeWord.matchedWakeWord }),
+      );
 
       const request: WakeInputDictationRequest = {
         submitCommand: this.config.submitCommand,
@@ -290,6 +366,7 @@ export class WakeInputService extends EventEmitter {
 
     if (event.type === 'stopped') {
       this.speechListening = false;
+      console.log('[WakeInput] Background listening stopped by speech service.');
       if (!this.pendingDictation) {
         this.setStatus(WakeInputStatusType.Idle);
         this.scheduleBackgroundResume(MANUAL_RESUME_DELAY_MS);
@@ -299,6 +376,32 @@ export class WakeInputService extends EventEmitter {
 
     if (event.type === 'error') {
       this.speechListening = false;
+      if (isRecoverableSpeechErrorCode(event.code)) {
+        console.warn(
+          '[WakeInput] Background listening was interrupted by the speech service. Scheduling recovery.',
+          JSON.stringify({ code: event.code, message: event.message }),
+        );
+        if (!this.pendingDictation) {
+          this.setStatus(WakeInputStatusType.Idle);
+          this.scheduleBackgroundResume(ERROR_RETRY_DELAY_MS);
+        }
+        return;
+      }
+      if (isSilentSpeechTerminationCode(event.code)) {
+        console.log(
+          '[WakeInput] Background listening ended without a usable transcript. Resuming listener.',
+          JSON.stringify({ code: event.code, message: event.message }),
+        );
+        if (!this.pendingDictation) {
+          this.setStatus(WakeInputStatusType.Idle);
+          this.scheduleBackgroundResume(MANUAL_RESUME_DELAY_MS);
+        }
+        return;
+      }
+      console.warn(
+        '[WakeInput] Background listening received an error.',
+        JSON.stringify({ code: event.code, message: event.message }),
+      );
       if (!this.pendingDictation) {
         this.setStatus(WakeInputStatusType.Error, event.message ?? event.code);
         this.scheduleBackgroundResume(ERROR_RETRY_DELAY_MS);

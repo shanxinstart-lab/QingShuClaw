@@ -93,13 +93,48 @@ import {
 } from '../common/auth';
 import { MacSpeechService, broadcastSpeechState } from './libs/macSpeechService';
 import { MacTtsService, broadcastTtsState } from './libs/macTtsService';
+import { AzureVoiceService } from './libs/azureVoiceService';
+import {
+  LocalVoiceModelManager,
+  resolveInstalledLocalModelPath,
+  resolveLocalVoiceModelsRoot,
+  resolveLocalQwen3TtsModelsRoot,
+} from './libs/localVoiceModelManager';
+import {
+  ensureLocalWhisperCppDirectories,
+  LocalWhisperCppSpeechService,
+  inspectLocalWhisperCppRuntime,
+  resolveLocalWhisperCppBinaryDirectory,
+  resolveLocalWhisperCppExecutablePath,
+  resolveLocalWhisperCppModelPath,
+  resolveLocalWhisperCppModelsDirectory,
+  resolveLocalWhisperCppResourceRoot,
+} from './libs/localWhisperCppSpeechService';
+import {
+  inspectLocalQwen3TtsRuntime,
+  LocalQwen3TtsService,
+  resolveLocalQwen3TtsModelPath,
+  resolveLocalQwen3TtsRunnerPath,
+  resolveLocalQwen3TtsTokenizerPath,
+} from './libs/localQwen3TtsService';
+import { OpenAiSpeechService } from './libs/openAiSpeechService';
+import { OpenAiVoiceService } from './libs/openAiVoiceService';
+import { AliyunSpeechService } from './libs/aliyunSpeechService';
+import { AliyunVoiceService } from './libs/aliyunVoiceService';
+import { VolcengineVoiceService } from './libs/volcengineVoiceService';
+import { VolcengineSpeechService } from './libs/volcengineSpeechService';
 import { WakeInputService } from './libs/wakeInputService';
+import { VoiceCapabilityRegistry } from './libs/voiceCapabilityRegistry';
 import {
   SpeechErrorCode,
   SpeechFeatureFlagKey,
   SpeechIpcChannel,
   SpeechStateType,
   SpeechPermissionStatus,
+  SpeechStartSource,
+  isRecoverableSpeechErrorCode,
+  type SpeechTranscribeAudioOptions,
+  type SpeechTranscribeAudioResult,
   type SpeechStartOptions,
 } from '../shared/speech/constants';
 import {
@@ -108,8 +143,22 @@ import {
 } from '../shared/wakeInput/constants';
 import {
   TtsIpcChannel,
+  type TtsSpeakResult,
   type TtsSpeakOptions,
 } from '../shared/tts/constants';
+import {
+  DEFAULT_VOICE_CONFIG,
+  VoiceCapability,
+  VoiceCapabilityReason,
+  VoiceIpcChannel,
+  type VoiceLocalModelLibrary,
+  type VoiceLocalQwen3TtsStatus,
+  VoiceProvider,
+  createVoiceConfigFromLegacy,
+  deriveLegacyWakeInputConfig,
+  type VoiceLocalWhisperCppStatus,
+  type VoiceConfig,
+} from '../shared/voice/constants';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -1678,23 +1727,59 @@ type AppConfigSettings = {
   language?: string;
   useSystemProxy?: boolean;
   auth?: Partial<AuthConfig>;
+  speechInput?: {
+    stopCommand: string;
+    submitCommand: string;
+  };
   wakeInput?: Partial<WakeInputConfig>;
+  tts?: {
+    enabled: boolean;
+    autoPlayAssistantReply: boolean;
+    voiceId: string;
+    rate: number;
+    volume: number;
+  };
+  voice?: Partial<VoiceConfig>;
 };
 
-const DEFAULT_WAKE_INPUT_CONFIG: WakeInputConfig = {
-  enabled: false,
-  wakeWord: '打开青书爪',
-  submitCommand: '发送',
-  cancelCommand: '取消',
-  sessionTimeoutMs: 20_000,
+const DEFAULT_WAKE_INPUT_CONFIG: WakeInputConfig = deriveLegacyWakeInputConfig(DEFAULT_VOICE_CONFIG);
+
+const getVoiceConfigFromAppConfig = (config?: AppConfigSettings): VoiceConfig => {
+  return createVoiceConfigFromLegacy({
+    voice: config?.voice,
+    speechInput: config?.speechInput,
+    wakeInput: config?.wakeInput,
+    tts: config?.tts,
+  });
 };
 
-const mergeWakeInputConfig = (config?: Partial<WakeInputConfig>): WakeInputConfig => ({
-  ...DEFAULT_WAKE_INPUT_CONFIG,
-  ...(config ?? {}),
-});
+const mergeWakeInputConfig = (config?: Partial<WakeInputConfig>): WakeInputConfig => {
+  return deriveLegacyWakeInputConfig(createVoiceConfigFromLegacy({ wakeInput: config }));
+};
 
 let foregroundSpeechOrigin: 'manual' | 'wake' | null = null;
+let foregroundSpeechSource: SpeechStartSource | null = null;
+let foregroundSpeechLocale: string | undefined;
+let foregroundSpeechRecoveryAttempts = 0;
+let foregroundSpeechRecoveryTimer: NodeJS.Timeout | null = null;
+const FOREGROUND_SPEECH_RECOVERY_DELAY_MS = 900;
+
+const clearForegroundSpeechRecoveryTimer = (): boolean => {
+  if (!foregroundSpeechRecoveryTimer) {
+    return false;
+  }
+  clearTimeout(foregroundSpeechRecoveryTimer);
+  foregroundSpeechRecoveryTimer = null;
+  return true;
+};
+
+const resetForegroundSpeechSessionState = (): void => {
+  clearForegroundSpeechRecoveryTimer();
+  foregroundSpeechOrigin = null;
+  foregroundSpeechSource = null;
+  foregroundSpeechLocale = undefined;
+  foregroundSpeechRecoveryAttempts = 0;
+};
 
 const isMacSpeechInputEnabled = (): boolean => {
   const envOverride = process.env.LOBSTERAI_ENABLE_MAC_SPEECH_INPUT?.trim().toLowerCase();
@@ -1721,10 +1806,213 @@ const wakeInputService = new WakeInputService({
   },
 });
 const macTtsService = new MacTtsService();
+const azureVoiceService = new AzureVoiceService();
+const localWhisperCppSpeechService = new LocalWhisperCppSpeechService();
+const localQwen3TtsService = new LocalQwen3TtsService();
+const openAiSpeechService = new OpenAiSpeechService();
+const openAiVoiceService = new OpenAiVoiceService();
+const aliyunSpeechService = new AliyunSpeechService();
+const aliyunVoiceService = new AliyunVoiceService();
+const volcengineVoiceService = new VolcengineVoiceService();
+const volcengineSpeechService = new VolcengineSpeechService();
+const localVoiceModelManager = new LocalVoiceModelManager({
+  onChanged: (library) => {
+    broadcastLocalModelLibraryChanged(library);
+    void broadcastVoiceCapabilityChanged();
+  },
+});
 
-const showMainWindow = (): void => {
+const buildDisabledSpeechAvailability = () => ({
+  enabled: false,
+  supported: false,
+  platform: process.platform,
+  permission: SpeechPermissionStatus.Unsupported,
+  speechAuthorization: SpeechPermissionStatus.Unsupported,
+  microphoneAuthorization: SpeechPermissionStatus.Unsupported,
+  listening: false,
+  error: SpeechErrorCode.HelperUnavailable,
+});
+
+const getCurrentVoiceConfig = (): VoiceConfig => {
+  return getVoiceConfigFromAppConfig(getStore().get<AppConfigSettings>('app_config'));
+};
+
+const buildLocalWhisperCppStatus = (voiceConfig: VoiceConfig): VoiceLocalWhisperCppStatus => {
+  const runtime = inspectLocalWhisperCppRuntime(voiceConfig.providers.localWhisperCpp);
+  const resourceRoot = resolveLocalWhisperCppResourceRoot();
+  const binaryDirectory = resolveLocalWhisperCppBinaryDirectory();
+  const modelsDirectory = resolveLocalWhisperCppModelsDirectory();
+  const expectedExecutablePath = resolveLocalWhisperCppExecutablePath({
+    ...voiceConfig.providers.localWhisperCpp,
+    binaryPath: '',
+  }) ?? path.join(binaryDirectory, process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli');
+  const expectedModelPath = resolveLocalWhisperCppModelPath({
+    ...voiceConfig.providers.localWhisperCpp,
+    modelPath: '',
+  }) ?? path.join(modelsDirectory, `ggml-${voiceConfig.providers.localWhisperCpp.modelName.trim() || 'base'}.bin`);
+
+  return {
+    resourceRoot,
+    binaryDirectory,
+    modelsDirectory,
+    expectedExecutablePath,
+    expectedModelPath,
+    ...runtime,
+    enabled: voiceConfig.providers.localWhisperCpp.enabled,
+    ready: voiceConfig.providers.localWhisperCpp.enabled && runtime.executableExists && runtime.modelExists,
+  };
+};
+
+const buildLocalQwen3TtsStatus = (voiceConfig: VoiceConfig): VoiceLocalQwen3TtsStatus => {
+  const runtime = inspectLocalQwen3TtsRuntime(voiceConfig.providers.localQwen3Tts);
+  const modelsRoot = resolveLocalQwen3TtsModelsRoot();
+  const expectedModelPath = resolveLocalQwen3TtsModelPath({
+    ...voiceConfig.providers.localQwen3Tts,
+    modelPath: '',
+  }) ?? (voiceConfig.providers.localQwen3Tts.modelId.trim()
+    ? (resolveInstalledLocalModelPath(voiceConfig.providers.localQwen3Tts.modelId.trim()) || '')
+    : '');
+  const expectedTokenizerPath = resolveLocalQwen3TtsTokenizerPath({
+    ...voiceConfig.providers.localQwen3Tts,
+    tokenizerPath: '',
+  }) ?? (resolveInstalledLocalModelPath('qwen3_tts_tokenizer_12hz') || '');
+
+  return {
+    resourceRoot: resolveLocalVoiceModelsRoot(),
+    modelsRoot,
+    runnerScriptPath: resolveLocalQwen3TtsRunnerPath(),
+    expectedModelPath,
+    expectedTokenizerPath,
+    modelPath: runtime.modelPath,
+    tokenizerPath: runtime.tokenizerPath,
+    modelExists: runtime.modelExists,
+    tokenizerExists: runtime.tokenizerExists,
+    pythonCommand: runtime.pythonCommand,
+    pythonResolvedPath: runtime.pythonResolvedPath,
+    pythonAvailable: runtime.pythonAvailable,
+    pythonVersion: runtime.pythonVersion,
+    qwenTtsAvailable: runtime.qwenTtsAvailable,
+    torchAvailable: runtime.torchAvailable,
+    soundfileAvailable: runtime.soundfileAvailable,
+    huggingfaceCliAvailable: runtime.huggingfaceCliAvailable,
+    huggingfaceHubAvailable: runtime.huggingfaceHubAvailable,
+    runnerWritable: runtime.runnerWritable,
+    runtimeIssues: runtime.runtimeIssues,
+    enabled: voiceConfig.providers.localQwen3Tts.enabled,
+    ready: voiceConfig.providers.localQwen3Tts.enabled
+      && runtime.modelExists
+      && runtime.tokenizerExists
+      && runtime.pythonAvailable
+      && runtime.qwenTtsAvailable
+      && runtime.torchAvailable
+      && runtime.soundfileAvailable
+      && runtime.runnerWritable,
+  };
+};
+
+const getSpeechAvailabilityForVoice = async () => {
+  if (!isMacSpeechInputEnabled()) {
+    return buildDisabledSpeechAvailability();
+  }
+  return macSpeechService.getAvailability();
+};
+
+const voiceCapabilityRegistry = new VoiceCapabilityRegistry({
+  platform: process.platform,
+  arch: process.arch,
+  getVoiceConfig: getCurrentVoiceConfig,
+  getStoreFlag: (key: string) => getStore().get<boolean>(key),
+  getSpeechAvailability: getSpeechAvailabilityForVoice,
+  getTtsAvailability: () => macTtsService.getAvailability(),
+});
+
+const broadcastVoiceCapabilityChanged = async (): Promise<void> => {
+  try {
+    const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(VoiceIpcChannel.CapabilityChanged, matrix);
+      }
+    }
+  } catch (error) {
+    console.error('[Voice] Failed to broadcast capability matrix:', error);
+  }
+};
+
+function broadcastLocalModelLibraryChanged(library?: VoiceLocalModelLibrary): void {
+  const payload = library ?? localVoiceModelManager.getLibrary();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send(VoiceIpcChannel.LocalModelLibraryChanged, payload);
+    }
+  }
+}
+
+const syncWakeInputAvailability = async (
+  options?: {
+    appConfig?: AppConfigSettings;
+    startBackgroundListening?: boolean;
+    reason?: string;
+  },
+): Promise<void> => {
+  const voiceConfig = getVoiceConfigFromAppConfig(options?.appConfig);
+  const speechAvailability = await getSpeechAvailabilityForVoice();
+  const wakeSupported = voiceConfig.capabilities.wakeInput.enabled
+    && speechAvailability.supported
+    && speechAvailability.permission === SpeechPermissionStatus.Granted;
+
+  console.log(
+    '[WakeInput] Evaluated runtime availability.',
+    JSON.stringify({
+      reason: options?.reason ?? 'unknown',
+      enabled: voiceConfig.capabilities.wakeInput.enabled,
+      selectedProvider: voiceConfig.capabilities.wakeInput.provider,
+      speechSupported: speechAvailability.supported,
+      permission: speechAvailability.permission,
+      speechAuthorization: speechAvailability.speechAuthorization,
+      microphoneAuthorization: speechAvailability.microphoneAuthorization,
+      wakeSupported,
+      speechError: speechAvailability.error,
+    }),
+  );
+
+  await wakeInputService.syncAvailability({
+    supported: wakeSupported,
+    error: speechAvailability.error,
+  });
+
+  if (options?.startBackgroundListening !== false) {
+    await wakeInputService.startBackgroundListening();
+  }
+};
+
+const applyVoiceConfigToServices = async (appConfig?: AppConfigSettings): Promise<void> => {
+  const voiceConfig = getVoiceConfigFromAppConfig(appConfig);
+  await localVoiceModelManager.ensureRoots();
+  const wakeInputConfig = deriveLegacyWakeInputConfig(voiceConfig);
+  wakeInputService.updateConfig(wakeInputConfig);
+  await syncWakeInputAvailability({
+    appConfig,
+    startBackgroundListening: true,
+    reason: 'apply-voice-config',
+  });
+
+  if (!voiceConfig.capabilities.tts.enabled) {
+    await macTtsService.stop();
+  }
+
+  await broadcastVoiceCapabilityChanged();
+};
+
+const showMainWindow = (options?: { stealFocus?: boolean }): void => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
+  }
+  if (process.platform === 'darwin') {
+    if (app.isHidden()) {
+      app.show();
+    }
+    app.focus({ steal: options?.stealFocus === true });
   }
   if (mainWindow.isMinimized()) {
     mainWindow.restore();
@@ -1732,6 +2020,7 @@ const showMainWindow = (): void => {
   if (!mainWindow.isVisible()) {
     mainWindow.show();
   }
+  mainWindow.moveTop();
   if (!mainWindow.isFocused()) {
     mainWindow.focus();
   }
@@ -1744,16 +2033,115 @@ const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
   mainWindow.webContents.send('app:focusCoworkInput', { clear: options?.clear === true });
 };
 
+const finishForegroundSpeechSession = (): 'manual' | 'wake' | null => {
+  const origin = foregroundSpeechOrigin;
+  resetForegroundSpeechSessionState();
+  return origin;
+};
+
+const scheduleForegroundSpeechRecovery = (event: { code?: string; message?: string }): boolean => {
+  if (!foregroundSpeechOrigin || !foregroundSpeechSource) {
+    return false;
+  }
+  if (!isRecoverableSpeechErrorCode(event.code) || foregroundSpeechRecoveryAttempts >= 1) {
+    return false;
+  }
+
+  foregroundSpeechRecoveryAttempts += 1;
+  clearForegroundSpeechRecoveryTimer();
+  console.warn(
+    '[MacSpeechService] Recoverable foreground speech interruption detected. Retrying once.',
+    JSON.stringify({
+      source: foregroundSpeechSource,
+      origin: foregroundSpeechOrigin,
+      code: event.code,
+      message: event.message,
+      attempt: foregroundSpeechRecoveryAttempts,
+    }),
+  );
+
+  foregroundSpeechRecoveryTimer = setTimeout(() => {
+    foregroundSpeechRecoveryTimer = null;
+    const source = foregroundSpeechSource;
+    if (!foregroundSpeechOrigin || !source) {
+      return;
+    }
+
+    void macSpeechService.start({ locale: foregroundSpeechLocale, source }).then(async (result) => {
+      if (result.success) {
+        await syncWakeInputAvailability({
+          appConfig: getStore().get<AppConfigSettings>('app_config'),
+          startBackgroundListening: false,
+          reason: 'speech-recovery-success',
+        });
+        void broadcastVoiceCapabilityChanged();
+        return;
+      }
+
+      console.warn(
+        '[MacSpeechService] Foreground speech recovery failed.',
+        JSON.stringify({ source, error: result.error }),
+      );
+      const finishedOrigin = finishForegroundSpeechSession();
+      if (finishedOrigin) {
+        wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
+      }
+      broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, {
+        type: SpeechStateType.Error,
+        code: event.code ?? SpeechErrorCode.RuntimeError,
+        message: event.message ?? result.error,
+      });
+      void syncWakeInputAvailability({
+        appConfig: getStore().get<AppConfigSettings>('app_config'),
+        startBackgroundListening: false,
+        reason: 'speech-recovery-failed',
+      });
+      void broadcastVoiceCapabilityChanged();
+    }).catch((error) => {
+      console.error('[MacSpeechService] Foreground speech recovery crashed:', error);
+      const finishedOrigin = finishForegroundSpeechSession();
+      if (finishedOrigin) {
+        wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
+      }
+      broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, {
+        type: SpeechStateType.Error,
+        code: event.code ?? SpeechErrorCode.RuntimeError,
+        message: error instanceof Error ? error.message : event.message,
+      });
+      void syncWakeInputAvailability({
+        appConfig: getStore().get<AppConfigSettings>('app_config'),
+        startBackgroundListening: false,
+        reason: 'speech-recovery-crashed',
+      });
+      void broadcastVoiceCapabilityChanged();
+    });
+  }, FOREGROUND_SPEECH_RECOVERY_DELAY_MS);
+
+  return true;
+};
+
 wakeInputService.on('stateChanged', (status) => {
+  console.log(
+    '[WakeInput] State changed.',
+    JSON.stringify({
+      status: status.status,
+      enabled: status.enabled,
+      supported: status.supported,
+      listening: status.listening,
+      error: status.error,
+    }),
+  );
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) {
       window.webContents.send(WakeInputIpcChannel.StateChanged, status);
     }
   }
+  void broadcastVoiceCapabilityChanged();
 });
 
 wakeInputService.on('dictationRequested', (request) => {
-  showMainWindow();
+  console.log('[WakeInput] Dictation requested from wake input.');
+  showMainWindow({ stealFocus: true });
   focusCoworkInputInMainWindow({ clear: false });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
@@ -1763,17 +2151,34 @@ wakeInputService.on('dictationRequested', (request) => {
 macSpeechService.onStateChanged((event) => {
   if (wakeInputService.isBackgroundModeActive()) {
     void wakeInputService.handleSpeechState(event);
+    if (event.type === SpeechStateType.Listening || event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
+      void broadcastVoiceCapabilityChanged();
+    }
     return;
   }
 
   if (foregroundSpeechOrigin) {
+    if (event.type === SpeechStateType.Error && scheduleForegroundSpeechRecovery(event)) {
+      return;
+    }
     broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
     if (event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
-      const finishedOrigin = foregroundSpeechOrigin;
-      foregroundSpeechOrigin = null;
-      wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
+      const finishedOrigin = finishForegroundSpeechSession();
+      if (finishedOrigin) {
+        wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
+      }
+    }
+    if (event.type === SpeechStateType.Listening) {
+      foregroundSpeechRecoveryAttempts = 0;
+    }
+    if (event.type === SpeechStateType.Listening || event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
+      void broadcastVoiceCapabilityChanged();
     }
     return;
+  }
+
+  if (event.type === SpeechStateType.Listening || event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
+    void broadcastVoiceCapabilityChanged();
   }
 
   broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
@@ -1781,6 +2186,7 @@ macSpeechService.onStateChanged((event) => {
 
 macTtsService.on('stateChanged', (event) => {
   broadcastTtsState(BrowserWindow.getAllWindows(), TtsIpcChannel.StateChanged, event);
+  void broadcastVoiceCapabilityChanged();
 });
 
 const getUseSystemProxyFromConfig = (config?: { useSystemProxy?: boolean }): boolean => {
@@ -3985,37 +4391,234 @@ if (!gotTheLock) {
     }
   );
 
-  ipcMain.handle(SpeechIpcChannel.GetAvailability, async () => {
-    if (!isMacSpeechInputEnabled()) {
+  ipcMain.handle(VoiceIpcChannel.GetCapabilityMatrix, async () => {
+    return voiceCapabilityRegistry.getCapabilityMatrix();
+  });
+
+  ipcMain.handle(VoiceIpcChannel.GetConfig, async () => {
+    return getCurrentVoiceConfig();
+  });
+
+  ipcMain.handle(VoiceIpcChannel.GetLocalWhisperCppStatus, async (): Promise<VoiceLocalWhisperCppStatus> => {
+    return buildLocalWhisperCppStatus(getCurrentVoiceConfig());
+  });
+
+  ipcMain.handle(VoiceIpcChannel.GetLocalQwen3TtsStatus, async (): Promise<VoiceLocalQwen3TtsStatus> => {
+    return buildLocalQwen3TtsStatus(getCurrentVoiceConfig());
+  });
+
+  ipcMain.handle(VoiceIpcChannel.EnsureLocalWhisperCppDirectories, async () => {
+    try {
+      await ensureLocalWhisperCppDirectories();
       return {
-        enabled: false,
-        supported: false,
-        platform: process.platform,
-        permission: SpeechPermissionStatus.Unsupported,
-        speechAuthorization: SpeechPermissionStatus.Unsupported,
-        microphoneAuthorization: SpeechPermissionStatus.Unsupported,
-        listening: false,
+        success: true,
+        status: buildLocalWhisperCppStatus(getCurrentVoiceConfig()),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to prepare local whisper.cpp directories.',
       };
     }
-    return macSpeechService.getAvailability();
+  });
+
+  ipcMain.handle(VoiceIpcChannel.GetLocalModelLibrary, async (): Promise<VoiceLocalModelLibrary> => {
+    await localVoiceModelManager.ensureRoots();
+    return localVoiceModelManager.getLibrary();
+  });
+
+  ipcMain.handle(VoiceIpcChannel.InstallLocalModel, async (_event, modelId: string) => {
+    try {
+      const library = await localVoiceModelManager.installModel(modelId);
+      return { success: true, library };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to install local voice model.',
+        library: localVoiceModelManager.getLibrary(),
+      };
+    }
+  });
+
+  ipcMain.handle(VoiceIpcChannel.CancelLocalModelInstall, async (_event, modelId: string) => {
+    return {
+      success: true,
+      library: localVoiceModelManager.cancelInstall(modelId),
+    };
+  });
+
+  ipcMain.handle(VoiceIpcChannel.UpdateConfig, async (_event, partialConfig?: Partial<VoiceConfig>) => {
+    const appConfig = getStore().get<AppConfigSettings>('app_config') ?? {};
+    const currentVoiceConfig = getVoiceConfigFromAppConfig(appConfig);
+    const nextVoiceConfig = createVoiceConfigFromLegacy({
+      voice: {
+        ...currentVoiceConfig,
+        ...(partialConfig ?? {}),
+        capabilities: {
+          ...currentVoiceConfig.capabilities,
+          ...(partialConfig?.capabilities ?? {}),
+        },
+        commands: {
+          ...currentVoiceConfig.commands,
+          ...(partialConfig?.commands ?? {}),
+        },
+        providers: {
+          ...currentVoiceConfig.providers,
+          ...(partialConfig?.providers ?? {}),
+        },
+        postProcess: {
+          ...currentVoiceConfig.postProcess,
+          ...(partialConfig?.postProcess ?? {}),
+        },
+      },
+    });
+    const nextAppConfig: AppConfigSettings = {
+      ...appConfig,
+      voice: nextVoiceConfig,
+    };
+    getStore().set('app_config', nextAppConfig);
+    await applyVoiceConfigToServices(nextAppConfig);
+    return {
+      success: true,
+      config: nextVoiceConfig,
+      matrix: await voiceCapabilityRegistry.getCapabilityMatrix(),
+    };
+  });
+
+  ipcMain.handle(SpeechIpcChannel.GetAvailability, async () => {
+    const voiceConfig = getCurrentVoiceConfig();
+    if (!isMacSpeechInputEnabled()) {
+      return {
+        ...buildDisabledSpeechAvailability(),
+        enabled: voiceConfig.capabilities.manualStt.enabled,
+      };
+    }
+    const availability = await macSpeechService.getAvailability();
+    return {
+      ...availability,
+      enabled: voiceConfig.capabilities.manualStt.enabled,
+    };
   });
 
   ipcMain.handle(SpeechIpcChannel.Start, async (_event, options?: SpeechStartOptions) => {
+    const voiceConfig = getCurrentVoiceConfig();
+    const source = options?.source ?? SpeechStartSource.Manual;
+    const sourceEnabled = source === SpeechStartSource.Wake
+      ? voiceConfig.capabilities.wakeInput.enabled
+      : source === SpeechStartSource.FollowUp
+        ? voiceConfig.capabilities.followUpDictation.enabled
+        : voiceConfig.capabilities.manualStt.enabled;
+
+    if (!sourceEnabled) {
+      return { success: false, error: VoiceCapabilityReason.DisabledByConfig };
+    }
     if (!isMacSpeechInputEnabled()) {
       return { success: false, error: SpeechErrorCode.HelperUnavailable };
     }
     const origin = await wakeInputService.prepareForegroundSpeechStart();
-    const result = await macSpeechService.start(options);
+    const result = await macSpeechService.start({ locale: options?.locale, source });
     if (result.success) {
+      await syncWakeInputAvailability({
+        appConfig: getStore().get<AppConfigSettings>('app_config'),
+        startBackgroundListening: false,
+        reason: 'speech-start-success',
+      });
       foregroundSpeechOrigin = origin;
+      foregroundSpeechSource = source;
+      foregroundSpeechLocale = options?.locale?.trim() || undefined;
+      foregroundSpeechRecoveryAttempts = 0;
+      clearForegroundSpeechRecoveryTimer();
+      void broadcastVoiceCapabilityChanged();
       return result;
     }
+    await syncWakeInputAvailability({
+      appConfig: getStore().get<AppConfigSettings>('app_config'),
+      startBackgroundListening: false,
+      reason: 'speech-start-failed',
+    });
     wakeInputService.handleForegroundSpeechEnded(origin);
+    void broadcastVoiceCapabilityChanged();
     return result;
   });
 
   ipcMain.handle(SpeechIpcChannel.Stop, async () => {
-    return macSpeechService.stop();
+    const cancelledRecovery = clearForegroundSpeechRecoveryTimer();
+    const result = await macSpeechService.stop();
+    if (cancelledRecovery) {
+      const finishedOrigin = finishForegroundSpeechSession();
+      if (finishedOrigin) {
+        wakeInputService.handleForegroundSpeechEnded(finishedOrigin);
+      }
+    }
+    void broadcastVoiceCapabilityChanged();
+    return result;
+  });
+
+  ipcMain.handle(SpeechIpcChannel.TranscribeAudio, async (_event, options?: SpeechTranscribeAudioOptions): Promise<SpeechTranscribeAudioResult> => {
+    const voiceConfig = getCurrentVoiceConfig();
+    const source = options?.source ?? SpeechStartSource.Manual;
+    if (source === SpeechStartSource.Wake) {
+      return { success: false, error: VoiceCapabilityReason.RuntimeUnavailable };
+    }
+
+    const capabilityKey = source === SpeechStartSource.FollowUp
+      ? VoiceCapability.FollowUpDictation
+      : VoiceCapability.ManualStt;
+    const capabilityEnabled = source === SpeechStartSource.FollowUp
+      ? voiceConfig.capabilities.followUpDictation.enabled
+      : voiceConfig.capabilities.manualStt.enabled;
+
+    if (!capabilityEnabled) {
+      return { success: false, error: VoiceCapabilityReason.DisabledByConfig };
+    }
+
+    const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
+    const capability = matrix.capabilities[capabilityKey];
+    if (!capability?.runtimeAvailable) {
+      return {
+        success: false,
+        error: capability?.reason ?? VoiceCapabilityReason.RuntimeUnavailable,
+        provider: capability?.selectedProvider,
+      };
+    }
+
+    if (capability.selectedProvider === VoiceProvider.LocalWhisperCpp) {
+      return localWhisperCppSpeechService.transcribeAudio(voiceConfig.providers.localWhisperCpp, options ?? {
+        audioBase64: '',
+        mimeType: 'audio/wav',
+        source,
+      });
+    }
+
+    if (capability.selectedProvider === VoiceProvider.CloudOpenAi) {
+      return openAiSpeechService.transcribeAudio(voiceConfig.providers.openai, options ?? {
+        audioBase64: '',
+        mimeType: 'audio/wav',
+        source,
+      });
+    }
+
+    if (capability.selectedProvider === VoiceProvider.CloudAliyun) {
+      return aliyunSpeechService.transcribeAudio(voiceConfig.providers.aliyun, options ?? {
+        audioBase64: '',
+        mimeType: 'audio/wav',
+        source,
+      });
+    }
+
+    if (capability.selectedProvider === VoiceProvider.CloudVolcengine) {
+      return volcengineSpeechService.transcribeAudio(voiceConfig.providers.volcengine, options ?? {
+        audioBase64: '',
+        mimeType: 'audio/wav',
+        source,
+      });
+    }
+
+    return {
+      success: false,
+      error: VoiceCapabilityReason.RuntimeUnavailable,
+      provider: capability.selectedProvider,
+    };
   });
 
   ipcMain.handle(WakeInputIpcChannel.GetStatus, async () => {
@@ -4024,11 +4627,32 @@ if (!gotTheLock) {
 
   ipcMain.handle(WakeInputIpcChannel.UpdateConfig, async (_event, partialConfig?: Partial<WakeInputConfig>) => {
     const config = wakeInputService.updateConfig(mergeWakeInputConfig(partialConfig));
+    void broadcastVoiceCapabilityChanged();
     return { success: true, status: config };
   });
 
   ipcMain.handle(TtsIpcChannel.GetAvailability, async () => {
-    return macTtsService.getAvailability();
+    const voiceConfig = getCurrentVoiceConfig();
+    const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
+    const ttsCapability = matrix.capabilities[VoiceCapability.Tts];
+    const selectedProvider = ttsCapability?.selectedProvider;
+
+    const availability = selectedProvider === VoiceProvider.MacosNative
+      ? await macTtsService.getAvailability()
+      : {
+          enabled: voiceConfig.capabilities.tts.enabled,
+          supported: Boolean(ttsCapability?.runtimeAvailable),
+          platform: process.platform,
+          speaking: false,
+          error: ttsCapability?.reason !== VoiceCapabilityReason.Available
+            ? ttsCapability?.reason
+            : undefined,
+        };
+
+    return {
+      ...availability,
+      enabled: voiceConfig.capabilities.tts.enabled,
+    };
   });
 
   ipcMain.handle(TtsIpcChannel.GetVoices, async () => {
@@ -4040,11 +4664,68 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle(TtsIpcChannel.Speak, async (_event, options?: TtsSpeakOptions) => {
-    return macTtsService.speak(options ?? { text: '' });
+  ipcMain.handle(TtsIpcChannel.Speak, async (_event, options?: TtsSpeakOptions): Promise<TtsSpeakResult> => {
+    const voiceConfig = getCurrentVoiceConfig();
+    if (!voiceConfig.capabilities.tts.enabled) {
+      return { success: false, error: VoiceCapabilityReason.DisabledByConfig };
+    }
+
+    const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
+    const ttsCapability = matrix.capabilities[VoiceCapability.Tts];
+    if (!ttsCapability?.runtimeAvailable) {
+      return {
+        success: false,
+        error: ttsCapability?.reason ?? VoiceCapabilityReason.RuntimeUnavailable,
+        provider: ttsCapability?.selectedProvider,
+      };
+    }
+
+    if (ttsCapability.selectedProvider === VoiceProvider.MacosNative) {
+      const result = await macTtsService.speak(options ?? { text: '' });
+      return {
+        ...result,
+        provider: VoiceProvider.MacosNative,
+      };
+    }
+
+    if (ttsCapability.selectedProvider === VoiceProvider.CloudOpenAi) {
+      return openAiVoiceService.synthesizeSpeech(voiceConfig.providers.openai, options ?? { text: '' });
+    }
+
+    if (ttsCapability.selectedProvider === VoiceProvider.CloudAliyun) {
+      return aliyunVoiceService.synthesizeSpeech(voiceConfig.providers.aliyun, options ?? { text: '' });
+    }
+
+    if (ttsCapability.selectedProvider === VoiceProvider.CloudVolcengine) {
+      return volcengineVoiceService.synthesizeSpeech(voiceConfig.providers.volcengine, options ?? { text: '' });
+    }
+
+    if (ttsCapability.selectedProvider === VoiceProvider.CloudAzure) {
+      return azureVoiceService.synthesizeSpeech(voiceConfig.providers.azure, options ?? { text: '' });
+    }
+
+    if (ttsCapability.selectedProvider === VoiceProvider.LocalQwen3Tts) {
+      return localQwen3TtsService.synthesizeSpeech(voiceConfig.providers.localQwen3Tts, options ?? { text: '' });
+    }
+
+    return {
+      success: false,
+      error: VoiceCapabilityReason.RuntimeUnavailable,
+      provider: ttsCapability.selectedProvider,
+    };
   });
 
   ipcMain.handle(TtsIpcChannel.Stop, async () => {
+    const voiceConfig = getCurrentVoiceConfig();
+    const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
+    const ttsCapability = matrix.capabilities[VoiceCapability.Tts];
+
+    if (ttsCapability?.selectedProvider === VoiceProvider.LocalQwen3Tts) {
+      return localQwen3TtsService.stop();
+    }
+    if (voiceConfig.capabilities.tts.provider === VoiceProvider.LocalQwen3Tts) {
+      return localQwen3TtsService.stop();
+    }
     return macTtsService.stop();
   });
 
@@ -4887,20 +5568,7 @@ if (!gotTheLock) {
       console.error('Failed to start OpenAI compatibility proxy:', error);
     });
 
-    const wakeInputConfig = mergeWakeInputConfig(appConfig?.wakeInput);
-    wakeInputService.updateConfig(wakeInputConfig);
-    const speechAvailability = isMacSpeechInputEnabled()
-      ? await macSpeechService.getAvailability()
-      : {
-          supported: false,
-          permission: SpeechPermissionStatus.Unsupported,
-          error: SpeechErrorCode.HelperUnavailable,
-        };
-    await wakeInputService.syncAvailability({
-      supported: Boolean(speechAvailability.supported) && speechAvailability.permission === SpeechPermissionStatus.Granted,
-      error: speechAvailability.error,
-    });
-    await wakeInputService.startBackgroundListening();
+    await applyVoiceConfigToServices(appConfig);
 
     // 设置安全策略
     setContentSecurityPolicy();
@@ -4959,7 +5627,7 @@ if (!gotTheLock) {
 
     let lastLanguage = getStore().get<AppConfigSettings>('app_config')?.language;
     let lastUseSystemProxy = getUseSystemProxyFromConfig(getStore().get<AppConfigSettings>('app_config'));
-    let lastWakeInputConfig = JSON.stringify(mergeWakeInputConfig(getStore().get<AppConfigSettings>('app_config')?.wakeInput));
+    let lastVoiceConfig = JSON.stringify(getVoiceConfigFromAppConfig(getStore().get<AppConfigSettings>('app_config')));
     getStore().onDidChange<AppConfigSettings>('app_config', (newConfig, oldConfig) => {
       updateTitleBarOverlay();
       // 仅在语言变更时刷新托盘菜单文本
@@ -4983,17 +5651,11 @@ if (!gotTheLock) {
       }
       lastUseSystemProxy = currentUseSystemProxy;
 
-      const currentWakeInputConfig = JSON.stringify(mergeWakeInputConfig(newConfig?.wakeInput));
-      if (currentWakeInputConfig !== lastWakeInputConfig) {
-        lastWakeInputConfig = currentWakeInputConfig;
-        wakeInputService.updateConfig(mergeWakeInputConfig(newConfig?.wakeInput));
-        void macSpeechService.getAvailability().then((availability) => {
-          return wakeInputService.syncAvailability({
-            supported: availability.supported && availability.permission === SpeechPermissionStatus.Granted,
-            error: availability.error,
-          }).then(() => wakeInputService.startBackgroundListening());
-        }).catch((error) => {
-          console.error('[WakeInput] Failed to refresh availability after config change:', error);
+      const currentVoiceConfig = JSON.stringify(getVoiceConfigFromAppConfig(newConfig));
+      if (currentVoiceConfig !== lastVoiceConfig) {
+        lastVoiceConfig = currentVoiceConfig;
+        void applyVoiceConfigToServices(newConfig).catch((error) => {
+          console.error('[Voice] Failed to refresh voice services after config change:', error);
         });
       }
     });

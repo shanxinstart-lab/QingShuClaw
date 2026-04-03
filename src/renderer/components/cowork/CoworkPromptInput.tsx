@@ -17,9 +17,12 @@ import { Skill } from '../../types/skill';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { getCompactFolderName } from '../../utils/path';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
-import { SpeechErrorCode } from '../../../shared/speech/constants';
+import { isRecoverableSpeechErrorCode, SpeechErrorCode } from '../../../shared/speech/constants';
 import { DEFAULT_SPEECH_INPUT_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
+import { VoiceProvider, type VoiceCapabilityMatrix } from '../../../shared/voice/constants';
+import { startCloudSpeechRecording, type CloudSpeechRecording } from './coworkCloudSpeechRecorder';
+import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -98,12 +101,13 @@ interface CoworkPromptInputProps {
   remoteManaged?: boolean;
 }
 
-type InputSpeechStatus = 'idle' | 'requesting_permission' | 'listening';
+type InputSpeechStatus = 'idle' | 'requesting_permission' | 'listening' | 'transcribing';
 type PendingSpeechVoiceCommand = SpeechVoiceCommandAction | null;
 type WakeDictationCommandConfig = {
   submitCommand: string;
   cancelCommand: string;
   sessionTimeoutMs: number;
+  source?: 'wake' | 'follow_up';
 };
 
 const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInputProps>(
@@ -137,6 +141,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [imageVisionHint, setImageVisionHint] = useState(false);
     const [speechStatus, setSpeechStatus] = useState<InputSpeechStatus>('idle');
     const [speechVisible, setSpeechVisible] = useState(window.electron.platform === 'darwin');
+    const currentSessionStatus = useSelector((state: RootState) => state.cowork.currentSession?.status ?? null);
+    const currentSessionId = useSelector((state: RootState) => state.cowork.currentSession?.id ?? null);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const folderButtonRef = useRef<HTMLButtonElement>(null);
@@ -146,6 +152,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const pendingSpeechVoiceCommandRef = useRef<PendingSpeechVoiceCommand>(null);
     const wakeDictationConfigRef = useRef<WakeDictationCommandConfig | null>(null);
     const wakeDictationTimerRef = useRef<number | null>(null);
+    const previousSessionStatusRef = useRef<string | null>(null);
+    const manualSttProviderRef = useRef<string>(VoiceProvider.MacosNative);
+    const cloudSpeechRecordingRef = useRef<CloudSpeechRecording | null>(null);
+    const speechFinalizingRef = useRef(false);
 
   // 暴露方法给父组件
   React.useImperativeHandle(ref, () => ({
@@ -178,6 +188,99 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     ...DEFAULT_SPEECH_INPUT_CONFIG,
     ...(configService.getConfig().speechInput ?? {}),
   }), []);
+
+  const getActiveSpeechCommandConfig = useCallback(() => {
+    return wakeDictationConfigRef.current
+      ? {
+          stopCommand: wakeDictationConfigRef.current.cancelCommand,
+          submitCommand: wakeDictationConfigRef.current.submitCommand,
+        }
+      : getSpeechVoiceCommandConfig();
+  }, [getSpeechVoiceCommandConfig]);
+
+  const getFollowUpCommandConfig = useCallback((): WakeDictationCommandConfig => {
+    const voiceConfig = configService.getConfig().voice;
+    const useWakeCommands = voiceConfig?.capabilities.wakeInput.enabled ?? false;
+    return {
+      submitCommand: useWakeCommands
+        ? (voiceConfig?.commands.wakeSubmitCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.submitCommand)
+        : (voiceConfig?.commands.manualSubmitCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.submitCommand),
+      cancelCommand: useWakeCommands
+        ? (voiceConfig?.commands.wakeCancelCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.stopCommand)
+        : (voiceConfig?.commands.manualStopCommand ?? DEFAULT_SPEECH_INPUT_CONFIG.stopCommand),
+      sessionTimeoutMs: voiceConfig?.commands.wakeSessionTimeoutMs ?? 20_000,
+      source: 'follow_up',
+    };
+  }, []);
+
+  const shouldCorrectSttText = useCallback((): boolean => {
+    return configService.getConfig().voice?.postProcess?.sttLlmCorrectionEnabled === true;
+  }, []);
+
+  const correctSpeechTextIfNeeded = useCallback(async (rawText: string): Promise<string> => {
+    const normalizedText = rawText.trim();
+    if (!normalizedText || !shouldCorrectSttText()) {
+      return normalizedText;
+    }
+    try {
+      const correctedText = await voiceTextPostProcessService.correctSttText(normalizedText);
+      return correctedText.trim() || normalizedText;
+    } catch (error) {
+      console.warn('Failed to correct STT text with the current model:', error);
+      return normalizedText;
+    }
+  }, [shouldCorrectSttText]);
+
+  const applyFinalSpeechText = useCallback(async (rawText: string) => {
+    const correctedText = await correctSpeechTextIfNeeded(rawText);
+    const commandResult = resolveSpeechVoiceCommand(correctedText, getActiveSpeechCommandConfig());
+    const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+    speechBaseValueRef.current = nextValue;
+    setValue(nextValue);
+    if (commandResult.action) {
+      pendingSpeechVoiceCommandRef.current = commandResult.action;
+    }
+  }, [correctSpeechTextIfNeeded, getActiveSpeechCommandConfig]);
+
+  const isCloudRecordedSpeechProvider = useCallback((provider: string): boolean => {
+    return provider === VoiceProvider.LocalWhisperCpp
+      || provider === VoiceProvider.CloudOpenAi
+      || provider === VoiceProvider.CloudVolcengine
+      || provider === VoiceProvider.CloudAliyun;
+  }, []);
+
+  const startCloudSpeechRecordingForCurrentProvider = useCallback(async (): Promise<void> => {
+    setSpeechStatus('requesting_permission');
+    cloudSpeechRecordingRef.current = await startCloudSpeechRecording();
+    setSpeechStatus('listening');
+  }, []);
+
+  const finishCloudSpeechRecording = useCallback(async (source: 'manual' | 'follow_up') => {
+    const recording = cloudSpeechRecordingRef.current;
+    if (!recording) {
+      setSpeechStatus('idle');
+      return;
+    }
+
+    cloudSpeechRecordingRef.current = null;
+    setSpeechStatus('transcribing');
+    const audio = await recording.stop();
+    const result = await window.electron.speech.transcribeAudio({
+      ...audio,
+      source,
+    });
+
+    if (!result.success) {
+      setSpeechStatus('idle');
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: resolveSpeechErrorMessage(result.error, result.error),
+      }));
+      return;
+    }
+
+    await applyFinalSpeechText(result.text || '');
+    setSpeechStatus('idle');
+  }, [applyFinalSpeechText]);
 
   // Load skills on mount
   useEffect(() => {
@@ -238,37 +341,51 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [workingDirectory]);
 
   useEffect(() => {
-    if (!isMac) {
-      return;
-    }
-
     let active = true;
-    window.electron.speech.getAvailability()
-      .then((availability) => {
-        if (!active) {
-          return;
+    const syncVoiceCapability = (matrix: VoiceCapabilityMatrix) => {
+      const manualStt = matrix.capabilities['manual_stt'];
+      manualSttProviderRef.current = manualStt?.selectedProvider ?? VoiceProvider.None;
+      const shouldShowSpeechButton = Boolean(
+        manualStt?.enabled
+        && manualStt.platformSupported
+        && manualStt.packaged
+        && (
+          manualStt.selectedProvider === VoiceProvider.MacosNative
+          || manualStt.runtimeAvailable
+        )
+      );
+      setSpeechVisible(Boolean(
+        shouldShowSpeechButton
+      ));
+    };
+
+    void window.electron.voice.getCapabilityMatrix()
+      .then((matrix) => {
+        if (active) {
+          syncVoiceCapability(matrix);
         }
-        setSpeechVisible(availability.enabled ?? true);
       })
       .catch((error) => {
-        console.error('Failed to inspect speech availability:', error);
+        console.error('Failed to inspect voice capability matrix:', error);
         if (active) {
           setSpeechVisible(true);
         }
       });
 
+    const unsubscribeVoice = window.electron.voice.onCapabilityChanged((matrix) => {
+      if (active) {
+        syncVoiceCapability(matrix);
+      }
+    });
+
     const unsubscribe = window.electron.speech.onStateChanged((event) => {
       switch (event.type) {
         case 'listening':
+          speechFinalizingRef.current = false;
           setSpeechStatus('listening');
           break;
         case 'partial': {
-          const currentCommandConfig = wakeDictationConfigRef.current
-            ? {
-                stopCommand: wakeDictationConfigRef.current.cancelCommand,
-                submitCommand: wakeDictationConfigRef.current.submitCommand,
-              }
-            : getSpeechVoiceCommandConfig();
+          const currentCommandConfig = getActiveSpeechCommandConfig();
           const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
           const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
           setValue(nextValue);
@@ -280,28 +397,36 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           break;
         }
         case 'final': {
-          const currentCommandConfig = wakeDictationConfigRef.current
-            ? {
-                stopCommand: wakeDictationConfigRef.current.cancelCommand,
-                submitCommand: wakeDictationConfigRef.current.submitCommand,
-              }
-            : getSpeechVoiceCommandConfig();
-          const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
-          const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
-          speechBaseValueRef.current = nextValue;
-          setValue(nextValue);
-          if (commandResult.action) {
-            pendingSpeechVoiceCommandRef.current = commandResult.action;
-            void window.electron.speech.stop().catch(() => undefined);
-          }
+          speechFinalizingRef.current = true;
+          setSpeechStatus('transcribing');
+          void applyFinalSpeechText(event.text || '').finally(() => {
+            speechFinalizingRef.current = false;
+            setSpeechStatus('idle');
+          });
           break;
         }
         case 'stopped':
+          if (speechFinalizingRef.current) {
+            return;
+          }
           setSpeechStatus('idle');
           break;
         case 'error':
+          speechFinalizingRef.current = false;
           setSpeechStatus('idle');
           pendingSpeechVoiceCommandRef.current = null;
+          if (event.code === SpeechErrorCode.SpeechRequestCancelled) {
+            return;
+          }
+          if (
+            event.code === SpeechErrorCode.SpeechNoMatch
+            && wakeDictationConfigRef.current?.source
+          ) {
+            return;
+          }
+          if (isRecoverableSpeechErrorCode(event.code)) {
+            return;
+          }
           window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(event.code, event.message) }));
           break;
       }
@@ -309,10 +434,15 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     return () => {
       active = false;
+      unsubscribeVoice();
       unsubscribe();
+      if (cloudSpeechRecordingRef.current) {
+        void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
+        cloudSpeechRecordingRef.current = null;
+      }
       void window.electron.speech.stop().catch(() => undefined);
     };
-  }, [getSpeechVoiceCommandConfig, isMac]);
+  }, [applyFinalSpeechText, getActiveSpeechCommandConfig]);
 
   // Sync value from draft when sessionId changes
   useEffect(() => {
@@ -325,6 +455,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
     pendingSpeechVoiceCommandRef.current = null;
+    speechFinalizingRef.current = false;
+    if (cloudSpeechRecordingRef.current) {
+      void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
+      cloudSpeechRecordingRef.current = null;
+      setSpeechStatus('idle');
+      return;
+    }
     void window.electron.speech.stop().catch(() => undefined);
   }, [draftKey]);
 
@@ -333,6 +470,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
     pendingSpeechVoiceCommandRef.current = null;
+    speechFinalizingRef.current = false;
+    if (cloudSpeechRecordingRef.current) {
+      void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
+      cloudSpeechRecordingRef.current = null;
+      setSpeechStatus('idle');
+      return;
+    }
     void window.electron.speech.stop().catch(() => undefined);
   }, [isStreaming, isSpeechActive]);
 
@@ -432,9 +576,69 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [handleSubmit, speechStatus]);
 
   useEffect(() => {
+    const previousStatus = previousSessionStatusRef.current;
+    previousSessionStatusRef.current = currentSessionStatus;
+
+    if (
+      previousStatus !== 'running'
+      || currentSessionStatus !== 'completed'
+      || !sessionId
+      || currentSessionId !== sessionId
+      || disabled
+      || remoteManaged
+      || isStreaming
+      || isSpeechActive
+    ) {
+      return;
+    }
+
+    let active = true;
+    void window.electron.voice.getCapabilityMatrix().then((matrix) => {
+      if (!active) {
+        return;
+      }
+      const followUpCapability = matrix.capabilities['follow_up_dictation'];
+      if (
+        !followUpCapability?.enabled
+        || !followUpCapability.platformSupported
+        || !followUpCapability.packaged
+        || !followUpCapability.runtimeAvailable
+      ) {
+        return;
+      }
+      const detail = getFollowUpCommandConfig();
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
+        detail,
+      }));
+    }).catch((error) => {
+      console.error('Failed to inspect follow-up voice capability:', error);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    currentSessionId,
+    currentSessionStatus,
+    disabled,
+    getFollowUpCommandConfig,
+    isSpeechActive,
+    isStreaming,
+    remoteManaged,
+    sessionId,
+  ]);
+
+  useEffect(() => {
     const handleWakeDictationStart = (event: Event) => {
       const detail = (event as CustomEvent<WakeDictationCommandConfig>).detail;
       if (!detail || disabled || isStreaming || !isMac || !speechVisible) {
+        return;
+      }
+      const manualProvider = manualSttProviderRef.current;
+      if (manualProvider !== VoiceProvider.MacosNative && !isCloudRecordedSpeechProvider(manualProvider)) {
         return;
       }
 
@@ -448,12 +652,35 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         if (speechStatus !== 'idle') {
           pendingSpeechVoiceCommandRef.current = null;
           wakeDictationConfigRef.current = null;
-          void window.electron.speech.stop().catch(() => undefined);
+          if (cloudSpeechRecordingRef.current) {
+            const recording = cloudSpeechRecordingRef.current;
+            cloudSpeechRecordingRef.current = null;
+            void recording.cancel().catch(() => undefined);
+            setSpeechStatus('idle');
+          } else {
+            void window.electron.speech.stop().catch(() => undefined);
+          }
         }
         wakeDictationTimerRef.current = null;
       }, detail.sessionTimeoutMs);
+      if (isCloudRecordedSpeechProvider(manualProvider)) {
+        void startCloudSpeechRecordingForCurrentProvider().catch((error) => {
+          cloudSpeechRecordingRef.current = null;
+          setSpeechStatus('idle');
+          wakeDictationConfigRef.current = null;
+          if (wakeDictationTimerRef.current) {
+            window.clearTimeout(wakeDictationTimerRef.current);
+            wakeDictationTimerRef.current = null;
+          }
+          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+            detail: error instanceof Error ? error.message : i18nService.t('coworkSpeechStartFailed'),
+          }));
+        });
+        return;
+      }
+
       setSpeechStatus('requesting_permission');
-      void window.electron.speech.start().then((result) => {
+      void window.electron.speech.start({ source: detail.source ?? 'wake' }).then((result) => {
         if (!result.success) {
           setSpeechStatus('idle');
           wakeDictationConfigRef.current = null;
@@ -472,7 +699,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     return () => {
       window.removeEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
     };
-  }, [disabled, isMac, isStreaming, speechStatus, speechVisible]);
+  }, [disabled, isCloudRecordedSpeechProvider, isMac, isStreaming, speechStatus, speechVisible, startCloudSpeechRecordingForCurrentProvider]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -565,6 +792,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
 
     switch (code) {
+      case SpeechErrorCode.SpeechProcessInterrupted:
+      case SpeechErrorCode.SpeechProcessInvalidated:
+        return i18nService.t('coworkSpeechInterrupted');
+      case SpeechErrorCode.SpeechNoMatch:
+        return i18nService.t('coworkSpeechNoMatch');
       case SpeechErrorCode.RecognizerUnavailable:
         return i18nService.t('coworkSpeechRecognizerUnavailable');
       case SpeechErrorCode.AlreadyListening:
@@ -587,15 +819,32 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }
 
   const handleSpeechToggle = useCallback(async () => {
-    if (!isMac || !speechVisible || disabled || isStreaming) {
-      if (isMac && !speechVisible) {
+    if (!speechVisible || disabled || isStreaming) {
+      if (!speechVisible) {
         window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkSpeechUnavailable') }));
       }
       return;
     }
 
+    const manualProvider = manualSttProviderRef.current;
+    const speechSource = wakeDictationConfigRef.current?.source ?? 'manual';
+
     if (isSpeechActive) {
       pendingSpeechVoiceCommandRef.current = null;
+      if (isCloudRecordedSpeechProvider(manualProvider) && cloudSpeechRecordingRef.current) {
+        try {
+          await finishCloudSpeechRecording(speechSource === 'follow_up' ? 'follow_up' : 'manual');
+          return;
+        } catch (error) {
+          cloudSpeechRecordingRef.current = null;
+          setSpeechStatus('idle');
+          window.dispatchEvent(new CustomEvent('app:showToast', {
+            detail: error instanceof Error ? error.message : i18nService.t('coworkSpeechRuntimeError'),
+          }));
+          return;
+        }
+      }
+
       const result = await window.electron.speech.stop();
       if (!result.success) {
         window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
@@ -605,13 +854,33 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     speechBaseValueRef.current = valueRef.current;
     pendingSpeechVoiceCommandRef.current = null;
+
+    if (isCloudRecordedSpeechProvider(manualProvider)) {
+      try {
+        await startCloudSpeechRecordingForCurrentProvider();
+      } catch (error) {
+        cloudSpeechRecordingRef.current = null;
+        setSpeechStatus('idle');
+        window.dispatchEvent(new CustomEvent('app:showToast', {
+          detail: error instanceof Error ? error.message : i18nService.t('coworkSpeechStartFailed'),
+        }));
+      }
+      return;
+    }
+
+    if (!isMac || manualProvider !== VoiceProvider.MacosNative) {
+      setSpeechStatus('idle');
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkSpeechUnavailable') }));
+      return;
+    }
+
     setSpeechStatus('requesting_permission');
-    const result = await window.electron.speech.start();
+    const result = await window.electron.speech.start({ source: 'manual' });
     if (!result.success) {
       setSpeechStatus('idle');
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
     }
-  }, [disabled, isMac, isSpeechActive, isStreaming, speechVisible]);
+  }, [disabled, finishCloudSpeechRecording, isCloudRecordedSpeechProvider, isMac, isSpeechActive, isStreaming, speechVisible, startCloudSpeechRecordingForCurrentProvider]);
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;
@@ -920,11 +1189,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           </button>
         </div>
       )}
-      {isMac && speechVisible && speechStatus !== 'idle' && (
+      {speechVisible && speechStatus !== 'idle' && (
         <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs text-primary">
           {speechStatus === 'requesting_permission'
             ? i18nService.t('coworkSpeechRequestingPermission')
-            : i18nService.t('coworkSpeechListening')}
+            : speechStatus === 'transcribing'
+              ? i18nService.t('coworkSpeechTranscribing')
+              : i18nService.t('coworkSpeechListening')}
         </div>
       )}
       <div

@@ -14,66 +14,22 @@ interface ApiStreamResponse {
   error?: string;
 }
 
-interface SpeechAvailability {
-  enabled?: boolean;
-  supported: boolean;
-  platform: string;
-  permission: 'not-determined' | 'denied' | 'granted' | 'restricted' | 'unsupported';
-  speechAuthorization: 'not-determined' | 'denied' | 'granted' | 'restricted' | 'unsupported';
-  microphoneAuthorization: 'not-determined' | 'denied' | 'granted' | 'restricted' | 'unsupported';
-  locale?: string;
-  listening: boolean;
-  error?: string;
-}
-
-interface SpeechStateEvent {
-  type: 'listening' | 'partial' | 'final' | 'stopped' | 'error';
-  text?: string;
-  code?: string;
-  message?: string;
-}
-
-interface WakeInputStatus {
-  enabled: boolean;
-  supported: boolean;
-  platform: string;
-  status: 'disabled' | 'idle' | 'listening' | 'wake_triggered' | 'dictating' | 'cooldown' | 'error';
-  wakeWord: string;
-  submitCommand: string;
-  cancelCommand: string;
-  sessionTimeoutMs: number;
-  listening: boolean;
-  error?: string;
-}
-
-interface WakeInputDictationRequest {
-  submitCommand: string;
-  cancelCommand: string;
-  sessionTimeoutMs: number;
-}
-
-interface TtsAvailability {
-  enabled?: boolean;
-  supported: boolean;
-  platform: string;
-  speaking: boolean;
-  error?: string;
-}
-
-interface TtsVoice {
-  identifier: string;
-  name: string;
-  language: string;
-  quality: 'default' | 'enhanced' | 'premium' | 'personal' | 'unknown';
-  isPersonalVoice: boolean;
-}
-
-interface TtsStateEvent {
-  type: 'idle' | 'speaking' | 'stopped' | 'error';
-  voiceId?: string;
-  code?: string;
-  message?: string;
-}
+type SpeechAvailability = import('../../shared/speech/constants').SpeechAvailability;
+type SpeechStateEvent = import('../../shared/speech/constants').SpeechStateEvent;
+type SpeechTranscribeAudioResult = import('../../shared/speech/constants').SpeechTranscribeAudioResult;
+type WakeInputStatus = import('../../shared/wakeInput/constants').WakeInputStatus;
+type WakeInputDictationRequest = import('../../shared/wakeInput/constants').WakeInputDictationRequest;
+type TtsAvailability = import('../../shared/tts/constants').TtsAvailability;
+type TtsSpeakResult = import('../../shared/tts/constants').TtsSpeakResult;
+type TtsVoice = import('../../shared/tts/constants').TtsVoice;
+type TtsStateEvent = import('../../shared/tts/constants').TtsStateEvent;
+type VoiceCapabilityStatus = import('../../shared/voice/constants').VoiceCapabilityStatus;
+type VoiceProviderStatus = import('../../shared/voice/constants').VoiceProviderStatus;
+type VoiceCapabilityMatrix = import('../../shared/voice/constants').VoiceCapabilityMatrix;
+type VoiceConfig = import('../../shared/voice/constants').VoiceConfig;
+type VoiceLocalWhisperCppStatus = import('../../shared/voice/constants').VoiceLocalWhisperCppStatus;
+type VoiceLocalQwen3TtsStatus = import('../../shared/voice/constants').VoiceLocalQwen3TtsStatus;
+type VoiceLocalModelLibrary = import('../../shared/voice/constants').VoiceLocalModelLibrary;
 
 // Cowork types for IPC
 interface CoworkSession {
@@ -446,22 +402,36 @@ interface IElectronAPI {
     saveInlineFile: (options: { dataBase64: string; fileName?: string; mimeType?: string; cwd?: string }) => Promise<{ success: boolean; path: string | null; error?: string }>;
     readFileAsDataUrl: (filePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
   };
+  voice: {
+    getCapabilityMatrix: () => Promise<VoiceCapabilityMatrix>;
+    getConfig: () => Promise<VoiceConfig>;
+    getLocalWhisperCppStatus: () => Promise<VoiceLocalWhisperCppStatus>;
+    getLocalQwen3TtsStatus: () => Promise<VoiceLocalQwen3TtsStatus>;
+    ensureLocalWhisperCppDirectories: () => Promise<{ success: boolean; status?: VoiceLocalWhisperCppStatus; error?: string }>;
+    getLocalModelLibrary: () => Promise<VoiceLocalModelLibrary>;
+    installLocalModel: (modelId: string) => Promise<{ success: boolean; library?: VoiceLocalModelLibrary; error?: string }>;
+    cancelLocalModelInstall: (modelId: string) => Promise<{ success: boolean; library?: VoiceLocalModelLibrary; error?: string }>;
+    updateConfig: (config: Partial<VoiceConfig>) => Promise<{ success: boolean; config?: VoiceConfig; matrix?: VoiceCapabilityMatrix; error?: string }>;
+    onCapabilityChanged: (callback: (data: VoiceCapabilityMatrix) => void) => () => void;
+    onLocalModelLibraryChanged: (callback: (data: VoiceLocalModelLibrary) => void) => () => void;
+  };
   speech: {
     getAvailability: () => Promise<SpeechAvailability>;
-    start: (options?: { locale?: string }) => Promise<{ success: boolean; error?: string }>;
+    start: (options?: { locale?: string; source?: 'manual' | 'wake' | 'follow_up' }) => Promise<{ success: boolean; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
+    transcribeAudio: (options: { audioBase64: string; mimeType: string; source?: 'manual' | 'wake' | 'follow_up' }) => Promise<SpeechTranscribeAudioResult>;
     onStateChanged: (callback: (data: SpeechStateEvent) => void) => () => void;
   };
   wakeInput: {
     getStatus: () => Promise<WakeInputStatus>;
-    updateConfig: (config: Partial<WakeInputStatus>) => Promise<{ success: boolean; status?: WakeInputStatus; error?: string }>;
+    updateConfig: (config: Partial<import('../../shared/wakeInput/constants').WakeInputConfig>) => Promise<{ success: boolean; status?: WakeInputStatus; error?: string }>;
     onStateChanged: (callback: (data: WakeInputStatus) => void) => () => void;
     onDictationRequested: (callback: (data: WakeInputDictationRequest) => void) => () => void;
   };
   tts: {
     getAvailability: () => Promise<TtsAvailability>;
     getVoices: () => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
-    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => Promise<{ success: boolean; error?: string }>;
+    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => Promise<TtsSpeakResult>;
     stop: () => Promise<{ success: boolean; error?: string }>;
     onStateChanged: (callback: (data: TtsStateEvent) => void) => () => void;
   };

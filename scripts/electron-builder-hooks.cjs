@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { existsSync, readdirSync, statSync, mkdirSync, readFileSync, rmSync, cpSync, lstatSync } = require('fs');
+const { existsSync, readdirSync, statSync, mkdirSync, readFileSync, rmSync, cpSync, lstatSync, writeFileSync } = require('fs');
 const { spawnSync } = require('child_process');
 const asar = require('@electron/asar');
 const { ensurePortablePythonRuntime, checkRuntimeHealth } = require('./setup-python-runtime.js');
@@ -9,6 +9,37 @@ const { syncLocalOpenClawExtensions } = require('./sync-local-openclaw-extension
 const { packMultipleSources } = require('./pack-openclaw-tar.cjs');
 const { buildMacosSpeechHelper } = require('./build-macos-speech-helper.cjs');
 const { buildMacosTtsHelper } = require('./build-macos-tts-helper.cjs');
+const VOICE_MANIFEST_NAME = 'voice-capabilities.json';
+const VOICE_MANIFEST_SCHEMA_VERSION = 1;
+const VOICE_GENERATED_DIR = path.join(__dirname, '..', 'build', 'generated', 'voice-capabilities');
+const MACOS_VOICE_GENERATED_DIR = path.join(__dirname, '..', 'build', 'generated', 'macos-speech');
+const LOCAL_WHISPER_CPP_GENERATED_DIR = path.join(__dirname, '..', 'build', 'generated', 'local-whisper-cpp');
+const MACOS_SPEECH_HELPER_NAME = 'MacSpeechHelper';
+const MACOS_TTS_HELPER_NAME = 'MacTtsHelper';
+const LOCAL_WHISPER_CPP_MODELS_DIR = path.join(LOCAL_WHISPER_CPP_GENERATED_DIR, 'models');
+
+function resolveLocalWhisperBinaryName() {
+  return process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+}
+
+function inspectLocalWhisperCppPackagedAssets() {
+  const binaryPath = path.join(LOCAL_WHISPER_CPP_GENERATED_DIR, 'bin', resolveLocalWhisperBinaryName());
+  const binaryExists = existsSync(binaryPath);
+  const modelExists = existsSync(LOCAL_WHISPER_CPP_MODELS_DIR)
+    && readdirSync(LOCAL_WHISPER_CPP_MODELS_DIR).some((entry) => entry.endsWith('.bin'));
+
+  return {
+    binaryPath,
+    binaryExists,
+    modelExists,
+    packaged: binaryExists && modelExists,
+  };
+}
+
+function ensureLocalWhisperCppGeneratedDirs() {
+  mkdirSync(path.join(LOCAL_WHISPER_CPP_GENERATED_DIR, 'bin'), { recursive: true });
+  mkdirSync(LOCAL_WHISPER_CPP_MODELS_DIR, { recursive: true });
+}
 
 function isWindowsTarget(context) {
   return context?.electronPlatformName === 'win32';
@@ -58,6 +89,160 @@ function readRuntimeBuildInfo(runtimeRoot) {
   }
 }
 
+function resolveMacosVoiceHelperPaths(targetArch) {
+  return {
+    generatedDir: MACOS_VOICE_GENERATED_DIR,
+    speechHelperPath: path.join(MACOS_VOICE_GENERATED_DIR, MACOS_SPEECH_HELPER_NAME),
+    ttsHelperPath: path.join(MACOS_VOICE_GENERATED_DIR, MACOS_TTS_HELPER_NAME),
+    targetArch,
+  };
+}
+
+function ensureMacosVoiceHelpersExist(targetArch) {
+  const { speechHelperPath, ttsHelperPath } = resolveMacosVoiceHelperPaths(targetArch);
+  const missing = [];
+
+  if (!existsSync(speechHelperPath)) {
+    missing.push(speechHelperPath);
+  }
+  if (!existsSync(ttsHelperPath)) {
+    missing.push(ttsHelperPath);
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      '[electron-builder-hooks] macOS voice helpers are missing for packaging. Missing: ' + missing.join(', ')
+      + '. Run `npm run build:macos-speech-helper` before packaging.'
+    );
+  }
+}
+
+function buildVoiceCapabilityManifest(context) {
+  const platform = context?.electronPlatformName || process.platform;
+  const arch = resolveTargetArch(context);
+  const isMac = platform === 'darwin';
+  const localWhisperCppAssets = inspectLocalWhisperCppPackagedAssets();
+
+  if (isMac) {
+    ensureMacosVoiceHelpersExist(arch);
+  }
+
+  const macosNativeCapabilities = {
+    manual_stt: isMac,
+    wake_input: isMac,
+    follow_up_dictation: isMac,
+    tts: isMac,
+  };
+
+  return {
+    schemaVersion: VOICE_MANIFEST_SCHEMA_VERSION,
+    platform,
+    arch,
+    providers: {
+      macos_native: {
+        packaged: isMac,
+        capabilities: macosNativeCapabilities,
+      },
+      local_whisper_cpp: {
+        packaged: isMac && localWhisperCppAssets.packaged,
+        capabilities: {
+          manual_stt: true,
+          follow_up_dictation: true,
+        },
+      },
+      local_qwen3_tts: {
+        packaged: false,
+        capabilities: {
+          tts: true,
+        },
+      },
+      cloud_openai: {
+        packaged: true,
+        capabilities: {
+          manual_stt: true,
+          follow_up_dictation: true,
+          tts: true,
+        },
+      },
+      cloud_aliyun: {
+        packaged: true,
+        capabilities: {
+          manual_stt: true,
+          follow_up_dictation: true,
+          tts: true,
+        },
+      },
+      cloud_volcengine: {
+        packaged: true,
+        capabilities: {
+          manual_stt: true,
+          follow_up_dictation: true,
+          tts: true,
+        },
+      },
+      cloud_azure: {
+        packaged: true,
+        capabilities: {
+          tts: true,
+        },
+      },
+      cloud_custom: {
+        packaged: false,
+        capabilities: {},
+      },
+    },
+    capabilities: {
+      manual_stt: macosNativeCapabilities.manual_stt,
+      wake_input: macosNativeCapabilities.wake_input,
+      follow_up_dictation: macosNativeCapabilities.follow_up_dictation,
+      tts: macosNativeCapabilities.tts,
+    },
+  };
+}
+
+function writeVoiceCapabilityManifest(context) {
+  mkdirSync(VOICE_GENERATED_DIR, { recursive: true });
+  const manifestPath = path.join(VOICE_GENERATED_DIR, VOICE_MANIFEST_NAME);
+  const manifest = buildVoiceCapabilityManifest(context);
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  console.log(`[electron-builder-hooks] Wrote voice capability manifest: ${manifestPath}`);
+  return manifestPath;
+}
+
+function verifyPackagedVoiceManifest(context) {
+  const appName = context.packager.appInfo.productFilename;
+  const manifestPath = isMacTarget(context)
+    ? path.join(context.appOutDir, `${appName}.app`, 'Contents', 'Resources', VOICE_MANIFEST_NAME)
+    : path.join(context.appOutDir, 'resources', VOICE_MANIFEST_NAME);
+
+  if (!existsSync(manifestPath)) {
+    throw new Error(`[electron-builder-hooks] Packaged voice capability manifest is missing: ${manifestPath}`);
+  }
+}
+
+function verifyPackagedLocalWhisperCppResources(context) {
+  if (!isMacTarget(context)) {
+    return;
+  }
+
+  const appName = context.packager.appInfo.productFilename;
+  const baseDir = path.join(context.appOutDir, `${appName}.app`, 'Contents', 'Resources', 'local-whisper-cpp');
+  const binaryPath = path.join(baseDir, 'bin', resolveLocalWhisperBinaryName());
+  const modelsDir = path.join(baseDir, 'models');
+  const binaryExists = existsSync(binaryPath);
+  const modelExists = existsSync(modelsDir) && readdirSync(modelsDir).some((entry) => entry.endsWith('.bin'));
+
+  if (!binaryExists && !modelExists) {
+    return;
+  }
+
+  if (!binaryExists || !modelExists) {
+    throw new Error(
+      '[electron-builder-hooks] Packaged local whisper.cpp resources are incomplete. '
+      + `binary=${binaryExists ? 'yes' : 'no'} model=${modelExists ? 'yes' : 'no'}`
+    );
+  }
+}
 function getOpenClawRuntimeBuildHint(targetId) {
   if (!targetId) {
     return 'npm run openclaw:runtime:host';
@@ -334,6 +519,39 @@ function applyMacIconFix(appPath) {
   console.log('[electron-builder-hooks] ✓ macOS icon fix applied');
 }
 
+function adHocSignMacApp(appPath) {
+  const result = spawnSync('codesign', [
+    '--force',
+    '--deep',
+    '--sign',
+    '-',
+    appPath,
+  ], { encoding: 'utf-8' });
+
+  if (result.status !== 0) {
+    throw new Error(
+      '[electron-builder-hooks] Failed to ad-hoc sign macOS app bundle. '
+      + (result.stderr || result.stdout || 'Unknown codesign error')
+    );
+  }
+
+  const verifyResult = spawnSync('codesign', [
+    '--verify',
+    '--deep',
+    '--strict',
+    appPath,
+  ], { encoding: 'utf-8' });
+
+  if (verifyResult.status !== 0) {
+    throw new Error(
+      '[electron-builder-hooks] Ad-hoc signed macOS app bundle failed verification. '
+      + (verifyResult.stderr || verifyResult.stdout || 'Unknown verification error')
+    );
+  }
+
+  console.log('[electron-builder-hooks] ✓ macOS app bundle ad-hoc signed');
+}
+
 /**
  * Remove broken symlinks from a directory recursively.
  * This fixes macOS code signing failures caused by dangling symlinks in node_modules/.bin
@@ -486,12 +704,13 @@ function installSkillDependencies() {
 
 async function beforePack(context) {
   ensureBundledOpenClawRuntime(context);
+  ensureLocalWhisperCppGeneratedDirs();
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();
 
   if (isMacTarget(context)) {
-    const generatedDir = path.join(__dirname, '..', 'build', 'generated', 'macos-speech');
     const targetArch = resolveTargetArch(context);
+    const { generatedDir } = resolveMacosVoiceHelperPaths(targetArch);
     const helperPath = buildMacosSpeechHelper({
       arch: targetArch,
       outputDir: generatedDir,
@@ -502,6 +721,7 @@ async function beforePack(context) {
       outputDir: generatedDir,
     });
     console.log(`[electron-builder-hooks] Built macOS TTS helper for ${targetArch}: ${ttsHelperPath}`);
+    ensureMacosVoiceHelpersExist(targetArch);
   }
 
   if (isWindowsTarget(context)) {
@@ -546,6 +766,8 @@ async function beforePack(context) {
     );
   }
 
+  writeVoiceCapabilityManifest(context);
+
   if (!isWindowsTarget(context)) {
     return;
   }
@@ -564,6 +786,9 @@ async function beforePack(context) {
 }
 
 async function afterPack(context) {
+  verifyPackagedVoiceManifest(context);
+  verifyPackagedLocalWhisperCppResources(context);
+
   if (isMacTarget(context)) {
     const appName = context.packager.appInfo.productFilename;
     const appPath = path.join(context.appOutDir, `${appName}.app`);
@@ -572,6 +797,7 @@ async function afterPack(context) {
       // Clean up broken symlinks before signing to prevent ENOENT errors
       cleanupBrokenSymlinksInExtensions(appPath);
       applyMacIconFix(appPath);
+      adHocSignMacApp(appPath);
     } else {
       console.warn(`[electron-builder-hooks] App not found at ${appPath}, skipping icon fix`);
     }
