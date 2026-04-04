@@ -23,6 +23,8 @@ export interface WakeInputConfig {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  activationReplyEnabled: boolean;
+  activationReplyText: string;
 }
 
 export interface WakeInputStatus {
@@ -35,6 +37,8 @@ export interface WakeInputStatus {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  activationReplyEnabled: boolean;
+  activationReplyText: string;
   listening: boolean;
   error?: string;
 }

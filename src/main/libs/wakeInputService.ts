@@ -162,6 +162,8 @@ export class WakeInputService extends EventEmitter {
       cancelCommand: this.config.cancelCommand,
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       autoRestartAfterReply: this.config.autoRestartAfterReply,
+      activationReplyEnabled: this.config.activationReplyEnabled,
+      activationReplyText: this.config.activationReplyText,
       listening: false,
     };
   }
@@ -205,6 +207,8 @@ export class WakeInputService extends EventEmitter {
       cancelCommand: this.config.cancelCommand,
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       autoRestartAfterReply: this.config.autoRestartAfterReply,
+      activationReplyEnabled: this.config.activationReplyEnabled,
+      activationReplyText: this.config.activationReplyText,
       status,
       listening: this.speechListening,
       ...(error ? { error } : { error: undefined }),

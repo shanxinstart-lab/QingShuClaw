@@ -93,6 +93,8 @@ import {
 } from '../common/auth';
 import { MacSpeechService, broadcastSpeechState } from './libs/macSpeechService';
 import { MacTtsService, broadcastTtsState } from './libs/macTtsService';
+import { EdgeTtsService } from './libs/edgeTtsService';
+import { TtsRouterService } from './libs/ttsRouterService';
 import {
   resolveForegroundSpeechRetryDelayMs,
   shouldRetryForegroundSpeech,
@@ -117,6 +119,8 @@ import {
 } from '../shared/wakeInput/constants';
 import {
   TtsIpcChannel,
+  TtsEngine,
+  type TtsPrepareOptions,
   type TtsSpeakOptions,
 } from '../shared/tts/constants';
 
@@ -1707,6 +1711,14 @@ type AppConfigSettings = {
     autoRestartAfterReply?: boolean;
   };
   wakeInput?: Partial<WakeInputConfig>;
+  tts?: {
+    enabled?: boolean;
+    autoPlayAssistantReply?: boolean;
+    engine?: TtsEngine;
+    voiceId?: string;
+    rate?: number;
+    volume?: number;
+  };
 };
 
 const DEFAULT_SPEECH_INPUT_CONFIG = {
@@ -1722,6 +1734,25 @@ const DEFAULT_WAKE_INPUT_CONFIG: WakeInputConfig = {
   cancelCommand: '取消',
   sessionTimeoutMs: 20_000,
   autoRestartAfterReply: false,
+  activationReplyEnabled: false,
+  activationReplyText: '在的',
+};
+type MainTtsConfig = {
+  enabled: boolean;
+  autoPlayAssistantReply: boolean;
+  engine: TtsEngine;
+  voiceId: string;
+  rate: number;
+  volume: number;
+};
+
+const DEFAULT_TTS_CONFIG: MainTtsConfig = {
+  enabled: true,
+  autoPlayAssistantReply: false,
+  engine: TtsEngine.MacOsNative,
+  voiceId: '',
+  rate: 0.5,
+  volume: 1,
 };
 const FOREGROUND_SPEECH_RETRY_DELAY_MS = 180;
 
@@ -1756,6 +1787,16 @@ const mergeWakeInputConfig = (
     ),
   };
 };
+
+const mergeTtsConfig = (
+  config?: AppConfigSettings['tts']
+): MainTtsConfig => ({
+  ...DEFAULT_TTS_CONFIG,
+  ...(config ?? {}),
+  engine: Object.values(TtsEngine).includes(config?.engine as TtsEngine)
+    ? (config?.engine as TtsEngine)
+    : DEFAULT_TTS_CONFIG.engine,
+});
 
 let foregroundSpeechOrigin: ForegroundSpeechOrigin | null = null;
 let foregroundSpeechStartOptions: SpeechStartOptions | null = null;
@@ -1970,6 +2011,20 @@ const wakeInputService = new WakeInputService({
   },
 });
 const macTtsService = new MacTtsService();
+const edgeTtsService = new EdgeTtsService();
+const ttsRouterService = new TtsRouterService(
+  macTtsService,
+  edgeTtsService,
+  () => mergeTtsConfig(getStore().get<AppConfigSettings>('app_config')?.tts),
+);
+
+const getWakeActivationReplyConfig = (): { enabled: boolean; text: string } => {
+  const wakeInputConfig = mergeWakeInputConfig(getStore().get<AppConfigSettings>('app_config')?.wakeInput);
+  return {
+    enabled: wakeInputConfig.activationReplyEnabled,
+    text: wakeInputConfig.activationReplyText.trim(),
+  };
+};
 
 const showMainWindow = (): void => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -2018,17 +2073,53 @@ const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
   mainWindow.webContents.send('app:focusCoworkInput', { clear: options?.clear === true });
 };
 
+const resolveWakeActivationReplyTimeoutMs = (text: string): number => {
+  return Math.min(6_000, Math.max(2_000, 1_200 + text.length * 220));
+};
+
+const dispatchWakeDictationRequest = (request: WakeInputDictationRequest): void => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
+  }
+};
+
+const maybeSpeakWakeActivationReply = async (): Promise<void> => {
+  const ttsConfig = mergeTtsConfig(getStore().get<AppConfigSettings>('app_config')?.tts);
+  const wakeReplyConfig = getWakeActivationReplyConfig();
+  if (!ttsConfig.enabled || !wakeReplyConfig.enabled || !wakeReplyConfig.text) {
+    return;
+  }
+
+  await ttsRouterService.stop();
+  const replyResult = await ttsRouterService.speakAndAwaitCompletion(
+    {
+      text: wakeReplyConfig.text,
+      voiceId: ttsConfig.voiceId,
+      rate: ttsConfig.rate,
+      volume: ttsConfig.volume,
+    },
+    {
+      allowPrepare: false,
+      timeoutMs: resolveWakeActivationReplyTimeoutMs(wakeReplyConfig.text),
+    },
+  );
+  if (!replyResult.success) {
+    console.warn(
+      '[WakeInput] Failed to play wake activation reply, continuing with dictation.',
+      JSON.stringify({ error: replyResult.error }),
+    );
+  }
+};
+
 const triggerSpeechFollowUpDictation = (request: WakeInputDictationRequest): void => {
   console.log('[SpeechFollowUp] Triggering follow-up dictation restart.');
-  void macTtsService.stop();
+  void ttsRouterService.stop();
   showMainWindow();
   focusCoworkInputInMainWindow({ clear: false });
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, {
-      ...request,
-      source: 'follow_up',
-    } satisfies WakeInputDictationRequest);
-  }
+  dispatchWakeDictationRequest({
+    ...request,
+    source: 'follow_up',
+  } satisfies WakeInputDictationRequest);
 };
 
 wakeInputService.on('stateChanged', (status) => {
@@ -2043,9 +2134,12 @@ wakeInputService.on('dictationRequested', (request) => {
   console.log('[WakeInput] Wake phrase matched, requesting dictation and showing the main window.');
   showMainWindow();
   focusCoworkInputInMainWindow({ clear: false });
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
-  }
+  void (async () => {
+    if (request.source === 'wake') {
+      await maybeSpeakWakeActivationReply();
+    }
+    dispatchWakeDictationRequest(request);
+  })();
 });
 
 macSpeechService.onStateChanged((event) => {
@@ -2118,7 +2212,7 @@ macSpeechService.onStateChanged((event) => {
   broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
 });
 
-macTtsService.on('stateChanged', (event) => {
+ttsRouterService.on('stateChanged', (event) => {
   broadcastTtsState(BrowserWindow.getAllWindows(), TtsIpcChannel.StateChanged, event);
 });
 
@@ -4402,24 +4496,28 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle(TtsIpcChannel.GetAvailability, async () => {
-    return macTtsService.getAvailability();
+    return ttsRouterService.getAvailability();
   });
 
   ipcMain.handle(TtsIpcChannel.GetVoices, async () => {
     try {
-      const voices = await macTtsService.getVoices();
+      const voices = await ttsRouterService.getVoices();
       return { success: true, voices };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list TTS voices.' };
     }
   });
 
+  ipcMain.handle(TtsIpcChannel.Prepare, async (_event, options?: TtsPrepareOptions) => {
+    return ttsRouterService.prepare(options);
+  });
+
   ipcMain.handle(TtsIpcChannel.Speak, async (_event, options?: TtsSpeakOptions) => {
-    return macTtsService.speak(options ?? { text: '' });
+    return ttsRouterService.speak(options ?? { text: '' });
   });
 
   ipcMain.handle(TtsIpcChannel.Stop, async () => {
-    return macTtsService.stop();
+    return ttsRouterService.stop();
   });
 
   // Shell handlers - 打开文件/文件夹
@@ -4933,7 +5031,7 @@ if (!gotTheLock) {
 
     stopOpenClawTokenProxy();
     macSpeechService.dispose();
-    macTtsService.dispose();
+    ttsRouterService.dispose();
 
     // Stop skill services.
     const skillServices = getSkillServiceManager();
@@ -5265,6 +5363,12 @@ if (!gotTheLock) {
     wakeInputService.updateConfig(wakeInputConfig);
     await syncWakeInputAvailabilityFromSpeech();
     await wakeInputService.startBackgroundListening();
+    const initialTtsConfig = mergeTtsConfig(appConfig?.tts);
+    if (initialTtsConfig.engine === TtsEngine.EdgeTts) {
+      void ttsRouterService.prepare({ engine: TtsEngine.EdgeTts }).catch((error) => {
+        console.error('[TtsRouterService] Failed to prepare edge-tts during app init:', error);
+      });
+    }
 
     // 设置安全策略
     setContentSecurityPolicy();
@@ -5324,6 +5428,7 @@ if (!gotTheLock) {
     let lastLanguage = getStore().get<AppConfigSettings>('app_config')?.language;
     let lastUseSystemProxy = getUseSystemProxyFromConfig(getStore().get<AppConfigSettings>('app_config'));
     let lastWakeInputConfig = JSON.stringify(mergeWakeInputConfig(getStore().get<AppConfigSettings>('app_config')?.wakeInput));
+    let lastTtsConfig = JSON.stringify(mergeTtsConfig(getStore().get<AppConfigSettings>('app_config')?.tts));
     getStore().onDidChange<AppConfigSettings>('app_config', (newConfig, oldConfig) => {
       updateTitleBarOverlay();
       // 仅在语言变更时刷新托盘菜单文本
@@ -5353,6 +5458,15 @@ if (!gotTheLock) {
         wakeInputService.updateConfig(mergeWakeInputConfig(newConfig?.wakeInput));
         void syncWakeInputAvailabilityFromSpeech().then(() => wakeInputService.startBackgroundListening()).catch((error) => {
           console.error('[WakeInput] Failed to refresh availability after config change:', error);
+        });
+      }
+
+      const currentTtsConfig = JSON.stringify(mergeTtsConfig(newConfig?.tts));
+      if (currentTtsConfig !== lastTtsConfig) {
+        lastTtsConfig = currentTtsConfig;
+        const mergedTtsConfig = mergeTtsConfig(newConfig?.tts);
+        void ttsRouterService.prepare({ engine: mergedTtsConfig.engine }).catch((error) => {
+          console.error('[TtsRouterService] Failed to refresh TTS availability after config change:', error);
         });
       }
     });

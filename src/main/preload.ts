@@ -331,6 +331,7 @@ contextBridge.exposeInMainWorld('electron', {
   tts: {
     getAvailability: () => ipcRenderer.invoke(TtsIpcChannel.GetAvailability),
     getVoices: () => ipcRenderer.invoke(TtsIpcChannel.GetVoices),
+    prepare: (options?: { engine?: 'macos_native' | 'edge_tts'; force?: boolean }) => ipcRenderer.invoke(TtsIpcChannel.Prepare, options),
     speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
     stop: () => ipcRenderer.invoke(TtsIpcChannel.Stop),
     onStateChanged: (callback: (data: Record<string, unknown>) => void) => {

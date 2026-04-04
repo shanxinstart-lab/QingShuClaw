@@ -54,6 +54,8 @@ interface WakeInputStatus {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  activationReplyEnabled: boolean;
+  activationReplyText: string;
   listening: boolean;
   error?: string;
 }
@@ -65,6 +67,8 @@ interface WakeInputConfig {
   cancelCommand: string;
   sessionTimeoutMs: number;
   autoRestartAfterReply: boolean;
+  activationReplyEnabled: boolean;
+  activationReplyText: string;
 }
 
 interface WakeInputDictationRequest {
@@ -80,6 +84,9 @@ interface TtsAvailability {
   supported: boolean;
   platform: string;
   speaking: boolean;
+  currentEngine: 'macos_native' | 'edge_tts';
+  availableEngines: Array<'macos_native' | 'edge_tts'>;
+  prepareStatus: 'idle' | 'installing' | 'ready' | 'error';
   error?: string;
 }
 
@@ -89,13 +96,15 @@ interface TtsVoice {
   language: string;
   quality: 'default' | 'enhanced' | 'premium' | 'personal' | 'unknown';
   isPersonalVoice: boolean;
+  engine: 'macos_native' | 'edge_tts';
 }
 
 interface TtsStateEvent {
-  type: 'idle' | 'speaking' | 'stopped' | 'error';
+  type: 'idle' | 'speaking' | 'stopped' | 'error' | 'availability';
   voiceId?: string;
   code?: string;
   message?: string;
+  availability?: TtsAvailability;
 }
 
 // Cowork types for IPC
@@ -489,6 +498,7 @@ interface IElectronAPI {
   tts: {
     getAvailability: () => Promise<TtsAvailability>;
     getVoices: () => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
+    prepare: (options?: { engine?: 'macos_native' | 'edge_tts'; force?: boolean }) => Promise<{ success: boolean; error?: string }>;
     speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => Promise<{ success: boolean; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
     onStateChanged: (callback: (data: TtsStateEvent) => void) => () => void;

@@ -1,6 +1,8 @@
 import { test, expect } from 'vitest';
 import {
+  DEFAULT_TTS_CONFIG,
   DEFAULT_VOICE_POST_PROCESS_CONFIG,
+  DEFAULT_WAKE_INPUT_CONFIG,
   isCustomProvider,
   getCustomProviderDefaultName,
   getProviderDisplayName,
@@ -84,4 +86,13 @@ test('DEFAULT_VOICE_POST_PROCESS_CONFIG: all new voice post-process toggles are 
     ttsLlmRewriteEnabled: false,
     ttsSkipKeywords: [],
   });
+});
+
+test('DEFAULT_WAKE_INPUT_CONFIG: wake activation reply stays off by default', () => {
+  expect(DEFAULT_WAKE_INPUT_CONFIG.activationReplyEnabled).toBe(false);
+  expect(DEFAULT_WAKE_INPUT_CONFIG.activationReplyText).toBe('在的');
+});
+
+test('DEFAULT_TTS_CONFIG: macOS native engine remains the default engine', () => {
+  expect(DEFAULT_TTS_CONFIG.engine).toBe('macos_native');
 });

@@ -1,6 +1,7 @@
 import type { AuthConfig } from '../common/auth';
 import { DEFAULT_AUTH_CONFIG } from '../common/auth';
 import { ProviderRegistry } from '../shared/providers';
+import { TtsEngine } from '../shared/tts/constants';
 import type { WakeInputConfig } from '../shared/wakeInput/constants';
 
 export interface VoicePostProcessConfig {
@@ -248,6 +249,7 @@ export interface AppConfig {
   tts?: {
     enabled: boolean;
     autoPlayAssistantReply: boolean;
+    engine: TtsEngine;
     voiceId: string;
     rate: number;
     volume: number;
@@ -270,11 +272,14 @@ export const DEFAULT_WAKE_INPUT_CONFIG: NonNullable<AppConfig['wakeInput']> = {
   cancelCommand: '取消',
   sessionTimeoutMs: 20_000,
   autoRestartAfterReply: false,
+  activationReplyEnabled: false,
+  activationReplyText: '在的',
 };
 
 export const DEFAULT_TTS_CONFIG: NonNullable<AppConfig['tts']> = {
   enabled: true,
   autoPlayAssistantReply: false,
+  engine: TtsEngine.MacOsNative,
   voiceId: '',
   rate: 0.5,
   volume: 1,

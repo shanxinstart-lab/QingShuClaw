@@ -30,7 +30,7 @@ import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
 import type { WakeInputStatus } from '../../shared/wakeInput/constants';
-import type { TtsVoice } from '../../shared/tts/constants';
+import { TtsEngine, TtsPrepareStatus, type TtsAvailability, type TtsVoice } from '../../shared/tts/constants';
 import {
   DEFAULT_SPEECH_INPUT_CONFIG,
   DEFAULT_TTS_CONFIG,
@@ -492,9 +492,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [wakeInputWakeWordsText, setWakeInputWakeWordsText] = useState(stringifyWakeWords(DEFAULT_WAKE_INPUT_CONFIG.wakeWords));
   const [wakeInputSubmitCommand, setWakeInputSubmitCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
   const [wakeInputCancelCommand, setWakeInputCancelCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
+  const [wakeInputActivationReplyEnabled, setWakeInputActivationReplyEnabled] = useState(DEFAULT_WAKE_INPUT_CONFIG.activationReplyEnabled);
+  const [wakeInputActivationReplyText, setWakeInputActivationReplyText] = useState(DEFAULT_WAKE_INPUT_CONFIG.activationReplyText);
   const [wakeInputStatus, setWakeInputStatus] = useState<WakeInputStatus | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(DEFAULT_TTS_CONFIG.enabled);
   const [ttsAutoPlayAssistantReply, setTtsAutoPlayAssistantReply] = useState(DEFAULT_TTS_CONFIG.autoPlayAssistantReply);
+  const [ttsEngine, setTtsEngine] = useState(DEFAULT_TTS_CONFIG.engine);
   const [ttsVoiceId, setTtsVoiceId] = useState(DEFAULT_TTS_CONFIG.voiceId);
   const [ttsRate, setTtsRate] = useState(DEFAULT_TTS_CONFIG.rate);
   const [ttsVolume, setTtsVolume] = useState(DEFAULT_TTS_CONFIG.volume);
@@ -502,6 +505,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [ttsLlmRewriteEnabled, setTtsLlmRewriteEnabled] = useState(DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsLlmRewriteEnabled);
   const [ttsSkipKeywordsText, setTtsSkipKeywordsText] = useState(DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsSkipKeywords.join('\n'));
   const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
+  const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
   const [qtbApiBaseUrl, setQtbApiBaseUrl] = useState(DEFAULT_QTB_API_BASE_URL);
   const [qtbWebBaseUrl, setQtbWebBaseUrl] = useState(DEFAULT_QTB_WEB_BASE_URL);
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
@@ -705,8 +709,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setWakeInputWakeWordsText(stringifyWakeWords(config.wakeInput?.wakeWords ?? DEFAULT_WAKE_INPUT_CONFIG.wakeWords));
       setWakeInputSubmitCommand(config.wakeInput?.submitCommand ?? DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
       setWakeInputCancelCommand(config.wakeInput?.cancelCommand ?? DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
+      setWakeInputActivationReplyEnabled(config.wakeInput?.activationReplyEnabled ?? DEFAULT_WAKE_INPUT_CONFIG.activationReplyEnabled);
+      setWakeInputActivationReplyText(config.wakeInput?.activationReplyText ?? DEFAULT_WAKE_INPUT_CONFIG.activationReplyText);
       setTtsEnabled(config.tts?.enabled ?? DEFAULT_TTS_CONFIG.enabled);
       setTtsAutoPlayAssistantReply(config.tts?.autoPlayAssistantReply ?? DEFAULT_TTS_CONFIG.autoPlayAssistantReply);
+      setTtsEngine(config.tts?.engine ?? DEFAULT_TTS_CONFIG.engine);
       setTtsVoiceId(config.tts?.voiceId ?? DEFAULT_TTS_CONFIG.voiceId);
       setTtsRate(config.tts?.rate ?? DEFAULT_TTS_CONFIG.rate);
       setTtsVolume(config.tts?.volume ?? DEFAULT_TTS_CONFIG.volume);
@@ -926,6 +933,28 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     }
 
     let active = true;
+    const refreshTtsAvailability = async (): Promise<void> => {
+      try {
+        const availability = await window.electron.tts.getAvailability();
+        if (active) {
+          setTtsAvailability(availability);
+        }
+      } catch (error) {
+        console.error('Failed to load TTS availability:', error);
+      }
+    };
+
+    const refreshTtsVoices = async (): Promise<void> => {
+      try {
+        const result = await window.electron.tts.getVoices();
+        if (active) {
+          setTtsVoices(result.success && result.voices ? result.voices : []);
+        }
+      } catch (error) {
+        console.error('Failed to load TTS voices:', error);
+      }
+    };
+
     void window.electron.wakeInput.getStatus().then((status) => {
       if (active) {
         setWakeInputStatus(status);
@@ -934,25 +963,67 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       console.error('Failed to load wake input status:', error);
     });
 
-    void window.electron.tts.getVoices().then((result) => {
-      if (active && result.success && result.voices) {
-        setTtsVoices(result.voices);
-      }
-    }).catch((error) => {
-      console.error('Failed to load TTS voices:', error);
-    });
+    void refreshTtsAvailability();
+    void refreshTtsVoices();
 
     const unsubscribeWakeInput = window.electron.wakeInput.onStateChanged((status) => {
       if (active) {
         setWakeInputStatus(status);
       }
     });
+    const unsubscribeTts = window.electron.tts.onStateChanged((event) => {
+      if (!active) {
+        return;
+      }
+      if (event.availability) {
+        setTtsAvailability(event.availability);
+      }
+      if (event.type === 'availability') {
+        void refreshTtsVoices();
+      }
+    });
 
     return () => {
       active = false;
       unsubscribeWakeInput();
+      unsubscribeTts();
     };
   }, [isMac]);
+
+  useEffect(() => {
+    if (!isMac) {
+      return;
+    }
+    let active = true;
+    const syncEdgeTtsSelection = async (): Promise<void> => {
+      if (ttsEngine === TtsEngine.EdgeTts) {
+        const prepareResult = await window.electron.tts.prepare({ engine: TtsEngine.EdgeTts });
+        if (!prepareResult.success) {
+          console.warn('[Settings] Failed to prepare edge-tts after engine selection:', prepareResult.error);
+        }
+      }
+      const [availability, voicesResult] = await Promise.all([
+        window.electron.tts.getAvailability(),
+        window.electron.tts.getVoices(),
+      ]);
+      if (!active) {
+        return;
+      }
+      setTtsAvailability(availability);
+      setTtsVoices(voicesResult.success && voicesResult.voices ? voicesResult.voices : []);
+      if (ttsVoiceId && !(voicesResult.voices ?? []).some((voice) => voice.identifier === ttsVoiceId)) {
+        setTtsVoiceId('');
+      }
+    };
+
+    void syncEdgeTtsSelection().catch((error) => {
+      console.error('Failed to sync edge-tts selection state:', error);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [isMac, ttsEngine]);
 
   useEffect(() => {
     return () => {
@@ -1612,10 +1683,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           cancelCommand: normalizedWakeCancelCommand,
           sessionTimeoutMs: DEFAULT_WAKE_INPUT_CONFIG.sessionTimeoutMs,
           autoRestartAfterReply: DEFAULT_WAKE_INPUT_CONFIG.autoRestartAfterReply,
+          activationReplyEnabled: wakeInputActivationReplyEnabled,
+          activationReplyText: wakeInputActivationReplyText.trim() || DEFAULT_WAKE_INPUT_CONFIG.activationReplyText,
         },
         tts: {
           enabled: ttsEnabled,
           autoPlayAssistantReply: ttsAutoPlayAssistantReply,
+          engine: ttsEngine,
           voiceId: ttsVoiceId,
           rate: ttsRate,
           volume: ttsVolume,
@@ -1645,6 +1719,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         apiKey: primaryProvider.apiKey,
         baseUrl: primaryProvider.baseUrl,
       });
+
+      if (isMac) {
+        void window.electron.tts.prepare({ engine: ttsEngine }).catch((ttsPrepareError) => {
+          console.error('Failed to refresh TTS engine after saving settings:', ttsPrepareError);
+        });
+      }
 
       // 更新 Redux store 中的可用模型列表
       const allModels: { id: string; name: string; provider?: string; providerKey?: string; supportsImage?: boolean }[] = [];
@@ -2609,6 +2689,43 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                       className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
                     />
                   </label>
+
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <span className="text-sm text-secondary">
+                      {i18nService.t('wakeInputActivationReplyEnabledLabel')}
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={wakeInputActivationReplyEnabled}
+                      onClick={() => setWakeInputActivationReplyEnabled((prev) => !prev)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        wakeInputActivationReplyEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          wakeInputActivationReplyEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
+                  <label className="block">
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('wakeInputActivationReplyTextLabel')}
+                    </div>
+                    <input
+                      type="text"
+                      value={wakeInputActivationReplyText}
+                      onChange={(event) => setWakeInputActivationReplyText(event.target.value)}
+                      placeholder={DEFAULT_WAKE_INPUT_CONFIG.activationReplyText}
+                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                    />
+                    <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('wakeInputActivationReplyTextHint')}
+                    </div>
+                  </label>
                 </div>
               </div>
             )}
@@ -2695,6 +2812,45 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
                   <div>
                     <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t('ttsEngineLabel')}
+                    </div>
+                    <ThemedSelect
+                      id="tts-engine"
+                      value={ttsEngine}
+                      onChange={(value) => setTtsEngine(value as TtsEngine)}
+                      options={[
+                        { value: TtsEngine.MacOsNative, label: i18nService.t('ttsEngineMacOsNative') },
+                        { value: TtsEngine.EdgeTts, label: i18nService.t('ttsEngineEdgeTts') },
+                      ]}
+                    />
+                    <div className="mt-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {i18nService.t(`ttsPrepareStatus_${ttsAvailability?.prepareStatus ?? TtsPrepareStatus.Idle}`)}
+                      {ttsAvailability?.error ? `: ${ttsAvailability.error}` : ''}
+                    </div>
+                    {ttsEngine === TtsEngine.EdgeTts && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void window.electron.tts.prepare({ engine: TtsEngine.EdgeTts, force: true }).then(async () => {
+                            const [availability, voicesResult] = await Promise.all([
+                              window.electron.tts.getAvailability(),
+                              window.electron.tts.getVoices(),
+                            ]);
+                            setTtsAvailability(availability);
+                            setTtsVoices(voicesResult.success && voicesResult.voices ? voicesResult.voices : []);
+                          }).catch((error) => {
+                            console.error('Failed to force-prepare edge-tts:', error);
+                          });
+                        }}
+                        className="mt-2 rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-xs dark:text-claude-darkText text-claude-text hover:bg-black/5 dark:hover:bg-white/5"
+                      >
+                        {i18nService.t('ttsPrepareRetry')}
+                      </button>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
                       {i18nService.t('ttsVoiceLabel')}
                     </div>
                     <ThemedSelect
@@ -2758,7 +2914,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   </label>
 
                   <p className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    {i18nService.t('ttsVoiceHint')}
+                    {ttsEngine === TtsEngine.EdgeTts
+                      ? i18nService.t('ttsEdgeVoiceHint')
+                      : i18nService.t('ttsVoiceHint')}
                   </p>
                 </div>
               </div>

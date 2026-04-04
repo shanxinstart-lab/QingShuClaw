@@ -8,6 +8,7 @@ import {
   defaultConfig,
   isCustomProvider,
 } from '../config';
+import { TtsEngine } from '../../shared/tts/constants';
 import { localStore } from './store';
 
 const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | 'gemini' | null => {
@@ -114,10 +115,17 @@ const mergeWakeInputConfig = (
 
 const mergeTtsConfig = (
   tts?: AppConfig['tts']
-): NonNullable<AppConfig['tts']> => ({
-  ...DEFAULT_TTS_CONFIG,
-  ...(tts ?? {}),
-});
+): NonNullable<AppConfig['tts']> => {
+  const nextEngine: NonNullable<AppConfig['tts']>['engine'] = Object.values(TtsEngine).includes(tts?.engine as TtsEngine)
+    ? (tts?.engine as TtsEngine)
+    : DEFAULT_TTS_CONFIG.engine;
+
+  return {
+    ...DEFAULT_TTS_CONFIG,
+    ...(tts ?? {}),
+    engine: nextEngine,
+  };
+};
 
 const mergeVoicePostProcessConfig = (
   postProcess?: NonNullable<NonNullable<AppConfig['voice']>['postProcess']>

@@ -4,6 +4,8 @@ import fs from 'fs';
 import { EventEmitter } from 'events';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import {
+  TtsEngine,
+  TtsPrepareStatus,
   TtsStateType,
   type TtsAvailability,
   type TtsSpeakOptions,
@@ -123,6 +125,9 @@ export class MacTtsService extends EventEmitter {
         supported: false,
         platform: process.platform,
         speaking: false,
+        currentEngine: TtsEngine.MacOsNative,
+        availableEngines: [TtsEngine.MacOsNative],
+        prepareStatus: TtsPrepareStatus.Error,
       };
     }
 
@@ -133,6 +138,9 @@ export class MacTtsService extends EventEmitter {
         supported: true,
         platform: process.platform,
         speaking: this.speaking,
+        currentEngine: TtsEngine.MacOsNative,
+        availableEngines: [TtsEngine.MacOsNative, TtsEngine.EdgeTts],
+        prepareStatus: TtsPrepareStatus.Ready,
       };
     } catch (error) {
       return {
@@ -140,6 +148,9 @@ export class MacTtsService extends EventEmitter {
         supported: false,
         platform: process.platform,
         speaking: false,
+        currentEngine: TtsEngine.MacOsNative,
+        availableEngines: [TtsEngine.MacOsNative],
+        prepareStatus: TtsPrepareStatus.Error,
         error: error instanceof Error ? error.message : 'Failed to initialize macOS TTS helper.',
       };
     }
@@ -167,7 +178,12 @@ export class MacTtsService extends EventEmitter {
       return [];
     }
     const response = JSON.parse(line) as HelperVoiceResponse;
-    return Array.isArray(response.voices) ? response.voices : [];
+    return Array.isArray(response.voices)
+      ? response.voices.map((voice) => ({
+          ...voice,
+          engine: TtsEngine.MacOsNative,
+        }))
+      : [];
   }
 
   async speak(options: TtsSpeakOptions): Promise<{ success: boolean; error?: string }> {

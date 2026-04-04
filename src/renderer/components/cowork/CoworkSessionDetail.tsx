@@ -1465,6 +1465,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       if (!active) {
         return;
       }
+      if (event.availability) {
+        setTtsAvailability(event.availability);
+      }
       if (event.type === 'speaking') {
         return;
       }
