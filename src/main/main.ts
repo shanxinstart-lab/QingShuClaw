@@ -93,6 +93,8 @@ import {
 } from '../common/auth';
 import { MacSpeechService, broadcastSpeechState } from './libs/macSpeechService';
 import { MacTtsService, broadcastTtsState } from './libs/macTtsService';
+import { EdgeTtsService } from './libs/edgeTtsService';
+import { TtsRouterService } from './libs/ttsRouterService';
 import { AzureVoiceService } from './libs/azureVoiceService';
 import {
   LocalVoiceModelManager,
@@ -142,9 +144,13 @@ import {
   type WakeInputConfig,
 } from '../shared/wakeInput/constants';
 import {
+  TtsEngine,
+  TtsAssistantReplyPlaybackState,
   TtsIpcChannel,
+  TtsStateType,
   type TtsSpeakResult,
   type TtsSpeakOptions,
+  type TtsAssistantReplyPlaybackReport,
 } from '../shared/tts/constants';
 import {
   DEFAULT_VOICE_CONFIG,
@@ -159,6 +165,11 @@ import {
   type VoiceLocalWhisperCppStatus,
   type VoiceConfig,
 } from '../shared/voice/constants';
+import {
+  ASSISTANT_SPEECH_TRIGGER_GUARD_MS,
+  getAssistantSpeechTriggerGuardDeadline,
+  isAssistantSpeechTriggerSuppressed,
+} from '../shared/voice/triggerWordGuard';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -1735,6 +1746,7 @@ type AppConfigSettings = {
   tts?: {
     enabled: boolean;
     autoPlayAssistantReply: boolean;
+    engine: TtsEngine;
     voiceId: string;
     rate: number;
     volume: number;
@@ -1806,6 +1818,8 @@ const wakeInputService = new WakeInputService({
   },
 });
 const macTtsService = new MacTtsService();
+const edgeTtsService = new EdgeTtsService();
+let ttsRouterService: TtsRouterService;
 const azureVoiceService = new AzureVoiceService();
 const localWhisperCppSpeechService = new LocalWhisperCppSpeechService();
 const localQwen3TtsService = new LocalQwen3TtsService();
@@ -1836,6 +1850,12 @@ const buildDisabledSpeechAvailability = () => ({
 const getCurrentVoiceConfig = (): VoiceConfig => {
   return getVoiceConfigFromAppConfig(getStore().get<AppConfigSettings>('app_config'));
 };
+
+ttsRouterService = new TtsRouterService({
+  getVoiceConfig: getCurrentVoiceConfig,
+  macosNativeService: macTtsService,
+  edgeTtsService,
+});
 
 const buildLocalWhisperCppStatus = (voiceConfig: VoiceConfig): VoiceLocalWhisperCppStatus => {
   const runtime = inspectLocalWhisperCppRuntime(voiceConfig.providers.localWhisperCpp);
@@ -1923,7 +1943,7 @@ const voiceCapabilityRegistry = new VoiceCapabilityRegistry({
   getVoiceConfig: getCurrentVoiceConfig,
   getStoreFlag: (key: string) => getStore().get<boolean>(key),
   getSpeechAvailability: getSpeechAvailabilityForVoice,
-  getTtsAvailability: () => macTtsService.getAvailability(),
+  getTtsAvailability: () => ttsRouterService.getAvailability(),
 });
 
 const broadcastVoiceCapabilityChanged = async (): Promise<void> => {
@@ -1956,7 +1976,20 @@ const syncWakeInputAvailability = async (
   },
 ): Promise<void> => {
   const voiceConfig = getVoiceConfigFromAppConfig(options?.appConfig);
-  const speechAvailability = await getSpeechAvailabilityForVoice();
+  let speechAvailability = await getSpeechAvailabilityForVoice();
+  if (
+    voiceConfig.capabilities.wakeInput.enabled
+    && process.platform === 'darwin'
+    && app.isPackaged
+    && speechAvailability.supported
+    && (
+      speechAvailability.speechAuthorization === SpeechPermissionStatus.NotDetermined
+      || speechAvailability.microphoneAuthorization === SpeechPermissionStatus.NotDetermined
+    )
+  ) {
+    console.log('[WakeInput] Requesting speech permissions because wake input is enabled and authorization is not determined.');
+    speechAvailability = await macSpeechService.requestPermissionsIfNeeded();
+  }
   const wakeSupported = voiceConfig.capabilities.wakeInput.enabled
     && speechAvailability.supported
     && speechAvailability.permission === SpeechPermissionStatus.Granted;
@@ -1998,7 +2031,21 @@ const applyVoiceConfigToServices = async (appConfig?: AppConfigSettings): Promis
   });
 
   if (!voiceConfig.capabilities.tts.enabled) {
-    await macTtsService.stop();
+    await ttsRouterService.stop();
+    await ttsRouterService.syncSelectedEngine(TtsEngine.MacosNative);
+  } else if (voiceConfig.capabilities.tts.provider === VoiceProvider.MacosNative) {
+    await ttsRouterService.syncSelectedEngine(voiceConfig.capabilities.tts.engine);
+    if (
+      voiceConfig.capabilities.tts.engine === TtsEngine.EdgeTts
+      && voiceConfig.commands.wakeActivationReplyEnabled
+      && voiceConfig.commands.wakeActivationReplyText.trim()
+    ) {
+      void ttsRouterService.prewarmSelectedEngine(voiceConfig.commands.wakeActivationReplyText).catch((error) => {
+        console.warn('[TtsRouterService] Failed to prewarm edge-tts wake activation reply.', error);
+      });
+    }
+  } else {
+    await ttsRouterService.syncSelectedEngine(TtsEngine.MacosNative);
   }
 
   await broadcastVoiceCapabilityChanged();
@@ -2026,11 +2073,98 @@ const showMainWindow = (options?: { stealFocus?: boolean }): void => {
   }
 };
 
+const FOREGROUND_SPEECH_ALREADY_LISTENING_RETRY_DELAY_MS = 250;
+const FOLLOW_UP_ASSISTANT_REPLY_SETTLE_GUARD_MS = 700;
+let ttsWakeInputSuppressed = false;
+let ttsWakeInputSuppressedUntilMs = 0;
+let ttsWakeInputResumeTimer: NodeJS.Timeout | null = null;
+let assistantReplyPlaybackActive = false;
+let assistantReplyPlaybackSettledGuardUntilMs = 0;
+
 const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
   mainWindow.webContents.send('app:focusCoworkInput', { clear: options?.clear === true });
+};
+
+const dispatchWakeDictationRequest = (request: {
+  submitCommand: string;
+  cancelCommand: string;
+  sessionTimeoutMs: number;
+}): void => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
+  }
+};
+
+const clearTtsWakeInputResumeTimer = (): void => {
+  if (ttsWakeInputResumeTimer) {
+    clearTimeout(ttsWakeInputResumeTimer);
+    ttsWakeInputResumeTimer = null;
+  }
+};
+
+const isAssistantReplyPlaybackBlocked = (): boolean => {
+  return assistantReplyPlaybackActive || assistantReplyPlaybackSettledGuardUntilMs > Date.now();
+};
+
+const isWakeInputTriggerSuppressed = (): boolean => {
+  return isAssistantSpeechTriggerSuppressed({
+    isAssistantSpeaking: ttsWakeInputSuppressed,
+    suppressedUntilMs: ttsWakeInputSuppressedUntilMs,
+  });
+};
+
+const isFollowUpSpeechBlockedByAssistantPlayback = (): boolean => {
+  return isWakeInputTriggerSuppressed() || isAssistantReplyPlaybackBlocked();
+};
+
+const scheduleWakeInputResumeAfterAssistantPlayback = (): void => {
+  clearTtsWakeInputResumeTimer();
+  if (foregroundSpeechOrigin) {
+    return;
+  }
+  ttsWakeInputResumeTimer = setTimeout(() => {
+    ttsWakeInputResumeTimer = null;
+    if (foregroundSpeechOrigin || isFollowUpSpeechBlockedByAssistantPlayback()) {
+      return;
+    }
+    void wakeInputService.startBackgroundListening().catch((error) => {
+      console.warn('[WakeInput] Failed to resume background listening after assistant playback.', error);
+    });
+  }, ASSISTANT_SPEECH_TRIGGER_GUARD_MS);
+};
+
+const shouldPlayWakeActivationReply = (): boolean => {
+  const voiceConfig = getCurrentVoiceConfig();
+  return voiceConfig.capabilities.tts.enabled
+    && voiceConfig.commands.wakeActivationReplyEnabled
+    && Boolean(voiceConfig.commands.wakeActivationReplyText.trim());
+};
+
+const handleWakeDictationRequest = async (request: {
+  submitCommand: string;
+  cancelCommand: string;
+  sessionTimeoutMs: number;
+}): Promise<void> => {
+  showMainWindow({ stealFocus: true });
+  focusCoworkInputInMainWindow({ clear: false });
+
+  if (!shouldPlayWakeActivationReply()) {
+    dispatchWakeDictationRequest(request);
+    return;
+  }
+
+  const activationReplyText = getCurrentVoiceConfig().commands.wakeActivationReplyText.trim();
+  try {
+    await ttsRouterService.stop();
+    await ttsRouterService.playWakeActivationReply(activationReplyText);
+  } catch (error) {
+    console.warn('[WakeInput] Failed to play wake activation reply. Continuing with dictation.', error);
+  }
+
+  dispatchWakeDictationRequest(request);
 };
 
 const finishForegroundSpeechSession = (): 'manual' | 'wake' | null => {
@@ -2141,15 +2275,21 @@ wakeInputService.on('stateChanged', (status) => {
 
 wakeInputService.on('dictationRequested', (request) => {
   console.log('[WakeInput] Dictation requested from wake input.');
-  showMainWindow({ stealFocus: true });
-  focusCoworkInputInMainWindow({ clear: false });
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
-  }
+  void handleWakeDictationRequest(request);
 });
 
 macSpeechService.onStateChanged((event) => {
   if (wakeInputService.isBackgroundModeActive()) {
+    if (
+      (event.type === SpeechStateType.Partial || event.type === SpeechStateType.Final)
+      && isFollowUpSpeechBlockedByAssistantPlayback()
+    ) {
+      console.debug(
+        '[WakeInput] Ignored background speech because assistant playback is still within the trigger guard window.',
+        JSON.stringify({ type: event.type }),
+      );
+      return;
+    }
     void wakeInputService.handleSpeechState(event);
     if (event.type === SpeechStateType.Listening || event.type === SpeechStateType.Stopped || event.type === SpeechStateType.Error) {
       void broadcastVoiceCapabilityChanged();
@@ -2184,7 +2324,30 @@ macSpeechService.onStateChanged((event) => {
   broadcastSpeechState(BrowserWindow.getAllWindows(), SpeechIpcChannel.StateChanged, event);
 });
 
-macTtsService.on('stateChanged', (event) => {
+ttsRouterService.onStateChanged((event) => {
+  if (event.type === TtsStateType.Speaking) {
+    ttsWakeInputSuppressed = true;
+    ttsWakeInputSuppressedUntilMs = Number.MAX_SAFE_INTEGER;
+    clearTtsWakeInputResumeTimer();
+    void wakeInputService.stopBackgroundListening().catch((error) => {
+      console.warn('[WakeInput] Failed to pause background listening during TTS playback.', error);
+    });
+  } else if (event.type === TtsStateType.Stopped || event.type === TtsStateType.Error) {
+    ttsWakeInputSuppressed = false;
+    ttsWakeInputSuppressedUntilMs = getAssistantSpeechTriggerGuardDeadline(Date.now());
+    clearTtsWakeInputResumeTimer();
+    if (!foregroundSpeechOrigin) {
+      ttsWakeInputResumeTimer = setTimeout(() => {
+        ttsWakeInputResumeTimer = null;
+        if (foregroundSpeechOrigin || isAssistantReplyPlaybackBlocked()) {
+          return;
+        }
+        void wakeInputService.startBackgroundListening().catch((error) => {
+          console.warn('[WakeInput] Failed to resume background listening after TTS playback.', error);
+        });
+      }, ASSISTANT_SPEECH_TRIGGER_GUARD_MS);
+    }
+  }
   broadcastTtsState(BrowserWindow.getAllWindows(), TtsIpcChannel.StateChanged, event);
   void broadcastVoiceCapabilityChanged();
 });
@@ -4515,9 +4678,29 @@ if (!gotTheLock) {
     if (!isMacSpeechInputEnabled()) {
       return { success: false, error: SpeechErrorCode.HelperUnavailable };
     }
+    if (source === SpeechStartSource.FollowUp) {
+      if (isFollowUpSpeechBlockedByAssistantPlayback()) {
+        console.log('[WakeInput] Delaying follow-up dictation until assistant playback settles.');
+        return { success: false, error: SpeechErrorCode.AssistantReplyPlaybackPending };
+      }
+    }
     const origin = await wakeInputService.prepareForegroundSpeechStart();
-    const result = await macSpeechService.start({ locale: options?.locale, source });
+    let result = await macSpeechService.start({ locale: options?.locale, source });
+    if (result.error === SpeechErrorCode.AlreadyListening) {
+      console.warn(
+        '[MacSpeechService] Speech start collided with an existing listener. Retrying once after a short delay.',
+        JSON.stringify({ source }),
+      );
+      await macSpeechService.stop();
+      await new Promise((resolve) => {
+        setTimeout(resolve, FOREGROUND_SPEECH_ALREADY_LISTENING_RETRY_DELAY_MS);
+      });
+      result = await macSpeechService.start({ locale: options?.locale, source });
+    }
     if (result.success) {
+      ttsWakeInputSuppressed = false;
+      ttsWakeInputSuppressedUntilMs = 0;
+      clearTtsWakeInputResumeTimer();
       await syncWakeInputAvailability({
         appConfig: getStore().get<AppConfigSettings>('app_config'),
         startBackgroundListening: false,
@@ -4636,11 +4819,12 @@ if (!gotTheLock) {
     const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
     const ttsCapability = matrix.capabilities[VoiceCapability.Tts];
     const selectedProvider = ttsCapability?.selectedProvider;
+    const localAvailability = await ttsRouterService.getAvailability();
 
     const availability = selectedProvider === VoiceProvider.MacosNative
-      ? await macTtsService.getAvailability()
+      ? localAvailability
       : {
-          enabled: voiceConfig.capabilities.tts.enabled,
+          ...localAvailability,
           supported: Boolean(ttsCapability?.runtimeAvailable),
           platform: process.platform,
           speaking: false,
@@ -4655,12 +4839,28 @@ if (!gotTheLock) {
     };
   });
 
-  ipcMain.handle(TtsIpcChannel.GetVoices, async () => {
+  ipcMain.handle(TtsIpcChannel.GetVoices, async (_event, options?: { engine?: TtsEngine }) => {
     try {
-      const voices = await macTtsService.getVoices();
+      const voices = await ttsRouterService.getVoices(options?.engine);
       return { success: true, voices };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list TTS voices.' };
+    }
+  });
+
+  ipcMain.handle(TtsIpcChannel.Prepare, async (_event, options?: { engine?: TtsEngine }) => {
+    try {
+      const availability = await ttsRouterService.prepare(options?.engine);
+      return {
+        success: true,
+        availability,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to prepare TTS runtime.',
+        availability: await ttsRouterService.getAvailability(options?.engine),
+      };
     }
   });
 
@@ -4681,10 +4881,14 @@ if (!gotTheLock) {
     }
 
     if (ttsCapability.selectedProvider === VoiceProvider.MacosNative) {
-      const result = await macTtsService.speak(options ?? { text: '' });
+      const result = await ttsRouterService.speak(options ?? { text: '' });
       return {
-        ...result,
+        success: result.success,
+        error: result.error,
+        audioDataUrl: result.audioDataUrl,
+        audioUrl: result.audioUrl,
         provider: VoiceProvider.MacosNative,
+        engine: result.engine,
       };
     }
 
@@ -4715,6 +4919,35 @@ if (!gotTheLock) {
     };
   });
 
+  ipcMain.handle(TtsIpcChannel.ReportAssistantReplyPlayback, async (_event, report?: TtsAssistantReplyPlaybackReport) => {
+    const state = report?.state;
+    if (state === TtsAssistantReplyPlaybackState.Pending) {
+      assistantReplyPlaybackActive = true;
+      assistantReplyPlaybackSettledGuardUntilMs = 0;
+      clearTtsWakeInputResumeTimer();
+      console.log(
+        '[WakeInput] Assistant reply playback reported as active.',
+        JSON.stringify({ sessionId: report?.sessionId }),
+      );
+      await wakeInputService.stopBackgroundListening().catch((error) => {
+        console.warn('[WakeInput] Failed to pause background listening for assistant reply playback.', error);
+      });
+      return { success: true };
+    }
+
+    assistantReplyPlaybackActive = false;
+    assistantReplyPlaybackSettledGuardUntilMs = getAssistantSpeechTriggerGuardDeadline(
+      Date.now(),
+      FOLLOW_UP_ASSISTANT_REPLY_SETTLE_GUARD_MS,
+    );
+    console.log(
+      '[WakeInput] Assistant reply playback reported as settled.',
+      JSON.stringify({ sessionId: report?.sessionId }),
+    );
+    scheduleWakeInputResumeAfterAssistantPlayback();
+    return { success: true };
+  });
+
   ipcMain.handle(TtsIpcChannel.Stop, async () => {
     const voiceConfig = getCurrentVoiceConfig();
     const matrix = await voiceCapabilityRegistry.getCapabilityMatrix();
@@ -4726,7 +4959,7 @@ if (!gotTheLock) {
     if (voiceConfig.capabilities.tts.provider === VoiceProvider.LocalQwen3Tts) {
       return localQwen3TtsService.stop();
     }
-    return macTtsService.stop();
+    return ttsRouterService.stop();
   });
 
   // Shell handlers - 打开文件/文件夹
@@ -5241,6 +5474,8 @@ if (!gotTheLock) {
     stopOpenClawTokenProxy();
     macSpeechService.dispose();
     macTtsService.dispose();
+    await edgeTtsService.stop().catch((): void => undefined);
+    wakeInputService.dispose();
 
     // Stop skill services.
     const skillServices = getSkillServiceManager();

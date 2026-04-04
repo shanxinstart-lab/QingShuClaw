@@ -118,6 +118,13 @@ private func emitAvailability() {
   )
 }
 
+private func requestPermissionsOnly() async {
+  _ = await requestSpeechAuthorization()
+  _ = await requestMicrophoneAuthorization()
+  emitAvailability()
+  exit(0)
+}
+
 private final class SpeechCoordinator {
   private let recognizer: SFSpeechRecognizer
   private let audioEngine = AVAudioEngine()
@@ -266,7 +273,7 @@ signal(SIGINT) { _ in
 }
 
 guard CommandLine.arguments.count > 1 else {
-  emit(type: "error", code: "invalid_command", message: "Expected 'status' or 'listen'.")
+  emit(type: "error", code: "invalid_command", message: "Expected 'status', 'request-permission', or 'listen'.")
   exit(1)
 }
 
@@ -274,12 +281,17 @@ switch CommandLine.arguments[1] {
 case "status":
   emitAvailability()
   exit(0)
+case "request-permission":
+  Task {
+    await requestPermissionsOnly()
+  }
+  dispatchMain()
 case "listen":
   Task {
     await runListen()
   }
   dispatchMain()
 default:
-  emit(type: "error", code: "invalid_command", message: "Expected 'status' or 'listen'.")
+  emit(type: "error", code: "invalid_command", message: "Expected 'status', 'request-permission', or 'listen'.")
   exit(1)
 }

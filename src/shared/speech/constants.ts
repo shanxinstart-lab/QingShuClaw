@@ -44,6 +44,8 @@ export const SpeechErrorCode = {
   SpeechProcessInvalidated: 'speech_process_invalidated',
   SpeechRequestCancelled: 'speech_request_cancelled',
   SpeechNoMatch: 'speech_no_match',
+  AssistantReplyPlaybackTimeout: 'assistant_reply_playback_timeout',
+  AssistantReplyPlaybackPending: 'assistant_reply_playback_pending',
 } as const;
 export type SpeechErrorCode = typeof SpeechErrorCode[keyof typeof SpeechErrorCode];
 

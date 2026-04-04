@@ -345,10 +345,13 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
   tts: {
-    getAvailability: () => ipcRenderer.invoke(TtsIpcChannel.GetAvailability),
-    getVoices: () => ipcRenderer.invoke(TtsIpcChannel.GetVoices),
-    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
+    getAvailability: (options?: { engine?: string }) => ipcRenderer.invoke(TtsIpcChannel.GetAvailability, options),
+    getVoices: (options?: { engine?: string }) => ipcRenderer.invoke(TtsIpcChannel.GetVoices, options),
+    prepare: (options?: { engine?: string }) => ipcRenderer.invoke(TtsIpcChannel.Prepare, options),
+    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number; playbackMode?: string }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
     stop: () => ipcRenderer.invoke(TtsIpcChannel.Stop),
+    reportAssistantReplyPlayback: (options: { sessionId?: string; state: string }) =>
+      ipcRenderer.invoke(TtsIpcChannel.ReportAssistantReplyPlayback, options),
     onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
       const handler = (_event: any, data: Record<string, unknown>) => callback(data);
       ipcRenderer.on(TtsIpcChannel.StateChanged, handler);

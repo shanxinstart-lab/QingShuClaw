@@ -33,7 +33,11 @@ import DiffView, { extractDiffFromToolInput } from './DiffView';
 import { configService } from '../../services/config';
 import { DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
-import type { TtsAvailability } from '../../../shared/tts/constants';
+import {
+  TtsAssistantReplyPlaybackState,
+  TtsPlaybackMode,
+  type TtsAvailability,
+} from '../../../shared/tts/constants';
 import { buildSpeakableAssistantText } from './coworkTtsText';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 
@@ -72,6 +76,40 @@ const waitForNextFrame = (): Promise<void> =>
   new Promise((resolve) => {
     window.requestAnimationFrame(() => resolve());
   });
+
+const createObjectUrlFromDataUrl = (dataUrl: string): string => {
+  const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('Unsupported audio data URL.');
+  }
+
+  const mimeType = match[1] || 'audio/mpeg';
+  const base64Data = match[2] || '';
+  const binary = window.atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+};
+
+const buildPlayableAudioSources = (audioSource: string): string[] => {
+  if (!audioSource.trim()) {
+    return [];
+  }
+  if (!audioSource.startsWith('data:')) {
+    return [audioSource];
+  }
+
+  const sources = [audioSource];
+  try {
+    sources.push(createObjectUrlFromDataUrl(audioSource));
+  } catch (error) {
+    console.warn('Failed to derive blob URL from TTS data URL, will keep the original data URL only:', error);
+  }
+  return sources;
+};
 
 const loadImageFromBase64 = (pngBase64: string): Promise<HTMLImageElement> =>
   new Promise((resolve, reject) => {
@@ -1428,6 +1466,25 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
   const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsAudioObjectUrlRef = useRef<string | null>(null);
+  const autoReplyPlaybackSessionIdRef = useRef<string | null>(null);
+  const autoReplyPlaybackUsesBrowserAudioRef = useRef(false);
+  const ttsPlaybackModeRef = useRef<'idle' | 'preparing_browser' | 'browser_audio' | 'system'>('idle');
+
+  const dispatchAssistantReplyPlaybackState = useCallback((
+    sessionId: string,
+    state: typeof TtsAssistantReplyPlaybackState[keyof typeof TtsAssistantReplyPlaybackState]
+  ) => {
+    void window.electron.tts.reportAssistantReplyPlayback({ sessionId, state }).catch((error) => {
+      console.warn('Failed to report assistant reply playback state to Electron main process:', error);
+    });
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.AssistantReplyPlaybackStateChanged, {
+      detail: {
+        sessionId,
+        state,
+      },
+    }));
+  }, []);
 
   // Rename states
   const [isRenaming, setIsRenaming] = useState(false);
@@ -1466,6 +1523,19 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         return;
       }
       if (event.type === 'stopped' || event.type === 'error') {
+        const isBrowserPlaybackManagedInRenderer = (
+          ttsPlaybackModeRef.current === 'preparing_browser'
+          || ttsPlaybackModeRef.current === 'browser_audio'
+        );
+        if (isBrowserPlaybackManagedInRenderer) {
+          return;
+        }
+        const autoReplyPlaybackSessionId = autoReplyPlaybackSessionIdRef.current;
+        if (autoReplyPlaybackSessionId && !autoReplyPlaybackUsesBrowserAudioRef.current) {
+          autoReplyPlaybackSessionIdRef.current = null;
+          ttsPlaybackModeRef.current = 'idle';
+          dispatchAssistantReplyPlaybackState(autoReplyPlaybackSessionId, TtsAssistantReplyPlaybackState.Settled);
+        }
         setTtsPlayingMessageId(null);
       }
     });
@@ -1479,10 +1549,17 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         ttsAudioRef.current.pause();
         ttsAudioRef.current = null;
       }
+      if (ttsAudioObjectUrlRef.current) {
+        URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+        ttsAudioObjectUrlRef.current = null;
+      }
+      autoReplyPlaybackSessionIdRef.current = null;
+      autoReplyPlaybackUsesBrowserAudioRef.current = false;
+      ttsPlaybackModeRef.current = 'idle';
       unsubscribe();
       unsubscribeVoice();
     };
-  }, []);
+  }, [dispatchAssistantReplyPlaybackState]);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -1574,14 +1651,25 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   };
 
   const stopTtsPlayback = useCallback(async () => {
+    const autoReplyPlaybackSessionId = autoReplyPlaybackSessionIdRef.current;
     setTtsPlayingMessageId(null);
     if (ttsAudioRef.current) {
       ttsAudioRef.current.pause();
       ttsAudioRef.current.src = '';
       ttsAudioRef.current = null;
     }
+    if (ttsAudioObjectUrlRef.current) {
+      URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+      ttsAudioObjectUrlRef.current = null;
+    }
+    autoReplyPlaybackSessionIdRef.current = null;
+    autoReplyPlaybackUsesBrowserAudioRef.current = false;
+    ttsPlaybackModeRef.current = 'idle';
+    if (autoReplyPlaybackSessionId) {
+      dispatchAssistantReplyPlaybackState(autoReplyPlaybackSessionId, TtsAssistantReplyPlaybackState.Settled);
+    }
     await window.electron.tts.stop();
-  }, []);
+  }, [dispatchAssistantReplyPlaybackState]);
 
   const getTtsPostProcessConfig = useCallback(() => {
     const voiceConfig = configService.getConfig().voice;
@@ -1611,9 +1699,25 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     }
   }, [getTtsPostProcessConfig]);
 
-  const playAssistantMessage = useCallback(async (message: CoworkMessage) => {
+  const playAssistantMessage = useCallback(async (
+    message: CoworkMessage,
+    options?: { origin?: 'manual' | 'auto'; sessionId?: string }
+  ) => {
+    const autoReplySessionId = options?.origin === 'auto' && options.sessionId
+      ? options.sessionId
+      : null;
+    if (autoReplySessionId) {
+      autoReplyPlaybackSessionIdRef.current = autoReplySessionId;
+      dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Pending);
+    }
+
     const text = await buildTtsPlaybackText(message.content);
     if (!text) {
+      if (autoReplySessionId) {
+        autoReplyPlaybackSessionIdRef.current = null;
+        autoReplyPlaybackUsesBrowserAudioRef.current = false;
+        dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
+      }
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
         detail: i18nService.t('ttsNoSpeakableContent'),
       }));
@@ -1624,61 +1728,175 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       ...DEFAULT_TTS_CONFIG,
       ...(configService.getConfig().tts ?? {}),
     };
+    let fallbackPromise: Promise<boolean> | null = null;
+    const fallbackToSystemPlayback = async (error?: unknown): Promise<boolean> => {
+      if (fallbackPromise) {
+        return fallbackPromise;
+      }
+      fallbackPromise = (async () => {
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current.src = '';
+        ttsAudioRef.current = null;
+      }
+      if (ttsAudioObjectUrlRef.current) {
+        URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+        ttsAudioObjectUrlRef.current = null;
+      }
+
+      autoReplyPlaybackUsesBrowserAudioRef.current = false;
+      ttsPlaybackModeRef.current = 'system';
+      console.warn('Falling back to system TTS playback after browser audio playback failed:', error);
+      const fallbackResult = await window.electron.tts.speak({
+        text,
+        voiceId: ttsConfig.voiceId,
+        rate: ttsConfig.rate,
+        volume: ttsConfig.volume,
+        playbackMode: TtsPlaybackMode.System,
+      });
+      if (fallbackResult.success) {
+        return true;
+      }
+
+      if (autoReplySessionId) {
+        autoReplyPlaybackSessionIdRef.current = null;
+        dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
+      }
+      ttsPlaybackModeRef.current = 'idle';
+      setTtsPlayingMessageId(null);
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: fallbackResult.error || i18nService.t('coworkTtsUnavailable'),
+      }));
+      return false;
+      })();
+      return fallbackPromise;
+    };
     setTtsPlayingMessageId(message.id);
+    ttsPlaybackModeRef.current = 'preparing_browser';
     const result = await window.electron.tts.speak({
       text,
       voiceId: ttsConfig.voiceId,
       rate: ttsConfig.rate,
       volume: ttsConfig.volume,
+      playbackMode: TtsPlaybackMode.AudioData,
     });
     if (!result.success) {
+      if (autoReplySessionId) {
+        autoReplyPlaybackSessionIdRef.current = null;
+        autoReplyPlaybackUsesBrowserAudioRef.current = false;
+        dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
+      }
+      ttsPlaybackModeRef.current = 'idle';
       setTtsPlayingMessageId(null);
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
-        detail: result.error || i18nService.t('coworkSpeechUnavailable'),
+        detail: result.error || i18nService.t('coworkTtsUnavailable'),
       }));
       return;
     }
 
     const playableAudioSource = result.audioDataUrl || result.audioUrl;
+    autoReplyPlaybackUsesBrowserAudioRef.current = Boolean(autoReplySessionId && playableAudioSource);
     if (playableAudioSource) {
+      ttsPlaybackModeRef.current = 'browser_audio';
       try {
         if (ttsAudioRef.current) {
           ttsAudioRef.current.pause();
           ttsAudioRef.current.src = '';
         }
+        if (ttsAudioObjectUrlRef.current) {
+          URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+          ttsAudioObjectUrlRef.current = null;
+        }
 
-        const audio = new Audio(playableAudioSource);
+        const candidateSources = buildPlayableAudioSources(playableAudioSource);
+        if (candidateSources.length === 0) {
+          throw new Error('tts_audio_source_missing');
+        }
+
+        const audio = new Audio();
         audio.volume = typeof ttsConfig.volume === 'number' ? ttsConfig.volume : 1;
+        let currentSourceIndex = 0;
+        const revokeUnusedObjectUrls = (): void => {
+          for (const source of candidateSources) {
+            if (source.startsWith('blob:') && source !== ttsAudioObjectUrlRef.current) {
+              URL.revokeObjectURL(source);
+            }
+          }
+        };
+        const revokeCurrentObjectUrlIfNeeded = (): void => {
+          if (
+            ttsAudioObjectUrlRef.current
+            && candidateSources[currentSourceIndex] === ttsAudioObjectUrlRef.current
+          ) {
+            URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+            ttsAudioObjectUrlRef.current = null;
+          }
+        };
+        const assignCurrentSource = (): void => {
+          const nextSource = candidateSources[currentSourceIndex];
+          audio.src = nextSource;
+          if (nextSource.startsWith('blob:')) {
+            ttsAudioObjectUrlRef.current = nextSource;
+          }
+        };
         audio.onended = () => {
           if (ttsAudioRef.current === audio) {
             ttsAudioRef.current = null;
           }
+          revokeCurrentObjectUrlIfNeeded();
+          revokeUnusedObjectUrls();
+          if (ttsAudioObjectUrlRef.current) {
+            URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+            ttsAudioObjectUrlRef.current = null;
+          }
+          ttsPlaybackModeRef.current = 'idle';
+          if (autoReplySessionId) {
+            autoReplyPlaybackSessionIdRef.current = null;
+            autoReplyPlaybackUsesBrowserAudioRef.current = false;
+            dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
+          }
           setTtsPlayingMessageId(null);
         };
         audio.onerror = () => {
+          revokeCurrentObjectUrlIfNeeded();
+          currentSourceIndex += 1;
+          if (currentSourceIndex < candidateSources.length) {
+            assignCurrentSource();
+            void audio.play().catch((error) => {
+              console.warn('Failed to play fallback TTS audio source:', error);
+            });
+            return;
+          }
           if (ttsAudioRef.current === audio) {
             ttsAudioRef.current = null;
           }
-          setTtsPlayingMessageId(null);
-          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
-            detail: i18nService.t('coworkSpeechUnavailable'),
-          }));
+          revokeUnusedObjectUrls();
+          if (ttsAudioObjectUrlRef.current) {
+            URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+            ttsAudioObjectUrlRef.current = null;
+          }
+          if (autoReplySessionId) {
+            autoReplyPlaybackUsesBrowserAudioRef.current = false;
+          }
+          ttsPlaybackModeRef.current = 'idle';
+          console.error('Failed to load TTS audio source:', audio.error);
+          void fallbackToSystemPlayback(audio.error);
         };
         ttsAudioRef.current = audio;
+        assignCurrentSource();
         await audio.play();
       } catch (error) {
-        if (ttsAudioRef.current) {
-          ttsAudioRef.current.pause();
-          ttsAudioRef.current.src = '';
-          ttsAudioRef.current = null;
+        const recovered = await fallbackToSystemPlayback(error);
+        if (!recovered && error instanceof Error && error.message) {
+          console.error('Failed to recover TTS playback after browser audio error:', error);
         }
-        setTtsPlayingMessageId(null);
-        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
-          detail: error instanceof Error ? error.message : i18nService.t('coworkSpeechUnavailable'),
-        }));
       }
+      return;
     }
-  }, [buildTtsPlaybackText]);
+
+    autoReplyPlaybackUsesBrowserAudioRef.current = false;
+    ttsPlaybackModeRef.current = 'system';
+  }, [buildTtsPlaybackText, dispatchAssistantReplyPlaybackState]);
 
   useEffect(() => {
     if (!ttsAvailability?.supported || isStreaming || !currentSession) {
@@ -1701,14 +1919,21 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       }).length > 0
     ));
     if (!lastAssistantMessage) {
+      if (autoReplyPlaybackSessionIdRef.current === currentSession.id) {
+        return;
+      }
+      dispatchAssistantReplyPlaybackState(currentSession.id, TtsAssistantReplyPlaybackState.Settled);
       return;
     }
     if (lastAutoPlayedMessageIdRef.current === lastAssistantMessage.id) {
       return;
     }
     lastAutoPlayedMessageIdRef.current = lastAssistantMessage.id;
-    void playAssistantMessage(lastAssistantMessage);
-  }, [currentSession, getTtsPostProcessConfig, isStreaming, playAssistantMessage, ttsAvailability]);
+    void playAssistantMessage(lastAssistantMessage, {
+      origin: 'auto',
+      sessionId: currentSession.id,
+    });
+  }, [currentSession, dispatchAssistantReplyPlaybackState, getTtsPostProcessConfig, isStreaming, playAssistantMessage, ttsAvailability]);
 
   const closeMenu = () => {
     setMenuPosition(null);

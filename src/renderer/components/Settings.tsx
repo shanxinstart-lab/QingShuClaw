@@ -9,7 +9,7 @@ import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPaylo
 import { coworkService } from '../services/cowork';
 import { APP_ID, APP_NAME, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import ErrorMessage from './ErrorMessage';
-import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon, ChevronDownIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import PlusCircleIcon from './icons/PlusCircleIcon';
 import TrashIcon from './icons/TrashIcon';
@@ -39,7 +39,8 @@ import {
   normalizeVoiceKeywordList,
   parseWakeWordsInput,
 } from '../../shared/voice/constants';
-import type { TtsVoice } from '../../shared/tts/constants';
+import { TtsEngine } from '../../shared/tts/constants';
+import type { TtsAvailability, TtsVoice } from '../../shared/tts/constants';
 import {
   DEFAULT_SPEECH_INPUT_CONFIG,
   DEFAULT_TTS_CONFIG,
@@ -126,6 +127,8 @@ type ProviderConnectionTestResult = {
 
 type VoiceStrategyValue = VoiceConfig['strategy'];
 type VoiceCapabilityProvider = typeof VoiceProvider[keyof typeof VoiceProvider];
+type VoiceCapabilityKey = typeof VoiceCapability[keyof typeof VoiceCapability];
+type VoiceProviderPanelKey = Exclude<typeof VoiceProvider[keyof typeof VoiceProvider], typeof VoiceProvider.None>;
 type VoiceLocalWhisperCppConfig = VoiceConfig['providers']['localWhisperCpp'];
 type VoiceLocalWhisperCppRuntimeStatus = import('../../shared/voice/constants').VoiceLocalWhisperCppStatus;
 type VoiceLocalQwen3TtsConfig = VoiceConfig['providers']['localQwen3Tts'];
@@ -133,11 +136,40 @@ type VoiceLocalQwen3TtsRuntimeStatus = import('../../shared/voice/constants').Vo
 type VoiceLocalModelLibrary = import('../../shared/voice/constants').VoiceLocalModelLibrary;
 type VoiceLocalModelCatalogEntry = VoiceLocalModelLibrary['catalog'][number];
 type VoiceLocalModelInstallStatus = VoiceLocalModelLibrary['statuses'][string];
+type VoiceEdgeTtsConfig = VoiceConfig['providers']['edgeTts'];
 type VoiceOpenAiConfig = VoiceConfig['providers']['openai'];
 type VoiceAliyunConfig = VoiceConfig['providers']['aliyun'];
 type VoiceVolcengineConfig = VoiceConfig['providers']['volcengine'];
 type VoiceAzureConfig = VoiceConfig['providers']['azure'];
 type VoiceCustomConfig = VoiceConfig['providers']['custom'];
+type ProviderGroupKey = 'foundation' | 'regional' | 'custom';
+type ProviderPanelSectionKey = 'credentials' | 'endpoint' | 'features' | 'connection' | 'models' | 'advanced';
+
+const voiceProviderPanelKeys = [
+  VoiceProvider.MacosNative,
+  VoiceProvider.LocalWhisperCpp,
+  VoiceProvider.LocalQwen3Tts,
+  VoiceProvider.CloudOpenAi,
+  VoiceProvider.CloudAliyun,
+  VoiceProvider.CloudVolcengine,
+  VoiceProvider.CloudAzure,
+  VoiceProvider.CloudCustom,
+] as const satisfies readonly VoiceProviderPanelKey[];
+
+const providerGroups: Array<{ key: ProviderGroupKey; providers: ProviderType[] }> = [
+  {
+    key: 'foundation',
+    providers: ['openai', 'anthropic', 'gemini', 'deepseek', 'openrouter', 'ollama'],
+  },
+  {
+    key: 'regional',
+    providers: ['moonshot', 'zhipu', 'minimax', 'volcengine', 'qwen', 'youdaozhiyun', 'stepfun', 'xiaomi'],
+  },
+  {
+    key: 'custom',
+    providers: [...CUSTOM_PROVIDER_KEYS],
+  },
+];
 
 interface ProviderExportEntry {
   enabled: boolean;
@@ -497,17 +529,22 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [wakeInputWakeWordsText, setWakeInputWakeWordsText] = useState(DEFAULT_WAKE_INPUT_CONFIG.wakeWords.join('\n'));
   const [wakeInputSubmitCommand, setWakeInputSubmitCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
   const [wakeInputCancelCommand, setWakeInputCancelCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
+  const [wakeActivationReplyEnabled, setWakeActivationReplyEnabled] = useState(DEFAULT_WAKE_INPUT_CONFIG.activationReplyEnabled);
+  const [wakeActivationReplyText, setWakeActivationReplyText] = useState(DEFAULT_WAKE_INPUT_CONFIG.activationReplyText);
   const [followUpDictationEnabled, setFollowUpDictationEnabled] = useState(false);
   const [wakeInputStatus, setWakeInputStatus] = useState<WakeInputStatus | null>(null);
   const [voiceCapabilityMatrix, setVoiceCapabilityMatrix] = useState<VoiceCapabilityMatrix | null>(null);
   const [voiceStrategy, setVoiceStrategy] = useState<VoiceStrategyValue>(defaultConfig.voice!.strategy);
   const [manualSttProvider, setManualSttProvider] = useState<VoiceCapabilityProvider>(VoiceProvider.MacosNative);
   const [ttsProvider, setTtsProvider] = useState<VoiceCapabilityProvider>(VoiceProvider.MacosNative);
+  const [ttsEngine, setTtsEngine] = useState<TtsEngine>(DEFAULT_TTS_CONFIG.engine);
+  const [voiceMacosNativeTtsConfig, setVoiceMacosNativeTtsConfig] = useState(defaultConfig.voice!.providers.macosNative);
   const [voiceLocalWhisperCppConfig, setVoiceLocalWhisperCppConfig] = useState<VoiceLocalWhisperCppConfig>(defaultConfig.voice!.providers.localWhisperCpp);
   const [voiceLocalWhisperCppStatus, setVoiceLocalWhisperCppStatus] = useState<VoiceLocalWhisperCppRuntimeStatus | null>(null);
   const [voiceLocalQwen3TtsConfig, setVoiceLocalQwen3TtsConfig] = useState<VoiceLocalQwen3TtsConfig>(defaultConfig.voice!.providers.localQwen3Tts);
   const [voiceLocalQwen3TtsStatus, setVoiceLocalQwen3TtsStatus] = useState<VoiceLocalQwen3TtsRuntimeStatus | null>(null);
   const [voiceLocalModelLibrary, setVoiceLocalModelLibrary] = useState<VoiceLocalModelLibrary | null>(null);
+  const [voiceEdgeTtsConfig, setVoiceEdgeTtsConfig] = useState<VoiceEdgeTtsConfig>(defaultConfig.voice!.providers.edgeTts);
   const [voiceOpenAiConfig, setVoiceOpenAiConfig] = useState<VoiceOpenAiConfig>(defaultConfig.voice!.providers.openai);
   const [voiceAliyunConfig, setVoiceAliyunConfig] = useState<VoiceAliyunConfig>(defaultConfig.voice!.providers.aliyun);
   const [voiceVolcengineConfig, setVoiceVolcengineConfig] = useState<VoiceVolcengineConfig>(defaultConfig.voice!.providers.volcengine);
@@ -521,6 +558,20 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [ttsRate, setTtsRate] = useState(DEFAULT_TTS_CONFIG.rate);
   const [ttsVolume, setTtsVolume] = useState(DEFAULT_TTS_CONFIG.volume);
   const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
+  const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
+  const [expandedVoiceSection, setExpandedVoiceSection] = useState<VoiceCapabilityKey | null>(VoiceCapability.ManualStt);
+  const [selectedVoiceProvider, setSelectedVoiceProvider] = useState<VoiceProviderPanelKey>(VoiceProvider.MacosNative);
+  const [showAllVoiceProviderStatuses, setShowAllVoiceProviderStatuses] = useState(false);
+  const [isVoiceProviderWorkspaceExpanded, setIsVoiceProviderWorkspaceExpanded] = useState(false);
+  const [expandedProviderGroup, setExpandedProviderGroup] = useState<ProviderGroupKey | null>('foundation');
+  const [expandedProviderPanelSections, setExpandedProviderPanelSections] = useState<Record<ProviderPanelSectionKey, boolean>>({
+    credentials: true,
+    endpoint: false,
+    features: false,
+    connection: false,
+    models: true,
+    advanced: false,
+  });
   const [qtbApiBaseUrl, setQtbApiBaseUrl] = useState(DEFAULT_QTB_API_BASE_URL);
   const [qtbWebBaseUrl, setQtbWebBaseUrl] = useState(DEFAULT_QTB_WEB_BASE_URL);
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
@@ -582,7 +633,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [logoClickCount, setLogoClickCount] = useState(0);
   const [testModeUnlocked, setTestModeUnlocked] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error'>('idle');
-  const isMac = window.electron.platform === 'darwin';
 
   const getVoiceCapabilityStatus = useCallback((capability: typeof VoiceCapability[keyof typeof VoiceCapability]) => {
     return voiceCapabilityMatrix?.capabilities?.[capability] ?? null;
@@ -605,6 +655,23 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     }
     return i18nService.t('voiceCapabilityReason_' + reason);
   }, []);
+
+  const getWakeInputStatusText = useCallback(() => {
+    if (!wakeInputEnabled) {
+      return i18nService.t('wakeInputStatus_disabled');
+    }
+    if (!wakeInputStatus) {
+      return i18nService.t('loading');
+    }
+    if (wakeInputStatus.status !== 'disabled') {
+      return i18nService.t(`wakeInputStatus_${wakeInputStatus.status}`);
+    }
+    const capability = getVoiceCapabilityStatus(VoiceCapability.WakeInput);
+    if (capability && capability.reason && capability.reason !== 'disabled_by_config') {
+      return `${i18nService.t('wakeInputStatus_disabled')} · ${getVoiceReasonLabel(capability.reason)}`;
+    }
+    return i18nService.t(`wakeInputStatus_${wakeInputStatus.status}`);
+  }, [getVoiceCapabilityStatus, getVoiceReasonLabel, wakeInputEnabled, wakeInputStatus]);
 
   const loadVoiceCapabilityMatrix = useCallback(async () => {
     try {
@@ -669,6 +736,17 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const updateVoiceLocalQwen3TtsConfig = useCallback((updates: Partial<VoiceLocalQwen3TtsConfig>) => {
     setVoiceLocalQwen3TtsConfig((prev) => ({ ...prev, ...updates }));
   }, []);
+
+  const updateDisplayedTtsConfig = useCallback((updates: Partial<Pick<VoiceEdgeTtsConfig, 'ttsVoiceId' | 'ttsRate' | 'ttsVolume'>>) => {
+    setTtsVoiceId((prev) => updates.ttsVoiceId ?? prev);
+    setTtsRate((prev) => updates.ttsRate ?? prev);
+    setTtsVolume((prev) => updates.ttsVolume ?? prev);
+    if (ttsEngine === TtsEngine.EdgeTts) {
+      setVoiceEdgeTtsConfig((prev) => ({ ...prev, ...updates }));
+      return;
+    }
+    setVoiceMacosNativeTtsConfig((prev) => ({ ...prev, ...updates }));
+  }, [ttsEngine]);
 
   const voiceStrategyOptions = [
     { value: 'manual', label: i18nService.t('voiceStrategy_manual') },
@@ -742,6 +820,131 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       </div>
     );
   };
+
+  const toggleProviderPanelSection = useCallback((section: ProviderPanelSectionKey) => {
+    setExpandedProviderPanelSections((prev) => ({
+      ...prev,
+      [section]: !prev[section],
+    }));
+  }, []);
+
+  const getProviderGroupForKey = useCallback((provider: ProviderType): ProviderGroupKey => {
+    return providerGroups.find((group) => group.providers.includes(provider))?.key ?? 'foundation';
+  }, []);
+
+  const getVoiceProviderConfiguredText = useCallback((providerKey: VoiceProviderPanelKey): string => {
+    return getVoiceProviderStatus(providerKey)?.configured
+      ? i18nService.t('voiceProviderConfigured')
+      : i18nService.t('voiceProviderNotConfigured');
+  }, [getVoiceProviderStatus]);
+
+  const getVoiceProviderInUseTags = useCallback((providerKey: VoiceProviderPanelKey): string[] => {
+    const tags: string[] = [];
+    if (manualSttProvider === providerKey) {
+      tags.push(i18nService.t('voiceCapabilityManualSttTitle'));
+    }
+    if (ttsProvider === providerKey) {
+      tags.push(i18nService.t('voiceCapabilityTtsTitle'));
+    }
+    if (wakeInputEnabled && providerKey === VoiceProvider.MacosNative) {
+      tags.push(i18nService.t('voiceCapabilityWakeInputTitle'));
+    }
+    if (followUpDictationEnabled && manualSttProvider === providerKey) {
+      tags.push(i18nService.t('voiceCapabilityFollowUpTitle'));
+    }
+    return tags;
+  }, [followUpDictationEnabled, manualSttProvider, ttsProvider, wakeInputEnabled]);
+
+  const getProviderRailBadges = useCallback((providerKey: ProviderType, config: ProviderConfig): string[] => {
+    const badges: string[] = [];
+    if (providerKey === activeProvider) {
+      badges.push(i18nService.t('statusCurrent'));
+    }
+    if (isCustomProvider(providerKey)) {
+      badges.push(i18nService.t('customBadge'));
+    }
+    if (providerKey === 'minimax' && providers.minimax.authType === 'oauth') {
+      badges.push('OAuth');
+    }
+    if (config.enabled) {
+      badges.push(i18nService.t('providerStatusOn'));
+    } else {
+      badges.push(i18nService.t('providerStatusOff'));
+    }
+    if (providerRequiresApiKey(providerKey) && !config.apiKey.trim() && providerKey !== 'minimax') {
+      badges.push(i18nService.t('providerMissingApiKey'));
+    }
+    if ((config.models ?? []).length > 0) {
+      badges.push(`${(config.models ?? []).length} ${i18nService.t('providerModelCountUnit')}`);
+    }
+    return badges;
+  }, [activeProvider, providers.minimax.authType]);
+
+  const renderDisclosureHeader = useCallback((options: {
+    title: string;
+    subtitle?: string;
+    expanded: boolean;
+    onToggle: () => void;
+    trailing?: React.ReactNode;
+  }) => (
+    <button
+      type="button"
+      onClick={options.onToggle}
+      className="flex w-full items-center justify-between gap-3 rounded-xl border border-border bg-surface px-4 py-3 text-left transition-colors hover:bg-surface-raised"
+    >
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-foreground">{options.title}</div>
+        {options.subtitle && (
+          <div className="mt-1 text-xs text-secondary">{options.subtitle}</div>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        {options.trailing}
+        {options.expanded ? (
+          <ChevronDownIcon className="h-4 w-4 text-secondary" />
+        ) : (
+          <ChevronRightIcon className="h-4 w-4 text-secondary" />
+        )}
+      </div>
+    </button>
+  ), []);
+
+  const getVoiceCapabilitySummary = useCallback((capabilityKey: VoiceCapabilityKey): string => {
+    switch (capabilityKey) {
+      case VoiceCapability.ManualStt:
+        return getVoiceProviderLabel(manualSttProvider);
+      case VoiceCapability.WakeInput:
+        return wakeInputEnabled
+          ? getWakeInputStatusText()
+          : i18nService.t('statusDisabled');
+      case VoiceCapability.FollowUpDictation:
+        return followUpDictationEnabled
+          ? `${i18nService.t('voiceCurrentProviderLabel')}: ${getVoiceProviderLabel(manualSttProvider)}`
+          : i18nService.t('statusDisabled');
+      case VoiceCapability.Tts:
+        return [
+          getVoiceProviderLabel(ttsProvider),
+          ttsProvider === VoiceProvider.MacosNative ? i18nService.t(`ttsEngine_${ttsEngine}`) : null,
+          ttsAvailability?.lastResolvedEngine ? i18nService.t(`ttsEngine_${ttsAvailability.lastResolvedEngine}`) : null,
+        ].filter(Boolean).join(' · ');
+      default:
+        return '';
+    }
+  }, [followUpDictationEnabled, getVoiceProviderLabel, getWakeInputStatusText, manualSttProvider, ttsAvailability?.lastResolvedEngine, ttsEngine, ttsProvider, wakeInputEnabled]);
+
+  const inUseVoiceProviderKeys = useMemo(() => {
+    const keys = new Set<VoiceProviderPanelKey>();
+    if (manualSttProvider !== VoiceProvider.None) {
+      keys.add(manualSttProvider as VoiceProviderPanelKey);
+    }
+    if (ttsProvider !== VoiceProvider.None) {
+      keys.add(ttsProvider as VoiceProviderPanelKey);
+    }
+    if (wakeInputEnabled) {
+      keys.add(VoiceProvider.MacosNative);
+    }
+    return Array.from(keys);
+  }, [manualSttProvider, ttsProvider, wakeInputEnabled]);
 
   const renderLocalModelEntry = (entry: VoiceLocalModelCatalogEntry) => {
     const status = getLocalModelStatus(entry.id);
@@ -1079,12 +1282,17 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setWakeInputWakeWordsText(voiceConfig.commands.wakeWords.join('\n'));
       setWakeInputSubmitCommand(voiceConfig.commands.wakeSubmitCommand);
       setWakeInputCancelCommand(voiceConfig.commands.wakeCancelCommand);
+      setWakeActivationReplyEnabled(voiceConfig.commands.wakeActivationReplyEnabled);
+      setWakeActivationReplyText(voiceConfig.commands.wakeActivationReplyText);
       setFollowUpDictationEnabled(voiceConfig.capabilities.followUpDictation.enabled);
       setVoiceStrategy(voiceConfig.strategy);
       setManualSttProvider(voiceConfig.capabilities.manualStt.provider);
       setTtsProvider(voiceConfig.capabilities.tts.provider);
+      setTtsEngine(voiceConfig.capabilities.tts.engine);
+      setVoiceMacosNativeTtsConfig(voiceConfig.providers.macosNative);
       setVoiceLocalWhisperCppConfig(voiceConfig.providers.localWhisperCpp);
       setVoiceLocalQwen3TtsConfig(voiceConfig.providers.localQwen3Tts);
+      setVoiceEdgeTtsConfig(voiceConfig.providers.edgeTts);
       setVoiceOpenAiConfig(voiceConfig.providers.openai);
       setVoiceAliyunConfig(voiceConfig.providers.aliyun);
       setVoiceVolcengineConfig(voiceConfig.providers.volcengine);
@@ -1094,9 +1302,28 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setTtsAutoPlayAssistantReply(voiceConfig.capabilities.tts.autoPlayAssistantReply);
       setTtsLlmRewriteEnabled(voiceConfig.postProcess.ttsLlmRewriteEnabled);
       setTtsSkipKeywordsText(voiceConfig.postProcess.ttsSkipKeywords.join('\n'));
-      setTtsVoiceId(voiceConfig.providers.macosNative.ttsVoiceId);
-      setTtsRate(voiceConfig.providers.macosNative.ttsRate);
-      setTtsVolume(voiceConfig.providers.macosNative.ttsVolume);
+      setTtsVoiceId(voiceConfig.capabilities.tts.engine === TtsEngine.EdgeTts
+        ? voiceConfig.providers.edgeTts.ttsVoiceId
+        : voiceConfig.providers.macosNative.ttsVoiceId);
+      setTtsRate(voiceConfig.capabilities.tts.engine === TtsEngine.EdgeTts
+        ? voiceConfig.providers.edgeTts.ttsRate
+        : voiceConfig.providers.macosNative.ttsRate);
+      setTtsVolume(voiceConfig.capabilities.tts.engine === TtsEngine.EdgeTts
+        ? voiceConfig.providers.edgeTts.ttsVolume
+        : voiceConfig.providers.macosNative.ttsVolume);
+      if (voiceConfig.capabilities.tts.enabled) {
+        setExpandedVoiceSection(VoiceCapability.Tts);
+        setSelectedVoiceProvider(voiceConfig.capabilities.tts.provider as VoiceProviderPanelKey);
+      } else if (voiceConfig.capabilities.manualStt.enabled) {
+        setExpandedVoiceSection(VoiceCapability.ManualStt);
+        setSelectedVoiceProvider(voiceConfig.capabilities.manualStt.provider as VoiceProviderPanelKey);
+      } else if (voiceConfig.capabilities.wakeInput.enabled) {
+        setExpandedVoiceSection(VoiceCapability.WakeInput);
+        setSelectedVoiceProvider(VoiceProvider.MacosNative);
+      } else if (voiceConfig.capabilities.followUpDictation.enabled) {
+        setExpandedVoiceSection(VoiceCapability.FollowUpDictation);
+        setSelectedVoiceProvider(voiceConfig.capabilities.manualStt.provider as VoiceProviderPanelKey);
+      }
       setQtbApiBaseUrl(config.auth?.qtbApiBaseUrl || DEFAULT_QTB_API_BASE_URL);
       setQtbWebBaseUrl(config.auth?.qtbWebBaseUrl || DEFAULT_QTB_WEB_BASE_URL);
       const savedTestMode = config.app?.testMode ?? false;
@@ -1339,14 +1566,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       console.error('Failed to load wake input status:', error);
     });
 
-    void window.electron.tts.getVoices().then((result) => {
-      if (active && result.success && result.voices) {
-        setTtsVoices(result.voices);
-      }
-    }).catch((error) => {
-      console.error('Failed to load TTS voices:', error);
-    });
-
     const unsubscribeWakeInput = window.electron.wakeInput.onStateChanged((status) => {
       if (active) {
         setWakeInputStatus(status);
@@ -1372,14 +1591,75 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         setVoiceLocalModelLibrary(library);
       }
     });
+    const unsubscribeTts = window.electron.tts.onStateChanged((event) => {
+      if (!active || event.type !== 'availability_changed' || !event.availability) {
+        return;
+      }
+      setTtsAvailability(event.availability);
+    });
 
     return () => {
       active = false;
       unsubscribeWakeInput();
       unsubscribeVoice();
       unsubscribeLocalModels();
+      unsubscribeTts();
     };
   }, [loadLocalModelLibrary, loadLocalQwen3TtsStatus, loadLocalWhisperCppStatus, loadVoiceCapabilityMatrix]);
+
+  useEffect(() => {
+    if (ttsEngine === TtsEngine.EdgeTts) {
+      setTtsVoiceId(voiceEdgeTtsConfig.ttsVoiceId);
+      setTtsRate(voiceEdgeTtsConfig.ttsRate);
+      setTtsVolume(voiceEdgeTtsConfig.ttsVolume);
+      return;
+    }
+    setTtsVoiceId(voiceMacosNativeTtsConfig.ttsVoiceId);
+    setTtsRate(voiceMacosNativeTtsConfig.ttsRate);
+    setTtsVolume(voiceMacosNativeTtsConfig.ttsVolume);
+  }, [ttsEngine, voiceEdgeTtsConfig.ttsRate, voiceEdgeTtsConfig.ttsVoiceId, voiceEdgeTtsConfig.ttsVolume, voiceMacosNativeTtsConfig.ttsRate, voiceMacosNativeTtsConfig.ttsVoiceId, voiceMacosNativeTtsConfig.ttsVolume]);
+
+  useEffect(() => {
+    let active = true;
+    const syncTtsRuntime = async () => {
+      try {
+        const availability = ttsEngine === TtsEngine.EdgeTts
+          ? await window.electron.tts.prepare({ engine: ttsEngine }).then((result) => result.availability)
+          : await window.electron.tts.getAvailability({ engine: ttsEngine });
+        if (active && availability) {
+          setTtsAvailability(availability);
+        }
+      } catch (error) {
+        console.error('Failed to prepare TTS engine:', error);
+      }
+
+      try {
+        const result = await window.electron.tts.getVoices({ engine: ttsEngine });
+        if (!active) {
+          return;
+        }
+        if (result.success && result.voices) {
+          setTtsVoices(result.voices);
+          const currentVoiceId = ttsVoiceId.trim();
+          if (currentVoiceId && !result.voices.some((voice) => voice.identifier === currentVoiceId)) {
+            updateDisplayedTtsConfig({ ttsVoiceId: '' });
+          }
+          return;
+        }
+        setTtsVoices([]);
+      } catch (error) {
+        console.error('Failed to load TTS voices:', error);
+        if (active) {
+          setTtsVoices([]);
+        }
+      }
+    };
+
+    void syncTtsRuntime();
+    return () => {
+      active = false;
+    };
+  }, [ttsEngine, ttsVoiceId, updateDisplayedTtsConfig]);
 
   useEffect(() => {
     return () => {
@@ -1434,6 +1714,15 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     return filtered as ProvidersConfig;
   }, [language, providers]);
 
+  const buildProviderGroupsForRail = useCallback(() => {
+    return providerGroups
+      .map((group) => ({
+        key: group.key,
+        providers: group.providers.filter((provider) => visibleProviders[provider]),
+      }))
+      .filter((group) => group.providers.length > 0);
+  }, [visibleProviders]);
+
   // Ensure activeProvider is always in visibleProviders when language changes
   useEffect(() => {
     const visibleKeys = Object.keys(visibleProviders) as ProviderType[];
@@ -1443,6 +1732,35 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setActiveProvider(firstEnabledVisible ?? visibleKeys[0]);
     }
   }, [visibleProviders, activeProvider]);
+
+  useEffect(() => {
+    setExpandedProviderGroup(getProviderGroupForKey(activeProvider));
+  }, [activeProvider, getProviderGroupForKey]);
+
+  useEffect(() => {
+    if (expandedVoiceSection === VoiceCapability.Tts && ttsProvider !== VoiceProvider.None) {
+      setSelectedVoiceProvider(ttsProvider as VoiceProviderPanelKey);
+      return;
+    }
+    if (
+      (expandedVoiceSection === VoiceCapability.ManualStt || expandedVoiceSection === VoiceCapability.FollowUpDictation)
+      && manualSttProvider !== VoiceProvider.None
+    ) {
+      setSelectedVoiceProvider(manualSttProvider as VoiceProviderPanelKey);
+      return;
+    }
+    if (expandedVoiceSection === VoiceCapability.WakeInput) {
+      setSelectedVoiceProvider(VoiceProvider.MacosNative);
+    }
+  }, [expandedVoiceSection, manualSttProvider, ttsProvider]);
+
+  const handleVoiceSectionToggle = useCallback((section: VoiceCapabilityKey) => {
+    setExpandedVoiceSection((current) => (current === section ? null : section));
+  }, []);
+
+  const handleProviderGroupToggle = useCallback((group: ProviderGroupKey) => {
+    setExpandedProviderGroup((current) => (current === group ? null : group));
+  }, []);
 
   // Handle adding a new custom provider
   const handleAddCustomProvider = () => {
@@ -1975,6 +2293,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       }
       const normalizedWakeSubmitCommand = wakeInputSubmitCommand.trim();
       const normalizedWakeCancelCommand = wakeInputCancelCommand.trim();
+      const normalizedWakeActivationReplyText = wakeActivationReplyText.trim() || DEFAULT_WAKE_INPUT_CONFIG.activationReplyText;
       const normalizedWakeWords = parseWakeWordsInput(wakeInputWakeWordsText);
       const normalizedTtsSkipKeywords = normalizeVoiceKeywordList(ttsSkipKeywordsText);
       if (
@@ -2032,6 +2351,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               enabled: ttsEnabled,
               autoPlayAssistantReply: ttsAutoPlayAssistantReply,
               provider: ttsProvider,
+              engine: ttsEngine,
             },
           },
           commands: {
@@ -2041,14 +2361,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
             wakeSubmitCommand: normalizedWakeSubmitCommand,
             wakeCancelCommand: normalizedWakeCancelCommand,
             wakeSessionTimeoutMs: DEFAULT_WAKE_INPUT_CONFIG.sessionTimeoutMs,
+            wakeActivationReplyEnabled,
+            wakeActivationReplyText: normalizedWakeActivationReplyText,
           },
           providers: {
-            macosNative: {
-              enabled: true,
-              ttsVoiceId: ttsVoiceId,
-              ttsRate: ttsRate,
-              ttsVolume: ttsVolume,
-            },
+            macosNative: voiceMacosNativeTtsConfig,
+            edgeTts: voiceEdgeTtsConfig,
             localWhisperCpp: voiceLocalWhisperCppConfig,
             localQwen3Tts: voiceLocalQwen3TtsConfig,
             openai: voiceOpenAiConfig,
@@ -2714,1347 +3032,2035 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     return sidebarTabs.find(t => t.key === activeTab)?.label ?? '';
   }, [activeTab, sidebarTabs]);
 
-  const renderTabContent = () => {
-    switch(activeTab) {
-      case 'general':
+  const renderSwitch = (
+    checked: boolean,
+    onToggle: () => void,
+    options?: { disabled?: boolean }
+  ) => (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-disabled={options?.disabled ? true : undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (options?.disabled) {
+          return;
+        }
+        onToggle();
+      }}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+        options?.disabled ? 'cursor-not-allowed opacity-50' : ''
+      } ${checked ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+
+  const getProviderDisplayLabel = (providerKey: ProviderType): string => {
+    if (isCustomProvider(providerKey)) {
+      return (providers[providerKey] as ProviderConfig)?.displayName || getCustomProviderDefaultName(providerKey);
+    }
+    return providerMeta[providerKey]?.label ?? getProviderDisplayName(providerKey);
+  };
+
+  const getVoiceProviderDescription = (providerKey: VoiceProviderPanelKey): string => {
+    switch (providerKey) {
+      case VoiceProvider.MacosNative:
+        return i18nService.t('ttsDescription');
+      case VoiceProvider.LocalWhisperCpp:
+        return i18nService.t('voiceLocalWhisperCppDescription');
+      case VoiceProvider.LocalQwen3Tts:
+        return i18nService.t('voiceLocalQwen3TtsDescription');
+      case VoiceProvider.CloudOpenAi:
+        return i18nService.t('voiceCloudOpenAiDescription');
+      case VoiceProvider.CloudAliyun:
+        return i18nService.t('voiceCloudAliyunDescription');
+      case VoiceProvider.CloudVolcengine:
+        return i18nService.t('voiceCloudVolcengineDescription');
+      case VoiceProvider.CloudAzure:
+        return i18nService.t('voiceCloudAzureDescription');
+      case VoiceProvider.CloudCustom:
+        return i18nService.t('voiceCloudCustomDescription');
+      default:
+        return '';
+    }
+  };
+
+  const renderSettingsCardSection = (
+    title: string,
+    children: React.ReactNode,
+    subtitle?: string,
+    actions?: React.ReactNode,
+  ) => (
+    <div className="rounded-2xl border border-border bg-surface px-4 py-4 sm:px-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">{title}</div>
+          {subtitle && (
+            <div className="mt-1 text-xs text-secondary">{subtitle}</div>
+          )}
+        </div>
+        {actions}
+      </div>
+      <div className="mt-4">{children}</div>
+    </div>
+  );
+
+  const renderVoiceProviderStatusFacts = (providerKey: VoiceProviderPanelKey) => {
+    const providerStatus = getVoiceProviderStatus(providerKey);
+    if (!providerStatus) {
+      return (
+        <div className="text-xs text-secondary">
+          {i18nService.t('loading')}
+        </div>
+      );
+    }
+
+    const linkedCapabilities = getVoiceProviderInUseTags(providerKey);
+    return (
+      <div className="grid gap-2 text-xs text-secondary sm:grid-cols-2">
+        <div>{i18nService.t('voicePlatformSupportLabel')}: {providerStatus.platformSupported ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+        <div>{i18nService.t('voicePackagedSupportLabel')}: {providerStatus.packaged ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+        <div>{i18nService.t('voiceConfiguredLabel')}: {providerStatus.configured ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+        <div>{i18nService.t('voiceReasonLabel')}: {getVoiceReasonLabel(providerStatus.reason)}</div>
+        <div className="sm:col-span-2">
+          {i18nService.t('voiceProviderLinkedCapabilitiesLabel')}: {linkedCapabilities.length > 0 ? linkedCapabilities.join(' / ') : i18nService.t('voiceProviderInUse')}
+        </div>
+      </div>
+    );
+  };
+
+  const renderSelectedVoiceProviderPanel = () => {
+    switch (selectedVoiceProvider) {
+      case VoiceProvider.MacosNative:
         return (
-          <div className="space-y-8">
-            {/* Language Section */}
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium text-foreground">
-                {i18nService.t('language')}
-              </h4>
-              <div className="w-[140px] shrink-0">
-                <ThemedSelect
-                  id="language"
-                  value={language}
-                  onChange={(value) => {
-                    const nextLanguage = value as LanguageType;
-                    setLanguage(nextLanguage);
-                    i18nService.setLanguage(nextLanguage, { persist: false });
-                  }}
-                  options={[
-                    { value: 'zh', label: i18nService.t('chinese') },
-                    { value: 'en', label: i18nService.t('english') }
-                  ]}
-                />
-              </div>
-            </div>
-
-            {/* Auto-launch Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('autoLaunch')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('autoLaunchDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={autoLaunch}
-                  onClick={async () => {
-                    if (isUpdatingAutoLaunch) return;
-                    const next = !autoLaunch;
-                    setIsUpdatingAutoLaunch(true);
-                    try {
-                      const result = await window.electron.autoLaunch.set(next);
-                      if (result.success) {
-                        setAutoLaunchState(next);
-                      } else {
-                        setError(result.error || 'Failed to update auto-launch setting');
-                      }
-                    } catch (err) {
-                      console.error('Failed to set auto-launch:', err);
-                      setError('Failed to update auto-launch setting');
-                    } finally {
-                      setIsUpdatingAutoLaunch(false);
-                    }
-                  }}
-                  disabled={isUpdatingAutoLaunch}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    isUpdatingAutoLaunch ? 'opacity-50 cursor-not-allowed' : ''
-                  } ${
-                    autoLaunch
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      autoLaunch ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
-
-            {/* Prevent Sleep Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('preventSleep')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('preventSleepDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={preventSleep}
-                  onClick={async () => {
-                    if (isUpdatingPreventSleep) return;
-                    const next = !preventSleep;
-                    setIsUpdatingPreventSleep(true);
-                    try {
-                      const result = await window.electron.preventSleep.set(next);
-                      if (result.success) {
-                        setPreventSleepState(next);
-                      } else {
-                        setError(result.error || 'Failed to update prevent-sleep setting');
-                      }
-                    } catch (err) {
-                      console.error('Failed to set prevent-sleep:', err);
-                      setError('Failed to update prevent-sleep setting');
-                    } finally {
-                      setIsUpdatingPreventSleep(false);
-                    }
-                  }}
-                  disabled={isUpdatingPreventSleep}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    isUpdatingPreventSleep ? 'opacity-50 cursor-not-allowed' : ''
-                  } ${
-                    preventSleep
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      preventSleep ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
-
-            {/* System proxy Section */}
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-3">
-                {i18nService.t('useSystemProxy')}
-              </h4>
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-sm text-secondary">
-                  {i18nService.t('useSystemProxyDescription')}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={useSystemProxy}
-                  onClick={() => {
-                    setUseSystemProxy((prev) => !prev);
-                  }}
-                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                    useSystemProxy
-                      ? 'bg-primary'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      useSystemProxy ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </label>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                  {i18nService.t('voiceSettingsTitle')}
-                </h4>
-                <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                  {i18nService.t('voiceSettingsDescription')}
-                </p>
-              </div>
-
-              <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-4">
-                <div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceCapabilityManualSttTitle')}</div>
-                      <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceManualSttDescription')}</div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={manualSttEnabled}
-                      onClick={() => setManualSttEnabled((prev) => !prev)}
-                      className={
-                        'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                        + (manualSttEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                      }
-                    >
-                      <span
-                        className={
-                          'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                          + (manualSttEnabled ? 'translate-x-6' : 'translate-x-1')
-                        }
-                      />
-                    </button>
-                  </div>
-                  {renderVoiceCapabilityMeta(VoiceCapability.ManualStt)}
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceCapabilityWakeInputTitle')}</div>
-                      <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('wakeInputDescription')}</div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={wakeInputEnabled}
-                      onClick={() => setWakeInputEnabled((prev) => !prev)}
-                      className={
-                        'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                        + (wakeInputEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                      }
-                    >
-                      <span
-                        className={
-                          'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                          + (wakeInputEnabled ? 'translate-x-6' : 'translate-x-1')
-                        }
-                      />
-                    </button>
-                  </div>
-                  {renderVoiceCapabilityMeta(VoiceCapability.WakeInput)}
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceCapabilityFollowUpTitle')}</div>
-                      <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('followUpDictationDescription')}</div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={followUpDictationEnabled}
-                      onClick={() => setFollowUpDictationEnabled((prev) => !prev)}
-                      className={
-                        'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                        + (followUpDictationEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                      }
-                    >
-                      <span
-                        className={
-                          'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                          + (followUpDictationEnabled ? 'translate-x-6' : 'translate-x-1')
-                        }
-                      />
-                    </button>
-                  </div>
-                  {renderVoiceCapabilityMeta(VoiceCapability.FollowUpDictation)}
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceCapabilityTtsTitle')}</div>
-                      <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('ttsDescription')}</div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={ttsEnabled}
-                      onClick={() => setTtsEnabled((prev) => !prev)}
-                      className={
-                        'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                        + (ttsEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                      }
-                    >
-                      <span
-                        className={
-                          'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                          + (ttsEnabled ? 'translate-x-6' : 'translate-x-1')
-                        }
-                      />
-                    </button>
-                  </div>
-                  {renderVoiceCapabilityMeta(VoiceCapability.Tts)}
-                </div>
-              </div>
-
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
               <div className="space-y-3">
-                <div>
-                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('voiceProviderStatusTitle')}
-                  </h4>
-                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                    {i18nService.t('voiceProviderStatusDescription')}
-                  </p>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {renderVoiceProviderMeta(VoiceProvider.MacosNative)}
-                  {renderVoiceProviderMeta(VoiceProvider.LocalWhisperCpp)}
-                  {renderVoiceProviderMeta(VoiceProvider.LocalQwen3Tts)}
-                  {renderVoiceProviderMeta(VoiceProvider.CloudOpenAi)}
-                  {renderVoiceProviderMeta(VoiceProvider.CloudAliyun)}
-                  {renderVoiceProviderMeta(VoiceProvider.CloudVolcengine)}
-                  {renderVoiceProviderMeta(VoiceProvider.CloudAzure)}
-                  {renderVoiceProviderMeta(VoiceProvider.CloudCustom)}
-                </div>
-              </div>
-
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.MacosNative)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.MacosNative)}
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelRuntime'),
               <div className="space-y-3">
-                <div>
-                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('voiceRoutingTitle')}
-                  </h4>
-                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                    {i18nService.t('voiceRoutingDescription')}
-                  </p>
+                <div className="grid gap-2 text-xs text-secondary sm:grid-cols-2">
+                  <div>{i18nService.t('ttsEngineLabel')}: {i18nService.t(`ttsEngine_${ttsEngine}`)}</div>
+                  <div>{i18nService.t('voiceOverviewActualEngine')}: {ttsAvailability?.lastResolvedEngine ? i18nService.t(`ttsEngine_${ttsAvailability.lastResolvedEngine}`) : i18nService.t('ttsActualEngineNone')}</div>
+                  <div>{i18nService.t('voiceOverviewRuntimeStatus')}: {ttsAvailability ? i18nService.t(`ttsPrepareStatus_${ttsAvailability.prepareStatus}`) : i18nService.t('loading')}</div>
+                  <div>{i18nService.t('ttsPrepareLastErrorLabel')}: {ttsAvailability?.recentError || '-'}</div>
                 </div>
-                <div className="grid gap-3 xl:grid-cols-3">
-                  <div>
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('voiceStrategyLabel')}
-                    </div>
-                    <ThemedSelect
-                      id="voice-strategy"
-                      value={voiceStrategy}
-                      onChange={(value) => setVoiceStrategy(value as VoiceStrategyValue)}
-                      options={voiceStrategyOptions}
-                    />
-                  </div>
-
-                  <div>
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('voiceManualSttProviderLabel')}
-                    </div>
-                    <ThemedSelect
-                      id="voice-manual-stt-provider"
-                      value={manualSttProvider}
-                      onChange={(value) => setManualSttProvider(value as VoiceCapabilityProvider)}
-                      options={manualSttProviderOptions}
-                    />
-                  </div>
-
-                  <div>
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('voiceTtsProviderLabel')}
-                    </div>
-                    <ThemedSelect
-                      id="voice-tts-provider"
-                      value={ttsProvider}
-                      onChange={(value) => setTtsProvider(value as VoiceCapabilityProvider)}
-                      options={ttsProviderOptions}
-                    />
-                  </div>
+                <div className="rounded-xl border border-dashed border-border px-3 py-3 text-xs text-secondary">
+                  {i18nService.t('voiceProviderManagedInTtsHint')}
                 </div>
-
-                <p className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                  {i18nService.t('voiceFollowUpProviderHint')}
-                </p>
-              </div>
-
+              </div>,
+              undefined,
+              <div className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                {getVoiceProviderConfiguredText(VoiceProvider.MacosNative)}
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.LocalWhisperCpp:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
               <div className="space-y-3">
-                <div>
-                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('voiceCloudProviderConfigTitle')}
-                  </h4>
-                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                    {i18nService.t('voiceCloudProviderConfigDescription')}
-                  </p>
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.LocalWhisperCpp)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.LocalWhisperCpp)}
+              </div>,
+              undefined,
+              renderSwitch(voiceLocalWhisperCppConfig.enabled, () => updateVoiceLocalWhisperCppConfig({ enabled: !voiceLocalWhisperCppConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelRuntime'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderBinaryPathLabel')}</div>
+                  <input type="text" value={voiceLocalWhisperCppConfig.binaryPath} onChange={(event) => updateVoiceLocalWhisperCppConfig({ binaryPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderModelPathLabel')}</div>
+                  <input type="text" value={voiceLocalWhisperCppConfig.modelPath} onChange={(event) => updateVoiceLocalWhisperCppConfig({ modelPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderModelNameLabel')}</div>
+                    <input type="text" value={voiceLocalWhisperCppConfig.modelName} onChange={(event) => updateVoiceLocalWhisperCppConfig({ modelName: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                    <input type="text" value={voiceLocalWhisperCppConfig.language} onChange={(event) => updateVoiceLocalWhisperCppConfig({ language: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderThreadsLabel')}</div>
+                    <input type="number" min={1} max={32} value={voiceLocalWhisperCppConfig.threads} onChange={(event) => updateVoiceLocalWhisperCppConfig({ threads: Math.max(1, Number(event.target.value) || 1) })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
                 </div>
-                <div className="grid gap-4 xl:grid-cols-6">
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_local_whisper_cpp')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceLocalWhisperCppDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceLocalWhisperCppConfig.enabled}
-                        onClick={() => updateVoiceLocalWhisperCppConfig({ enabled: !voiceLocalWhisperCppConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceLocalWhisperCppConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                        }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceLocalWhisperCppConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderBinaryPathLabel')}</div>
-                      <input type="text" value={voiceLocalWhisperCppConfig.binaryPath} onChange={(event) => updateVoiceLocalWhisperCppConfig({ binaryPath: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderModelPathLabel')}</div>
-                      <input type="text" value={voiceLocalWhisperCppConfig.modelPath} onChange={(event) => updateVoiceLocalWhisperCppConfig({ modelPath: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderModelNameLabel')}</div>
-                      <input type="text" value={voiceLocalWhisperCppConfig.modelName} onChange={(event) => updateVoiceLocalWhisperCppConfig({ modelName: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceLocalWhisperCppConfig.language} onChange={(event) => updateVoiceLocalWhisperCppConfig({ language: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderThreadsLabel')}</div>
-                      <input type="number" min={1} max={32} value={voiceLocalWhisperCppConfig.threads} onChange={(event) => updateVoiceLocalWhisperCppConfig({ threads: Math.max(1, Number(event.target.value) || 1) })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-
-                    <div className="space-y-2">
-                      <label className="flex items-center justify-between gap-3 rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2">
-                        <span className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderUseGpuLabel')}</span>
-                        <input type="checkbox" checked={voiceLocalWhisperCppConfig.useGpu} onChange={(event) => updateVoiceLocalWhisperCppConfig({ useGpu: event.target.checked })} />
-                      </label>
-                      <label className="flex items-center justify-between gap-3 rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2">
-                        <span className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderAutoDownloadModelLabel')}</span>
-                        <input type="checkbox" checked={voiceLocalWhisperCppConfig.autoDownloadModel} onChange={(event) => updateVoiceLocalWhisperCppConfig({ autoDownloadModel: event.target.checked })} />
-                      </label>
-                    </div>
-
-                    {voiceLocalWhisperCppStatus && (
-                      <div className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs space-y-1 dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                        <div>{i18nService.t('voiceLocalWhisperCppEnabledLabel')}: {voiceLocalWhisperCppStatus.enabled ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppReadyLabel')}: {voiceLocalWhisperCppStatus.ready ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppBinaryExistsLabel')}: {voiceLocalWhisperCppStatus.executableExists ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppModelExistsLabel')}: {voiceLocalWhisperCppStatus.modelExists ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppResourceRootLabel')}: {voiceLocalWhisperCppStatus.resourceRoot}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppBinaryDirectoryLabel')}: {voiceLocalWhisperCppStatus.binaryDirectory}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppModelsDirectoryLabel')}: {voiceLocalWhisperCppStatus.modelsDirectory}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppExpectedBinaryLabel')}: {voiceLocalWhisperCppStatus.expectedExecutablePath}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppExpectedModelLabel')}: {voiceLocalWhisperCppStatus.expectedModelPath}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppResolvedBinaryLabel')}: {voiceLocalWhisperCppStatus.executablePath || '-'}</div>
-                        <div>{i18nService.t('voiceLocalWhisperCppResolvedModelLabel')}: {voiceLocalWhisperCppStatus.modelPath || '-'}</div>
-                      </div>
-                    )}
-
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => { void handleRefreshLocalWhisperCppStatus(); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalWhisperCppRefreshButton')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { void handlePrepareLocalWhisperCppDirectories(); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalWhisperCppPrepareButton')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { void handleOpenLocalWhisperCppDirectory('resourceRoot'); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalWhisperCppOpenRootButton')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { void handleOpenLocalWhisperCppDirectory('modelsDirectory'); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalWhisperCppOpenModelsButton')}
-                      </button>
-                    </div>
-
-                    <div className="space-y-2">
-                      {getLocalModelsByProvider(VoiceProvider.LocalWhisperCpp).map(renderLocalModelEntry)}
-                    </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm text-foreground">
+                    <span>{i18nService.t('voiceProviderUseGpuLabel')}</span>
+                    <input type="checkbox" checked={voiceLocalWhisperCppConfig.useGpu} onChange={(event) => updateVoiceLocalWhisperCppConfig({ useGpu: event.target.checked })} />
+                  </label>
+                  <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm text-foreground">
+                    <span>{i18nService.t('voiceProviderAutoDownloadModelLabel')}</span>
+                    <input type="checkbox" checked={voiceLocalWhisperCppConfig.autoDownloadModel} onChange={(event) => updateVoiceLocalWhisperCppConfig({ autoDownloadModel: event.target.checked })} />
+                  </label>
+                </div>
+                {voiceLocalWhisperCppStatus && (
+                  <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
+                    <div>{i18nService.t('voiceLocalWhisperCppReadyLabel')}: {voiceLocalWhisperCppStatus.ready ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+                    <div>{i18nService.t('voiceLocalWhisperCppResolvedBinaryLabel')}: {voiceLocalWhisperCppStatus.executablePath || '-'}</div>
+                    <div>{i18nService.t('voiceLocalWhisperCppResolvedModelLabel')}: {voiceLocalWhisperCppStatus.modelPath || '-'}</div>
                   </div>
+                )}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={() => { void handleRefreshLocalWhisperCppStatus(); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalWhisperCppRefreshButton')}
+                  </button>
+                  <button type="button" onClick={() => { void handlePrepareLocalWhisperCppDirectories(); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalWhisperCppPrepareButton')}
+                  </button>
+                  <button type="button" onClick={() => { void handleOpenLocalWhisperCppDirectory('resourceRoot'); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalWhisperCppOpenRootButton')}
+                  </button>
+                  <button type="button" onClick={() => { void handleOpenLocalWhisperCppDirectory('modelsDirectory'); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalWhisperCppOpenModelsButton')}
+                  </button>
+                </div>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_models'),
+              <div className="space-y-2">
+                {getLocalModelsByProvider(VoiceProvider.LocalWhisperCpp).map(renderLocalModelEntry)}
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.LocalQwen3Tts:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.LocalQwen3Tts)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.LocalQwen3Tts)}
+              </div>,
+              undefined,
+              renderSwitch(voiceLocalQwen3TtsConfig.enabled, () => updateVoiceLocalQwen3TtsConfig({ enabled: !voiceLocalQwen3TtsConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelRuntime'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderPythonCommandLabel')}</div>
+                  <input type="text" value={voiceLocalQwen3TtsConfig.pythonCommand} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ pythonCommand: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderModelPathLabel')}</div>
+                    <input type="text" value={voiceLocalQwen3TtsConfig.modelPath} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ modelPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTokenizerPathLabel')}</div>
+                    <input type="text" value={voiceLocalQwen3TtsConfig.tokenizerPath} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ tokenizerPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderModelIdLabel')}</div>
+                    <input type="text" value={voiceLocalQwen3TtsConfig.modelId} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ modelId: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                    <input type="text" value={voiceLocalQwen3TtsConfig.language} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ language: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderDeviceLabel')}</div>
+                    <input type="text" value={voiceLocalQwen3TtsConfig.device} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ device: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                </div>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocalTaskLabel')}</div>
+                  <ThemedSelect
+                    id="voice-provider-qwen-task"
+                    value={voiceLocalQwen3TtsConfig.task}
+                    onChange={(value) => updateVoiceLocalQwen3TtsConfig({ task: value as VoiceLocalQwen3TtsConfig['task'] })}
+                    options={[
+                      { value: VoiceLocalQwen3TtsTask.CustomVoice, label: i18nService.t('voiceLocalQwen3TtsTask_custom_voice') },
+                      { value: VoiceLocalQwen3TtsTask.VoiceDesign, label: i18nService.t('voiceLocalQwen3TtsTask_voice_design') },
+                    ]}
+                  />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSpeakerLabel')}</div>
+                  <input type="text" value={voiceLocalQwen3TtsConfig.speaker} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ speaker: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderInstructLabel')}</div>
+                  <textarea value={voiceLocalQwen3TtsConfig.instruct} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ instruct: event.target.value })} rows={3} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                {voiceLocalQwen3TtsStatus && (
+                  <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
+                    <div>{i18nService.t('voiceLocalQwen3TtsReadyLabel')}: {voiceLocalQwen3TtsStatus.ready ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+                    <div>{i18nService.t('voiceLocalQwen3TtsPythonResolvedPathLabel')}: {voiceLocalQwen3TtsStatus.pythonResolvedPath || '-'}</div>
+                    <div>{i18nService.t('voiceLocalQwen3TtsResolvedModelLabel')}: {voiceLocalQwen3TtsStatus.modelPath || '-'}</div>
+                    <div>{i18nService.t('voiceLocalQwen3TtsResolvedTokenizerLabel')}: {voiceLocalQwen3TtsStatus.tokenizerPath || '-'}</div>
+                  </div>
+                )}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={() => { void handleRefreshLocalQwen3TtsStatus(); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalQwen3TtsRefreshButton')}
+                  </button>
+                  <button type="button" onClick={() => { void handleOpenLocalQwen3TtsDirectory('resourceRoot'); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalQwen3TtsOpenRootButton')}
+                  </button>
+                  <button type="button" onClick={() => { void handleOpenLocalQwen3TtsDirectory('modelsRoot'); }} className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised">
+                    {i18nService.t('voiceLocalQwen3TtsOpenModelsButton')}
+                  </button>
+                </div>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_models'),
+              <div className="space-y-2">
+                {getLocalModelsByProvider(VoiceProvider.LocalQwen3Tts).map(renderLocalModelEntry)}
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.CloudOpenAi:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.CloudOpenAi)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.CloudOpenAi)}
+              </div>,
+              undefined,
+              renderSwitch(voiceOpenAiConfig.enabled, () => updateVoiceOpenAiConfig({ enabled: !voiceOpenAiConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_credentials'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
+                  <input type="password" value={voiceOpenAiConfig.apiKey} onChange={(event) => updateVoiceOpenAiConfig({ apiKey: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
+                  <input type="text" value={voiceOpenAiConfig.baseUrl} onChange={(event) => updateVoiceOpenAiConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelParameters'),
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSttModelLabel')}</div>
+                  <input type="text" value={voiceOpenAiConfig.sttModel} onChange={(event) => updateVoiceOpenAiConfig({ sttModel: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTtsModelLabel')}</div>
+                  <input type="text" value={voiceOpenAiConfig.ttsModel} onChange={(event) => updateVoiceOpenAiConfig({ ttsModel: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
+                  <input type="text" value={voiceOpenAiConfig.ttsVoice} onChange={(event) => updateVoiceOpenAiConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                  <input type="text" value={voiceOpenAiConfig.locale} onChange={(event) => updateVoiceOpenAiConfig({ locale: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.CloudAliyun:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.CloudAliyun)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.CloudAliyun)}
+              </div>,
+              undefined,
+              renderSwitch(voiceAliyunConfig.enabled, () => updateVoiceAliyunConfig({ enabled: !voiceAliyunConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_credentials'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
+                  <input type="password" value={voiceAliyunConfig.apiKey} onChange={(event) => updateVoiceAliyunConfig({ apiKey: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
+                  <input type="text" value={voiceAliyunConfig.baseUrl} onChange={(event) => updateVoiceAliyunConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelParameters'),
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSttModelLabel')}</div>
+                  <input type="text" value={voiceAliyunConfig.sttModel} onChange={(event) => updateVoiceAliyunConfig({ sttModel: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTtsModelLabel')}</div>
+                  <input type="text" value={voiceAliyunConfig.ttsModel} onChange={(event) => updateVoiceAliyunConfig({ ttsModel: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
+                  <input type="text" value={voiceAliyunConfig.ttsVoice} onChange={(event) => updateVoiceAliyunConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                  <input type="text" value={voiceAliyunConfig.locale} onChange={(event) => updateVoiceAliyunConfig({ locale: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.CloudVolcengine:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.CloudVolcengine)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.CloudVolcengine)}
+              </div>,
+              undefined,
+              renderSwitch(voiceVolcengineConfig.enabled, () => updateVoiceVolcengineConfig({ enabled: !voiceVolcengineConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_credentials'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderVolcengineAppKeyLabel')}</div>
+                  <input type="password" value={voiceVolcengineConfig.appKey} onChange={(event) => updateVoiceVolcengineConfig({ appKey: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderVolcengineTokenLabel')}</div>
+                  <input type="password" value={voiceVolcengineConfig.accessToken} onChange={(event) => updateVoiceVolcengineConfig({ accessToken: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
+                  <input type="text" value={voiceVolcengineConfig.baseUrl} onChange={(event) => updateVoiceVolcengineConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelParameters'),
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
+                  <input type="text" value={voiceVolcengineConfig.ttsVoice} onChange={(event) => updateVoiceVolcengineConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                  <input type="text" value={voiceVolcengineConfig.locale} onChange={(event) => updateVoiceVolcengineConfig({ locale: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.CloudAzure:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.CloudAzure)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.CloudAzure)}
+              </div>,
+              undefined,
+              renderSwitch(voiceAzureConfig.enabled, () => updateVoiceAzureConfig({ enabled: !voiceAzureConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_credentials'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
+                  <input type="password" value={voiceAzureConfig.apiKey} onChange={(event) => updateVoiceAzureConfig({ apiKey: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderAzureRegionLabel')}</div>
+                    <input type="text" value={voiceAzureConfig.region} onChange={(event) => updateVoiceAzureConfig({ region: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderAzureEndpointLabel')}</div>
+                    <input type="text" value={voiceAzureConfig.endpoint} onChange={(event) => updateVoiceAzureConfig({ endpoint: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                </div>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelParameters'),
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
+                  <input type="text" value={voiceAzureConfig.ttsVoice} onChange={(event) => updateVoiceAzureConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                  <input type="text" value={voiceAzureConfig.locale} onChange={(event) => updateVoiceAzureConfig({ locale: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.CloudCustom:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.CloudCustom)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.CloudCustom)}
+              </div>,
+              undefined,
+              renderSwitch(voiceCustomConfig.enabled, () => updateVoiceCustomConfig({ enabled: !voiceCustomConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_credentials'),
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
+                  <input type="password" value={voiceCustomConfig.apiKey} onChange={(event) => updateVoiceCustomConfig({ apiKey: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
+                  <input type="text" value={voiceCustomConfig.baseUrl} onChange={(event) => updateVoiceCustomConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelParameters'),
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderCustomSttPathLabel')}</div>
+                  <input type="text" value={voiceCustomConfig.sttPath} onChange={(event) => updateVoiceCustomConfig({ sttPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderCustomTtsPathLabel')}</div>
+                  <input type="text" value={voiceCustomConfig.ttsPath} onChange={(event) => updateVoiceCustomConfig({ ttsPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
+                  <input type="text" value={voiceCustomConfig.locale} onChange={(event) => updateVoiceCustomConfig({ locale: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+              </div>,
+            )}
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
 
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_local_qwen3_tts')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceLocalQwen3TtsDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceLocalQwen3TtsConfig.enabled}
-                        onClick={() => updateVoiceLocalQwen3TtsConfig({ enabled: !voiceLocalQwen3TtsConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceLocalQwen3TtsConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                        }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceLocalQwen3TtsConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
+  const renderGeneralSettingsPanel = () => {
+    const voiceCapabilityEntries: Array<{
+      key: VoiceCapabilityKey;
+      title: string;
+      description: string;
+      enabled: boolean;
+      toggle: () => void;
+    }> = [
+      {
+        key: VoiceCapability.ManualStt,
+        title: i18nService.t('voiceCapabilityManualSttTitle'),
+        description: i18nService.t('voiceManualSttDescription'),
+        enabled: manualSttEnabled,
+        toggle: () => setManualSttEnabled((prev) => !prev),
+      },
+      {
+        key: VoiceCapability.WakeInput,
+        title: i18nService.t('voiceCapabilityWakeInputTitle'),
+        description: i18nService.t('wakeInputDescription'),
+        enabled: wakeInputEnabled,
+        toggle: () => setWakeInputEnabled((prev) => !prev),
+      },
+      {
+        key: VoiceCapability.FollowUpDictation,
+        title: i18nService.t('voiceCapabilityFollowUpTitle'),
+        description: i18nService.t('followUpDictationDescription'),
+        enabled: followUpDictationEnabled,
+        toggle: () => setFollowUpDictationEnabled((prev) => !prev),
+      },
+      {
+        key: VoiceCapability.Tts,
+        title: i18nService.t('voiceCapabilityTtsTitle'),
+        description: i18nService.t('ttsDescription'),
+        enabled: ttsEnabled,
+        toggle: () => setTtsEnabled((prev) => !prev),
+      },
+    ];
 
+    const visibleVoiceProviderStatuses = showAllVoiceProviderStatuses
+      ? voiceProviderPanelKeys
+      : (inUseVoiceProviderKeys.length > 0 ? inUseVoiceProviderKeys : [selectedVoiceProvider]);
+    const selectedWorkspaceTags = getVoiceProviderInUseTags(selectedVoiceProvider);
+
+    const renderVoiceCapabilityDetail = (capabilityKey: VoiceCapabilityKey) => {
+      switch (capabilityKey) {
+        case VoiceCapability.ManualStt:
+          return (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_320px]">
+              <div className="space-y-4">
+                {renderSettingsCardSection(
+                  i18nService.t('voiceRoutingTitle'),
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderPythonCommandLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.pythonCommand} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ pythonCommand: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderModelPathLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.modelPath} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ modelPath: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTokenizerPathLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.tokenizerPath} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ tokenizerPath: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderModelIdLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.modelId} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ modelId: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocalTaskLabel')}</div>
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceStrategyLabel')}</div>
                       <ThemedSelect
-                        id="voice-local-qwen-task"
-                        value={voiceLocalQwen3TtsConfig.task}
-                        onChange={(value) => updateVoiceLocalQwen3TtsConfig({ task: value as VoiceLocalQwen3TtsConfig['task'] })}
+                        id="voice-strategy-panel"
+                        value={voiceStrategy}
+                        onChange={(value) => setVoiceStrategy(value as VoiceStrategyValue)}
+                        options={voiceStrategyOptions}
+                      />
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceManualSttProviderLabel')}</div>
+                      <ThemedSelect
+                        id="voice-manual-provider-panel"
+                        value={manualSttProvider}
+                        onChange={(value) => setManualSttProvider(value as VoiceCapabilityProvider)}
+                        options={manualSttProviderOptions}
+                      />
+                    </label>
+                  </div>,
+                )}
+                {renderSettingsCardSection(
+                  i18nService.t('speechInputCommandsTitle'),
+                  <div className="space-y-3">
+                    <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                      <span className="text-sm text-foreground">{i18nService.t('speechInputLlmCorrectionLabel')}</span>
+                      {renderSwitch(sttLlmCorrectionEnabled, () => setSttLlmCorrectionEnabled((prev) => !prev))}
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <div className="mb-1 text-xs text-secondary">{i18nService.t('speechInputStopCommandLabel')}</div>
+                        <input type="text" value={speechStopCommand} onChange={(event) => setSpeechStopCommand(event.target.value)} placeholder={i18nService.t('speechInputStopCommandPlaceholder')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      </label>
+                      <label className="block">
+                        <div className="mb-1 text-xs text-secondary">{i18nService.t('speechInputSubmitCommandLabel')}</div>
+                        <input type="text" value={speechSubmitCommand} onChange={(event) => setSpeechSubmitCommand(event.target.value)} placeholder={i18nService.t('speechInputSubmitCommandPlaceholder')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      </label>
+                    </div>
+                    <p className="text-xs text-secondary">{i18nService.t('speechInputCommandsHint')}</p>
+                  </div>,
+                )}
+              </div>
+              {renderSettingsCardSection(
+                i18nService.t('voiceProviderStatusTitle'),
+                renderVoiceCapabilityMeta(VoiceCapability.ManualStt),
+                i18nService.t('voiceProviderStatusDescription'),
+              )}
+            </div>
+          );
+        case VoiceCapability.WakeInput:
+          return (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_320px]">
+              <div className="space-y-4">
+                {renderSettingsCardSection(
+                  i18nService.t('wakeInputTitle'),
+                  <div className="space-y-3">
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputWakeWordsLabel')}</div>
+                      <textarea value={wakeInputWakeWordsText} onChange={(event) => setWakeInputWakeWordsText(event.target.value)} placeholder={i18nService.t('wakeInputWakeWordsPlaceholder')} rows={4} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputSubmitCommandLabel')}</div>
+                        <input type="text" value={wakeInputSubmitCommand} onChange={(event) => setWakeInputSubmitCommand(event.target.value)} placeholder={i18nService.t('wakeInputSubmitCommandPlaceholder')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      </label>
+                      <label className="block">
+                        <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputCancelCommandLabel')}</div>
+                        <input type="text" value={wakeInputCancelCommand} onChange={(event) => setWakeInputCancelCommand(event.target.value)} placeholder={i18nService.t('wakeInputCancelCommandPlaceholder')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      </label>
+                    </div>
+                    <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                      <span className="text-sm text-foreground">{i18nService.t('wakeInputActivationReplyEnabledLabel')}</span>
+                      {renderSwitch(wakeActivationReplyEnabled, () => setWakeActivationReplyEnabled((prev) => !prev))}
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputActivationReplyTextLabel')}</div>
+                      <input type="text" value={wakeActivationReplyText} onChange={(event) => setWakeActivationReplyText(event.target.value)} placeholder={i18nService.t('wakeInputActivationReplyTextPlaceholder')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                    </label>
+                  </div>,
+                )}
+              </div>
+              {renderSettingsCardSection(
+                i18nService.t('voiceProviderStatusTitle'),
+                <div className="space-y-3">
+                  {renderVoiceCapabilityMeta(VoiceCapability.WakeInput)}
+                  <div className="rounded-xl border border-dashed border-border px-3 py-3 text-xs text-secondary">
+                    {i18nService.t('wakeInputStatusLabel')}: {getWakeInputStatusText()}
+                  </div>
+                </div>,
+                i18nService.t('voiceProviderStatusDescription'),
+              )}
+            </div>
+          );
+        case VoiceCapability.FollowUpDictation:
+          return (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_320px]">
+              <div className="space-y-4">
+                {renderSettingsCardSection(
+                  i18nService.t('voiceCapabilityFollowUpTitle'),
+                  <div className="space-y-3">
+                    <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                      <span className="text-sm text-foreground">{i18nService.t('voiceCapabilityFollowUpTitle')}</span>
+                      {renderSwitch(followUpDictationEnabled, () => setFollowUpDictationEnabled((prev) => !prev))}
+                    </label>
+                    <div className="rounded-xl border border-dashed border-border px-3 py-3 text-sm text-secondary">
+                      {i18nService.t('followUpDictationDescription')}
+                    </div>
+                    <div className="rounded-xl border border-border px-3 py-3 text-sm text-secondary">
+                      {i18nService.t('voiceFollowUpProviderHint')}
+                    </div>
+                  </div>,
+                )}
+              </div>
+              {renderSettingsCardSection(
+                i18nService.t('voiceProviderStatusTitle'),
+                renderVoiceCapabilityMeta(VoiceCapability.FollowUpDictation),
+                i18nService.t('voiceProviderStatusDescription'),
+              )}
+            </div>
+          );
+        case VoiceCapability.Tts:
+          return (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_320px]">
+              <div className="space-y-4">
+                {renderSettingsCardSection(
+                  i18nService.t('voiceRoutingTitle'),
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceTtsProviderLabel')}</div>
+                      <ThemedSelect
+                        id="voice-tts-provider-panel"
+                        value={ttsProvider}
+                        onChange={(value) => setTtsProvider(value as VoiceCapabilityProvider)}
+                        options={ttsProviderOptions}
+                      />
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('ttsEngineLabel')}</div>
+                      <ThemedSelect
+                        id="voice-tts-engine-panel"
+                        value={ttsEngine}
+                        onChange={(value) => setTtsEngine(value as TtsEngine)}
                         options={[
-                          { value: VoiceLocalQwen3TtsTask.CustomVoice, label: i18nService.t('voiceLocalQwen3TtsTask_custom_voice') },
-                          { value: VoiceLocalQwen3TtsTask.VoiceDesign, label: i18nService.t('voiceLocalQwen3TtsTask_voice_design') },
+                          { value: TtsEngine.MacosNative, label: i18nService.t('ttsEngine_macos_native') },
+                          { value: TtsEngine.EdgeTts, label: i18nService.t('ttsEngine_edge_tts') },
+                        ]}
+                      />
+                    </label>
+                  </div>,
+                )}
+                {renderSettingsCardSection(
+                  i18nService.t('ttsTitle'),
+                  <div className="space-y-3">
+                    <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                      <span className="text-sm text-foreground">{i18nService.t('ttsAutoPlayLabel')}</span>
+                      {renderSwitch(ttsAutoPlayAssistantReply, () => setTtsAutoPlayAssistantReply((prev) => !prev))}
+                    </label>
+                    <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                      <span className="text-sm text-foreground">{i18nService.t('ttsLlmRewriteLabel')}</span>
+                      {renderSwitch(ttsLlmRewriteEnabled, () => setTtsLlmRewriteEnabled((prev) => !prev))}
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('ttsSkipKeywordsLabel')}</div>
+                      <textarea value={ttsSkipKeywordsText} onChange={(event) => setTtsSkipKeywordsText(event.target.value)} placeholder={i18nService.t('ttsSkipKeywordsPlaceholder')} rows={3} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                      <p className="mt-2 text-xs text-secondary">{i18nService.t('ttsSkipKeywordsHint')}</p>
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('ttsVoiceLabel')}</div>
+                      <ThemedSelect
+                        id="tts-voice-panel"
+                        value={ttsVoiceId}
+                        onChange={(value) => updateDisplayedTtsConfig({ ttsVoiceId: value })}
+                        options={[
+                          { value: '', label: i18nService.t('ttsVoiceAuto') },
+                          ...ttsVoices.map((voice) => ({
+                            value: voice.identifier,
+                            label: `${voice.name} (${voice.language})`,
+                          })),
                         ]}
                       />
                     </label>
                     <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderSpeakerLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.speaker} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ speaker: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('ttsRateLabel')}: {ttsRate.toFixed(2)}</div>
+                      <input type="range" min="0.1" max="1" step="0.05" value={ttsRate} onChange={(event) => updateDisplayedTtsConfig({ ttsRate: Number(event.target.value) })} className="w-full" />
                     </label>
                     <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderInstructLabel')}</div>
-                      <textarea value={voiceLocalQwen3TtsConfig.instruct} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ instruct: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" rows={3} />
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('ttsVolumeLabel')}: {ttsVolume.toFixed(2)}</div>
+                      <input type="range" min="0" max="1" step="0.05" value={ttsVolume} onChange={(event) => updateDisplayedTtsConfig({ ttsVolume: Number(event.target.value) })} className="w-full" />
                     </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.language} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ language: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderDeviceLabel')}</div>
-                      <input type="text" value={voiceLocalQwen3TtsConfig.device} onChange={(event) => updateVoiceLocalQwen3TtsConfig({ device: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-
-                    {voiceLocalQwen3TtsStatus && (
-                      <div className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs space-y-1 dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                        <div>{i18nService.t('voiceLocalQwen3TtsEnabledLabel')}: {voiceLocalQwen3TtsStatus.enabled ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsReadyLabel')}: {voiceLocalQwen3TtsStatus.ready ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsPythonAvailableLabel')}: {voiceLocalQwen3TtsStatus.pythonAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsPythonResolvedPathLabel')}: {voiceLocalQwen3TtsStatus.pythonResolvedPath || '-'}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsPythonVersionLabel')}: {voiceLocalQwen3TtsStatus.pythonVersion || '-'}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsModelExistsLabel')}: {voiceLocalQwen3TtsStatus.modelExists ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsTokenizerExistsLabel')}: {voiceLocalQwen3TtsStatus.tokenizerExists ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsQwenModuleLabel')}: {voiceLocalQwen3TtsStatus.qwenTtsAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsTorchModuleLabel')}: {voiceLocalQwen3TtsStatus.torchAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsSoundfileModuleLabel')}: {voiceLocalQwen3TtsStatus.soundfileAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsHuggingfaceCliLabel')}: {voiceLocalQwen3TtsStatus.huggingfaceCliAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsHuggingfaceHubLabel')}: {voiceLocalQwen3TtsStatus.huggingfaceHubAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsRunnerWritableLabel')}: {voiceLocalQwen3TtsStatus.runnerWritable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
-                        <div>{i18nService.t('voiceProviderPythonCommandLabel')}: {voiceLocalQwen3TtsStatus.pythonCommand}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsModelsRootLabel')}: {voiceLocalQwen3TtsStatus.modelsRoot}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsExpectedModelLabel')}: {voiceLocalQwen3TtsStatus.expectedModelPath || '-'}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsExpectedTokenizerLabel')}: {voiceLocalQwen3TtsStatus.expectedTokenizerPath || '-'}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsResolvedModelLabel')}: {voiceLocalQwen3TtsStatus.modelPath || '-'}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsResolvedTokenizerLabel')}: {voiceLocalQwen3TtsStatus.tokenizerPath || '-'}</div>
-                        <div>{i18nService.t('voiceLocalQwen3TtsRuntimeIssuesLabel')}: {voiceLocalQwen3TtsStatus.runtimeIssues.length > 0 ? voiceLocalQwen3TtsStatus.runtimeIssues.join(' | ') : i18nService.t('voiceLocalQwen3TtsNoRuntimeIssues')}</div>
+                  </div>,
+                )}
+              </div>
+              {renderSettingsCardSection(
+                i18nService.t('voiceProviderStatusTitle'),
+                <div className="space-y-3">
+                  {renderVoiceCapabilityMeta(VoiceCapability.Tts)}
+                  <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
+                    <div>{i18nService.t('voiceOverviewRuntimeStatus')}: {ttsAvailability ? i18nService.t(`ttsPrepareStatus_${ttsAvailability.prepareStatus}`) : i18nService.t('loading')}</div>
+                    <div>{i18nService.t('voiceOverviewActualEngine')}: {ttsAvailability?.lastResolvedEngine ? i18nService.t(`ttsEngine_${ttsAvailability.lastResolvedEngine}`) : i18nService.t('ttsActualEngineNone')}</div>
+                    {ttsAvailability?.lastRequestedEngine && ttsAvailability?.lastResolvedEngine && ttsAvailability.lastRequestedEngine !== ttsAvailability.lastResolvedEngine && (
+                      <div className="text-amber-600 dark:text-amber-400">
+                        {i18nService.t('ttsActualEngineFallbackLabel')}: {i18nService.t(`ttsEngine_${ttsAvailability.lastRequestedEngine}`)}
                       </div>
                     )}
-
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => { void handleRefreshLocalQwen3TtsStatus(); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalQwen3TtsRefreshButton')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { void handleOpenLocalQwen3TtsDirectory('resourceRoot'); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalQwen3TtsOpenRootButton')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { void handleOpenLocalQwen3TtsDirectory('modelsRoot'); }}
-                        className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-xs font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
-                      >
-                        {i18nService.t('voiceLocalQwen3TtsOpenModelsButton')}
-                      </button>
-                    </div>
-
-                    <div className="space-y-2">
-                      {getLocalModelsByProvider(VoiceProvider.LocalQwen3Tts).map(renderLocalModelEntry)}
-                    </div>
+                    {(ttsAvailability?.recentError || ttsAvailability?.lastFallbackReason) && (
+                      <div>{i18nService.t('ttsPrepareLastErrorLabel')}: {ttsAvailability?.recentError || ttsAvailability?.lastFallbackReason}</div>
+                    )}
                   </div>
-
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_cloud_openai')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceCloudOpenAiDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceOpenAiConfig.enabled}
-                        onClick={() => updateVoiceOpenAiConfig({ enabled: !voiceOpenAiConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceOpenAiConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void window.electron.tts.prepare({ engine: ttsEngine }).then((result) => {
+                        if (result.availability) {
+                          setTtsAvailability(result.availability);
                         }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceOpenAiConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
-                      <input type="password" value={voiceOpenAiConfig.apiKey} onChange={(event) => updateVoiceOpenAiConfig({ apiKey: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
-                      <input type="text" value={voiceOpenAiConfig.baseUrl} onChange={(event) => updateVoiceOpenAiConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderSttModelLabel')}</div>
-                      <input type="text" value={voiceOpenAiConfig.sttModel} onChange={(event) => updateVoiceOpenAiConfig({ sttModel: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTtsModelLabel')}</div>
-                      <input type="text" value={voiceOpenAiConfig.ttsModel} onChange={(event) => updateVoiceOpenAiConfig({ ttsModel: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
-                      <input type="text" value={voiceOpenAiConfig.ttsVoice} onChange={(event) => updateVoiceOpenAiConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceOpenAiConfig.locale} onChange={(event) => updateVoiceOpenAiConfig({ locale: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                  </div>
-
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_cloud_aliyun')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceCloudAliyunDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceAliyunConfig.enabled}
-                        onClick={() => updateVoiceAliyunConfig({ enabled: !voiceAliyunConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceAliyunConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                        }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceAliyunConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
-                      <input type="password" value={voiceAliyunConfig.apiKey} onChange={(event) => updateVoiceAliyunConfig({ apiKey: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
-                      <input type="text" value={voiceAliyunConfig.baseUrl} onChange={(event) => updateVoiceAliyunConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderSttModelLabel')}</div>
-                      <input type="text" value={voiceAliyunConfig.sttModel} onChange={(event) => updateVoiceAliyunConfig({ sttModel: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTtsModelLabel')}</div>
-                      <input type="text" value={voiceAliyunConfig.ttsModel} onChange={(event) => updateVoiceAliyunConfig({ ttsModel: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
-                      <input type="text" value={voiceAliyunConfig.ttsVoice} onChange={(event) => updateVoiceAliyunConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceAliyunConfig.locale} onChange={(event) => updateVoiceAliyunConfig({ locale: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                  </div>
-
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_cloud_azure')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceCloudAzureDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceAzureConfig.enabled}
-                        onClick={() => updateVoiceAzureConfig({ enabled: !voiceAzureConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceAzureConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                        }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceAzureConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
-                      <input type="password" value={voiceAzureConfig.apiKey} onChange={(event) => updateVoiceAzureConfig({ apiKey: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderAzureRegionLabel')}</div>
-                      <input type="text" value={voiceAzureConfig.region} onChange={(event) => updateVoiceAzureConfig({ region: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderAzureEndpointLabel')}</div>
-                      <input type="text" value={voiceAzureConfig.endpoint} onChange={(event) => updateVoiceAzureConfig({ endpoint: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
-                      <input type="text" value={voiceAzureConfig.ttsVoice} onChange={(event) => updateVoiceAzureConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceAzureConfig.locale} onChange={(event) => updateVoiceAzureConfig({ locale: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                  </div>
-
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_cloud_custom')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceCloudCustomDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceCustomConfig.enabled}
-                        onClick={() => updateVoiceCustomConfig({ enabled: !voiceCustomConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceCustomConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                        }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceCustomConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderApiKeyLabel')}</div>
-                      <input type="password" value={voiceCustomConfig.apiKey} onChange={(event) => updateVoiceCustomConfig({ apiKey: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
-                      <input type="text" value={voiceCustomConfig.baseUrl} onChange={(event) => updateVoiceCustomConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderCustomSttPathLabel')}</div>
-                      <input type="text" value={voiceCustomConfig.sttPath} onChange={(event) => updateVoiceCustomConfig({ sttPath: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderCustomTtsPathLabel')}</div>
-                      <input type="text" value={voiceCustomConfig.ttsPath} onChange={(event) => updateVoiceCustomConfig({ ttsPath: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceCustomConfig.locale} onChange={(event) => updateVoiceCustomConfig({ locale: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                  </div>
-
-                  <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">{i18nService.t('voiceProvider_cloud_volcengine')}</div>
-                        <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceCloudVolcengineDescription')}</div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={voiceVolcengineConfig.enabled}
-                        onClick={() => updateVoiceVolcengineConfig({ enabled: !voiceVolcengineConfig.enabled })}
-                        className={
-                          'relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors '
-                          + (voiceVolcengineConfig.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600')
-                        }
-                      >
-                        <span
-                          className={
-                            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform '
-                            + (voiceVolcengineConfig.enabled ? 'translate-x-6' : 'translate-x-1')
-                          }
-                        />
-                      </button>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderVolcengineAppKeyLabel')}</div>
-                      <input type="password" value={voiceVolcengineConfig.appKey} onChange={(event) => updateVoiceVolcengineConfig({ appKey: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderVolcengineTokenLabel')}</div>
-                      <input type="password" value={voiceVolcengineConfig.accessToken} onChange={(event) => updateVoiceVolcengineConfig({ accessToken: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderBaseUrlLabel')}</div>
-                      <input type="text" value={voiceVolcengineConfig.baseUrl} onChange={(event) => updateVoiceVolcengineConfig({ baseUrl: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderTtsVoiceLabel')}</div>
-                      <input type="text" value={voiceVolcengineConfig.ttsVoice} onChange={(event) => updateVoiceVolcengineConfig({ ttsVoice: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{i18nService.t('voiceProviderLocaleLabel')}</div>
-                      <input type="text" value={voiceVolcengineConfig.locale} onChange={(event) => updateVoiceVolcengineConfig({ locale: event.target.value })} className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text" />
-                    </label>
-                  </div>
-                </div>
-              </div>
+                      }).catch((error) => {
+                        console.error('Failed to retry TTS runtime preparation:', error);
+                      });
+                    }}
+                    className="w-full rounded-lg border border-border px-3 py-2 text-xs font-medium text-foreground hover:bg-surface-raised"
+                  >
+                    {i18nService.t('ttsPrepareRetryButton')}
+                  </button>
+                </div>,
+                i18nService.t('voiceProviderStatusDescription'),
+              )}
             </div>
+          );
+        default:
+          return null;
+      }
+    };
 
-            {isMac && (
-              <div className="space-y-4">
-                <div>
-                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('speechInputCommandsTitle')}
-                  </h4>
-                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                    {i18nService.t('speechInputCommandsDescription')}
-                  </p>
-                </div>
+    return (
+      <div className="space-y-8">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-foreground">
+            {i18nService.t('language')}
+          </h4>
+          <div className="w-[140px] shrink-0">
+            <ThemedSelect
+              id="language"
+              value={language}
+              onChange={(value) => {
+                const nextLanguage = value as LanguageType;
+                setLanguage(nextLanguage);
+                i18nService.setLanguage(nextLanguage, { persist: false });
+              }}
+              options={[
+                { value: 'zh', label: i18nService.t('chinese') },
+                { value: 'en', label: i18nService.t('english') }
+              ]}
+            />
+          </div>
+        </div>
 
-                <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3">
-                  <div className="space-y-3">
-                    <label className="flex items-center justify-between cursor-pointer">
-                      <span className="text-sm text-secondary">
-                        {i18nService.t('speechInputLlmCorrectionLabel')}
-                      </span>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={sttLlmCorrectionEnabled}
-                        onClick={() => setSttLlmCorrectionEnabled((prev) => !prev)}
-                        className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                          sttLlmCorrectionEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                            sttLlmCorrectionEnabled ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
-                      </button>
-                    </label>
+        <div>
+          <h4 className="mb-3 text-sm font-medium text-foreground">{i18nService.t('autoLaunch')}</h4>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-sm text-secondary">{i18nService.t('autoLaunchDescription')}</span>
+            {renderSwitch(autoLaunch, async () => {
+              if (isUpdatingAutoLaunch) return;
+              const next = !autoLaunch;
+              setIsUpdatingAutoLaunch(true);
+              try {
+                const result = await window.electron.autoLaunch.set(next);
+                if (result.success) {
+                  setAutoLaunchState(next);
+                } else {
+                  setError(result.error || 'Failed to update auto-launch setting');
+                }
+              } catch (err) {
+                console.error('Failed to set auto-launch:', err);
+                setError('Failed to update auto-launch setting');
+              } finally {
+                setIsUpdatingAutoLaunch(false);
+              }
+            }, { disabled: isUpdatingAutoLaunch })}
+          </label>
+        </div>
 
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                        {i18nService.t('speechInputStopCommandLabel')}
+        <div>
+          <h4 className="mb-3 text-sm font-medium text-foreground">{i18nService.t('preventSleep')}</h4>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-sm text-secondary">{i18nService.t('preventSleepDescription')}</span>
+            {renderSwitch(preventSleep, async () => {
+              if (isUpdatingPreventSleep) return;
+              const next = !preventSleep;
+              setIsUpdatingPreventSleep(true);
+              try {
+                const result = await window.electron.preventSleep.set(next);
+                if (result.success) {
+                  setPreventSleepState(next);
+                } else {
+                  setError(result.error || 'Failed to update prevent-sleep setting');
+                }
+              } catch (err) {
+                console.error('Failed to set prevent-sleep:', err);
+                setError('Failed to update prevent-sleep setting');
+              } finally {
+                setIsUpdatingPreventSleep(false);
+              }
+            }, { disabled: isUpdatingPreventSleep })}
+          </label>
+        </div>
+
+        <div>
+          <h4 className="mb-3 text-sm font-medium text-foreground">{i18nService.t('useSystemProxy')}</h4>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-sm text-secondary">{i18nService.t('useSystemProxyDescription')}</span>
+            {renderSwitch(useSystemProxy, () => setUseSystemProxy((prev) => !prev))}
+          </label>
+        </div>
+
+        <section className="space-y-4">
+          <div>
+            <h4 className="text-sm font-medium text-foreground">{i18nService.t('voiceSettingsTitle')}</h4>
+            <p className="mt-1 text-sm text-secondary">{i18nService.t('voiceSettingsDescription')}</p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+            {voiceCapabilityEntries.map((entry) => {
+              const isActive = expandedVoiceSection === entry.key;
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  onClick={() => handleVoiceSectionToggle(entry.key)}
+                  className={`min-h-[132px] rounded-2xl border px-4 py-4 text-left transition-colors ${
+                    isActive
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border bg-surface hover:bg-surface-raised'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-secondary">
+                      {entry.title}
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      entry.enabled ? 'bg-primary/10 text-primary' : 'bg-surface-raised text-secondary'
+                    }`}>
+                      {entry.enabled ? i18nService.t('enabled') : i18nService.t('statusDisabled')}
+                    </span>
+                  </div>
+                  <div className="mt-3 text-sm font-medium text-foreground">
+                    {getVoiceCapabilitySummary(entry.key)}
+                  </div>
+                  <div className="mt-2 text-xs leading-5 text-secondary">
+                    {entry.description}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-3">
+            {voiceCapabilityEntries.map((entry) => {
+              const isExpanded = expandedVoiceSection === entry.key;
+              return (
+                <div key={entry.key} className="rounded-2xl border border-border bg-surface px-4 py-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <button
+                      type="button"
+                      onClick={() => handleVoiceSectionToggle(entry.key)}
+                      className="flex min-w-0 flex-1 items-start justify-between gap-4 text-left"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-foreground">{entry.title}</div>
+                        <div className="mt-1 text-xs text-secondary">{entry.description}</div>
                       </div>
-                      <input
-                        type="text"
-                        value={speechStopCommand}
-                        onChange={(event) => setSpeechStopCommand(event.target.value)}
-                        placeholder={i18nService.t('speechInputStopCommandPlaceholder')}
-                        className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                      />
-                    </label>
-
-                    <label className="block">
-                      <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                        {i18nService.t('speechInputSubmitCommandLabel')}
+                      {isExpanded ? (
+                        <ChevronDownIcon className="mt-0.5 h-4 w-4 shrink-0 text-secondary" />
+                      ) : (
+                        <ChevronRightIcon className="mt-0.5 h-4 w-4 shrink-0 text-secondary" />
+                      )}
+                    </button>
+                    <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:justify-end">
+                      <div className="hidden max-w-[260px] truncate text-xs text-secondary lg:block">
+                        {getVoiceCapabilitySummary(entry.key)}
                       </div>
-                      <input
-                        type="text"
-                        value={speechSubmitCommand}
-                        onChange={(event) => setSpeechSubmitCommand(event.target.value)}
-                        placeholder={i18nService.t('speechInputSubmitCommandPlaceholder')}
-                        className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                      />
-                    </label>
+                      {renderSwitch(entry.enabled, entry.toggle)}
+                    </div>
                   </div>
-
-                  <p className="mt-3 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    {i18nService.t('speechInputCommandsHint')}
-                  </p>
+                  {isExpanded && (
+                    <div className="mt-4 border-t border-border pt-4">
+                      {renderVoiceCapabilityDetail(entry.key)}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })}
+          </div>
 
-            {isMac && (
-              <div className="space-y-4">
-                <div>
-                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('wakeInputTitle')}
-                  </h4>
-                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                    {i18nService.t('wakeInputDescription')}
-                  </p>
-                </div>
-
-                <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-3">
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-sm text-secondary">
-                      {i18nService.t('wakeInputEnabledLabel')}
-                    </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={wakeInputEnabled}
-                      onClick={() => setWakeInputEnabled((prev) => !prev)}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                        wakeInputEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          wakeInputEnabled ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('wakeInputWakeWordsLabel')}
-                    </div>
-                    <textarea
-                      value={wakeInputWakeWordsText}
-                      onChange={(event) => setWakeInputWakeWordsText(event.target.value)}
-                      placeholder={i18nService.t('wakeInputWakeWordsPlaceholder')}
-                      rows={3}
-                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                    />
-                  </label>
-                  <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    {i18nService.t('wakeInputStatusLabel')}: {wakeInputStatus ? i18nService.t(`wakeInputStatus_${wakeInputStatus.status}`) : i18nService.t('loading')}
-                  </div>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('wakeInputSubmitCommandLabel')}
-                    </div>
-                    <input
-                      type="text"
-                      value={wakeInputSubmitCommand}
-                      onChange={(event) => setWakeInputSubmitCommand(event.target.value)}
-                      placeholder={i18nService.t('wakeInputSubmitCommandPlaceholder')}
-                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('wakeInputCancelCommandLabel')}
-                    </div>
-                    <input
-                      type="text"
-                      value={wakeInputCancelCommand}
-                      onChange={(event) => setWakeInputCancelCommand(event.target.value)}
-                      placeholder={i18nService.t('wakeInputCancelCommandPlaceholder')}
-                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                    />
-                  </label>
-                </div>
-              </div>
-            )}
-
-            {isMac && (
-              <div className="space-y-4">
-                <div>
-                  <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('ttsTitle')}
-                  </h4>
-                  <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                    {i18nService.t('ttsDescription')}
-                  </p>
-                </div>
-
-                <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3 space-y-4">
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-sm text-secondary">
-                      {i18nService.t('ttsEnabledLabel')}
-                    </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={ttsEnabled}
-                      onClick={() => setTtsEnabled((prev) => !prev)}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                        ttsEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          ttsEnabled ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </label>
-
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-sm text-secondary">
-                      {i18nService.t('ttsAutoPlayLabel')}
-                    </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={ttsAutoPlayAssistantReply}
-                      onClick={() => setTtsAutoPlayAssistantReply((prev) => !prev)}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                        ttsAutoPlayAssistantReply ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          ttsAutoPlayAssistantReply ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </label>
-
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-sm text-secondary">
-                      {i18nService.t('ttsLlmRewriteLabel')}
-                    </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={ttsLlmRewriteEnabled}
-                      onClick={() => setTtsLlmRewriteEnabled((prev) => !prev)}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                        ttsLlmRewriteEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          ttsLlmRewriteEnabled ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('ttsSkipKeywordsLabel')}
-                    </div>
-                    <textarea
-                      value={ttsSkipKeywordsText}
-                      onChange={(event) => setTtsSkipKeywordsText(event.target.value)}
-                      placeholder={i18nService.t('ttsSkipKeywordsPlaceholder')}
-                      rows={3}
-                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                    />
-                    <p className="mt-2 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('ttsSkipKeywordsHint')}
-                    </p>
-                  </label>
-
-                  <div>
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('ttsVoiceLabel')}
-                    </div>
-                    <ThemedSelect
-                      id="tts-voice"
-                      value={ttsVoiceId}
-                      onChange={(value) => setTtsVoiceId(value)}
-                      options={[
-                        { value: '', label: i18nService.t('ttsVoiceAuto') },
-                        ...ttsVoices.map((voice) => ({
-                          value: voice.identifier,
-                          label: `${voice.name} (${voice.language})`,
-                        })),
-                      ]}
-                    />
-                  </div>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('ttsRateLabel')}: {ttsRate.toFixed(2)}
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="1"
-                      step="0.05"
-                      value={ttsRate}
-                      onChange={(event) => setTtsRate(Number(event.target.value))}
-                      className="w-full"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('ttsVolumeLabel')}: {ttsVolume.toFixed(2)}
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={ttsVolume}
-                      onChange={(event) => setTtsVolume(Number(event.target.value))}
-                      className="w-full"
-                    />
-                  </label>
-
-                  <p className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    {i18nService.t('ttsVoiceHint')}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-4">
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
-                  {i18nService.t('authSettingsTitle')}
-                </h4>
-                <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
-                  {i18nService.t('authSettingsDescription')}
-                </p>
+                <h4 className="text-sm font-medium text-foreground">{i18nService.t('voiceProviderStatusTitle')}</h4>
+                <p className="mt-1 text-sm text-secondary">{i18nService.t('voiceProviderStatusDescription')}</p>
               </div>
-
-              <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3">
-                <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">
-                  {i18nService.t('authBackendQtb')}
-                </div>
-                <div className="mt-3 space-y-3">
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('authQtbApiBaseUrl')}
-                    </div>
-                    <input
-                      type="text"
-                      value={qtbApiBaseUrl}
-                      onChange={(event) => setQtbApiBaseUrl(event.target.value)}
-                      placeholder={i18nService.t('authQtbApiBaseUrlPlaceholder')}
-                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {i18nService.t('authQtbWebBaseUrl')}
-                    </div>
-                    <input
-                      type="text"
-                      value={qtbWebBaseUrl}
-                      onChange={(event) => setQtbWebBaseUrl(event.target.value)}
-                      placeholder={i18nService.t('authQtbWebBaseUrlPlaceholder')}
-                      className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
-                    />
-                  </label>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowAllVoiceProviderStatuses((prev) => !prev)}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-surface-raised"
+              >
+                {showAllVoiceProviderStatuses ? i18nService.t('voiceShowInUseStatuses') : i18nService.t('voiceShowAllStatuses')}
+              </button>
             </div>
-
-            {/* Appearance Section */}
-            <div>
-              <h4 className="text-sm font-medium mb-3" style={{ color: 'var(--lobster-text-primary)' }}>
-                {i18nService.t('appearance')}
-              </h4>
-
-              {/* Level 1: Mode selector */}
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                {(['light', 'dark', 'system'] as const).map((mode) => {
-                  const isSelected = theme === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => {
-                        setTheme(mode);
-                        themeService.setTheme(mode);
-                        setThemeId(themeService.getThemeId());
-                      }}
-                      className="flex flex-col items-center rounded-xl border-2 p-3 transition-colors cursor-pointer"
-                      style={{
-                        borderColor: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-border)',
-                        backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
-                      }}
-                    >
-                      <svg viewBox="0 0 120 80" className="w-full h-auto rounded-md mb-2 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
-                        {mode === 'light' && (
-                          <>
-                            <rect width="120" height="80" fill="#F8F9FB" />
-                            <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
-                            <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
-                            <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
-                            <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
-                            <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
-                            <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
-                            <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#E2E4E7" />
-                          </>
-                        )}
-                        {mode === 'dark' && (
-                          <>
-                            <rect width="120" height="80" fill="#0F1117" />
-                            <rect x="0" y="0" width="30" height="80" fill="#151820" />
-                            <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
-                            <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
-                            <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
-                            <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
-                            <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#252930" />
-                          </>
-                        )}
-                        {mode === 'system' && (
-                          <>
-                            <defs>
-                              <clipPath id="left-half">
-                                <rect x="0" y="0" width="60" height="80" />
-                              </clipPath>
-                              <clipPath id="right-half">
-                                <rect x="60" y="0" width="60" height="80" />
-                              </clipPath>
-                            </defs>
-                            <g clipPath="url(#left-half)">
-                              <rect width="120" height="80" fill="#F8F9FB" />
-                              <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
-                              <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
-                              <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
-                              <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
-                              <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
-                              <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
-                              <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
-                              <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
-                            </g>
-                            <g clipPath="url(#right-half)">
-                              <rect width="120" height="80" fill="#0F1117" />
-                              <rect x="0" y="0" width="30" height="80" fill="#151820" />
-                              <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
-                              <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
-                              <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
-                              <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
-                              <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
-                            </g>
-                            <line x1="60" y1="0" x2="60" y2="80" stroke="#888" strokeWidth="0.5" />
-                          </>
-                        )}
-                      </svg>
-                      <span className="text-xs font-medium" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
-                        {i18nService.t(mode)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Theme color gallery — all themes */}
-              <h4 className="text-sm font-medium mb-3 mt-5" style={{ color: 'var(--lobster-text-primary)' }}>
-                {i18nService.t('themeColor')}
-              </h4>
-              {(() => {
-                const allThemes = themeService.getAllThemes();
-                const classicThemes = allThemes.filter(t => t.meta.id === 'classic-light' || t.meta.id === 'classic-dark');
-                const otherThemes = allThemes.filter(t => t.meta.id !== 'classic-light' && t.meta.id !== 'classic-dark');
-                const renderTile = (t: import('../theme').ThemeDefinition) => {
-                  const isSelected = themeId === t.meta.id;
-                  const [bg, c1, c2, c3] = t.meta.preview;
-                  return (
-                    <button
-                      key={t.meta.id}
-                      type="button"
-                      onClick={() => {
-                        themeService.setThemeById(t.meta.id);
-                        setThemeId(t.meta.id);
-                        setTheme(t.meta.appearance as 'light' | 'dark');
-                      }}
-                      className="flex flex-col items-center rounded-xl border-2 p-2 transition-colors cursor-pointer"
-                      style={{
-                        borderColor: isSelected ? 'var(--lobster-primary)' : undefined,
-                        backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
-                      }}
-                    >
-                      <svg viewBox="0 0 80 48" className="w-full h-auto rounded-md mb-1.5 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="80" height="48" fill={bg} />
-                        <rect x="4" y="6" width="20" height="36" rx="3" fill={c1} opacity="0.7" />
-                        <rect x="28" y="6" width="48" height="36" rx="3" fill={c2} opacity="0.5" />
-                        <circle cx="52" cy="24" r="8" fill={c3} opacity="0.8" />
-                        <rect x="32" y="34" width="40" height="4" rx="2" fill={c1} opacity="0.6" />
-                      </svg>
-                      <span className="text-[10px] font-medium truncate w-full text-center" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
-                        {t.meta.name}
-                      </span>
-                    </button>
-                  );
-                };
-                return (
-                  <>
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                      {classicThemes.map(renderTile)}
-                    </div>
-                    <div className="grid grid-cols-4 gap-3">
-                      {otherThemes.map(renderTile)}
-                    </div>
-                  </>
-                );
-              })()}
+            <div className="grid gap-3 md:grid-cols-2">
+              {visibleVoiceProviderStatuses.map((providerKey) => renderVoiceProviderMeta(providerKey))}
             </div>
           </div>
-        );
+
+          <div className="space-y-3">
+            <div>
+              <h4 className="text-sm font-medium text-foreground">{i18nService.t('voiceProviderWorkspaceTitle')}</h4>
+              <p className="mt-1 text-sm text-secondary">{i18nService.t('voiceProviderWorkspaceDescription')}</p>
+            </div>
+            <div className="overflow-hidden rounded-[28px] border border-border bg-background/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+              <button
+                type="button"
+                onClick={() => setIsVoiceProviderWorkspaceExpanded((prev) => !prev)}
+                className="flex w-full flex-col gap-4 px-4 py-4 text-left transition-colors hover:bg-primary/5 sm:px-5"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-primary">
+                      {i18nService.t('voiceProviderWorkspaceTitle')}
+                    </div>
+                    <div className="mt-2 text-base font-medium text-foreground">
+                      {getVoiceProviderLabel(selectedVoiceProvider)}
+                    </div>
+                    <div className="mt-1 text-sm text-secondary">
+                      {getVoiceProviderDescription(selectedVoiceProvider) || i18nService.t('voiceProviderSelectHint')}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="hidden rounded-full bg-primary/12 px-2.5 py-1 text-[11px] font-medium text-primary sm:inline-flex">
+                      {isVoiceProviderWorkspaceExpanded
+                        ? i18nService.t('voiceProviderWorkspaceCollapse')
+                        : i18nService.t('voiceProviderWorkspaceExpand')}
+                    </span>
+                    {isVoiceProviderWorkspaceExpanded ? (
+                      <ChevronDownIcon className="h-4 w-4 shrink-0 text-secondary" />
+                    ) : (
+                      <ChevronRightIcon className="h-4 w-4 shrink-0 text-secondary" />
+                    )}
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-primary/20 bg-primary/10 px-3 py-3">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-primary">
+                      {i18nService.t('voiceProviderWorkspaceSelectedLabel')}
+                    </div>
+                    <div className="mt-2 text-sm font-medium text-foreground">
+                      {getVoiceProviderConfiguredText(selectedVoiceProvider)}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-background/70 px-3 py-3">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-secondary">
+                      {i18nService.t('voiceProviderWorkspaceRoutesLabel')}
+                    </div>
+                    <div className="mt-2 text-sm font-medium text-foreground">
+                      {selectedWorkspaceTags.length > 0 ? selectedWorkspaceTags.join(' / ') : i18nService.t('voiceProviderSelectHint')}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-background/70 px-3 py-3">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-secondary">
+                      {i18nService.t('voiceProviderWorkspaceInUseCountLabel')}
+                    </div>
+                    <div className="mt-2 text-sm font-medium text-foreground">
+                      {i18nService.t('voiceProviderWorkspaceInUseCountValue').replace('{count}', String(inUseVoiceProviderKeys.length))}
+                    </div>
+                  </div>
+                </div>
+              </button>
+
+              {isVoiceProviderWorkspaceExpanded && (
+                <div className="border-t border-border/80 px-4 py-4 sm:px-5">
+                  <div className="grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)] 2xl:grid-cols-[280px_minmax(0,1fr)]">
+                    <div className="space-y-2">
+                      {voiceProviderPanelKeys.map((providerKey) => {
+                        const providerStatus = getVoiceProviderStatus(providerKey);
+                        const linkedTags = getVoiceProviderInUseTags(providerKey);
+                        const visibleTags = linkedTags.slice(0, 2);
+                        const isActive = selectedVoiceProvider === providerKey;
+                        const statusToneClass = isActive
+                          ? 'border-primary/40 bg-primary/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+                          : linkedTags.length > 0
+                            ? 'border-border bg-background/80'
+                            : 'border-border/80 bg-transparent hover:bg-background/70';
+                        return (
+                          <button
+                            key={providerKey}
+                            type="button"
+                            onClick={() => setSelectedVoiceProvider(providerKey)}
+                            className={`relative w-full overflow-hidden rounded-2xl border px-4 py-3 text-left transition-colors ${statusToneClass}`}
+                          >
+                            <div className={`absolute inset-y-3 left-2 w-0.5 rounded-full ${
+                              isActive ? 'bg-primary' : linkedTags.length > 0 ? 'bg-primary/45' : 'bg-transparent'
+                            }`} />
+                            <div className="flex items-start justify-between gap-3 pl-2">
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-foreground">{getVoiceProviderLabel(providerKey)}</div>
+                                <div className="mt-1 text-xs text-secondary">{getVoiceProviderConfiguredText(providerKey)}</div>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                {isActive && (
+                                  <span className="rounded-full bg-primary px-2 py-0.5 text-[11px] font-medium text-white">
+                                    {i18nService.t('statusCurrent')}
+                                  </span>
+                                )}
+                                {linkedTags.length > 0 && (
+                                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                                    {i18nService.t('voiceProviderInUse')}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-1.5 pl-2">
+                              {visibleTags.map((tag) => (
+                                <span key={`${providerKey}-${tag}`} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                  isActive ? 'bg-primary/12 text-primary' : 'bg-surface-raised text-secondary'
+                                }`}>
+                                  {tag}
+                                </span>
+                              ))}
+                              {linkedTags.length > visibleTags.length && (
+                                <span className="rounded-full bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-secondary">
+                                  +{linkedTags.length - visibleTags.length}
+                                </span>
+                              )}
+                              {providerStatus && !providerStatus.platformSupported && (
+                                <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[11px] font-medium text-red-500">
+                                  {i18nService.t('voiceCapabilityReason_unsupported_platform')}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="space-y-4">
+                      <div className="rounded-2xl border border-primary/20 bg-background/95 px-4 py-4 backdrop-blur xl:sticky xl:top-0 xl:z-10">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-primary">
+                              {i18nService.t('voiceProviderWorkspaceSelectedLabel')}
+                            </div>
+                            <div className="mt-2 text-base font-medium text-foreground">{getVoiceProviderLabel(selectedVoiceProvider)}</div>
+                            <div className="mt-1 text-sm text-secondary">{getVoiceProviderDescription(selectedVoiceProvider) || i18nService.t('voiceProviderSelectHint')}</div>
+                          </div>
+                          <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                            {getVoiceProviderConfiguredText(selectedVoiceProvider)}
+                          </span>
+                        </div>
+                      </div>
+                      {renderSelectedVoiceProviderPanel()}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <div className="space-y-4">
+          <div>
+            <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-1">
+              {i18nService.t('authSettingsTitle')}
+            </h4>
+            <p className="text-sm dark:text-claude-darkSecondaryText text-claude-secondaryText">
+              {i18nService.t('authSettingsDescription')}
+            </p>
+          </div>
+
+          <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border px-4 py-3">
+            <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">
+              {i18nService.t('authBackendQtb')}
+            </div>
+            <div className="mt-3 space-y-3">
+              <label className="block">
+                <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                  {i18nService.t('authQtbApiBaseUrl')}
+                </div>
+                <input
+                  type="text"
+                  value={qtbApiBaseUrl}
+                  onChange={(event) => setQtbApiBaseUrl(event.target.value)}
+                  placeholder={i18nService.t('authQtbApiBaseUrlPlaceholder')}
+                  className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                />
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                  {i18nService.t('authQtbWebBaseUrl')}
+                </div>
+                <input
+                  type="text"
+                  value={qtbWebBaseUrl}
+                  onChange={(event) => setQtbWebBaseUrl(event.target.value)}
+                  placeholder={i18nService.t('authQtbWebBaseUrlPlaceholder')}
+                  className="w-full rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 text-sm dark:bg-claude-darkSurface bg-white dark:text-claude-darkText text-claude-text"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h4 className="text-sm font-medium mb-3" style={{ color: 'var(--lobster-text-primary)' }}>
+            {i18nService.t('appearance')}
+          </h4>
+
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            {(['light', 'dark', 'system'] as const).map((mode) => {
+              const isSelected = theme === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    setTheme(mode);
+                    themeService.setTheme(mode);
+                    setThemeId(themeService.getThemeId());
+                  }}
+                  className="flex flex-col items-center rounded-xl border-2 p-3 transition-colors cursor-pointer"
+                  style={{
+                    borderColor: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-border)',
+                    backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
+                  }}
+                >
+                  <svg viewBox="0 0 120 80" className="w-full h-auto rounded-md mb-2 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
+                    {mode === 'light' && (
+                      <>
+                        <rect width="120" height="80" fill="#F8F9FB" />
+                        <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
+                        <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
+                        <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
+                        <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
+                        <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
+                        <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
+                        <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
+                        <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
+                        <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                        <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#E2E4E7" />
+                      </>
+                    )}
+                    {mode === 'dark' && (
+                      <>
+                        <rect width="120" height="80" fill="#0F1117" />
+                        <rect x="0" y="0" width="30" height="80" fill="#151820" />
+                        <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
+                        <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
+                        <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
+                        <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
+                        <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
+                        <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
+                        <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
+                        <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
+                        <rect x="42" y="60" width="58" height="3" rx="1.5" fill="#252930" />
+                      </>
+                    )}
+                    {mode === 'system' && (
+                      <>
+                        <defs>
+                          <clipPath id="left-half">
+                            <rect x="0" y="0" width="60" height="80" />
+                          </clipPath>
+                          <clipPath id="right-half">
+                            <rect x="60" y="0" width="60" height="80" />
+                          </clipPath>
+                        </defs>
+                        <g clipPath="url(#left-half)">
+                          <rect width="120" height="80" fill="#F8F9FB" />
+                          <rect x="0" y="0" width="30" height="80" fill="#EBEDF0" />
+                          <rect x="4" y="8" width="22" height="4" rx="2" fill="#C8CBD0" />
+                          <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#D5D7DB" />
+                          <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#D5D7DB" />
+                          <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#D5D7DB" />
+                          <rect x="36" y="8" width="78" height="64" rx="4" fill="#FFFFFF" />
+                          <rect x="42" y="16" width="50" height="4" rx="2" fill="#D5D7DB" />
+                          <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                          <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#E2E4E7" />
+                          <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#E2E4E7" />
+                          <rect x="42" y="46" width="40" height="4" rx="2" fill="#D5D7DB" />
+                          <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#E2E4E7" />
+                        </g>
+                        <g clipPath="url(#right-half)">
+                          <rect width="120" height="80" fill="#0F1117" />
+                          <rect x="0" y="0" width="30" height="80" fill="#151820" />
+                          <rect x="4" y="8" width="22" height="4" rx="2" fill="#3A3F4B" />
+                          <rect x="4" y="16" width="18" height="3" rx="1.5" fill="#2A2F3A" />
+                          <rect x="4" y="22" width="20" height="3" rx="1.5" fill="#2A2F3A" />
+                          <rect x="4" y="28" width="16" height="3" rx="1.5" fill="#2A2F3A" />
+                          <rect x="36" y="8" width="78" height="64" rx="4" fill="#1A1D27" />
+                          <rect x="42" y="16" width="50" height="4" rx="2" fill="#3A3F4B" />
+                          <rect x="42" y="24" width="66" height="3" rx="1.5" fill="#252930" />
+                          <rect x="42" y="30" width="60" height="3" rx="1.5" fill="#252930" />
+                          <rect x="42" y="36" width="55" height="3" rx="1.5" fill="#252930" />
+                          <rect x="42" y="46" width="40" height="4" rx="2" fill="#3A3F4B" />
+                          <rect x="42" y="54" width="66" height="3" rx="1.5" fill="#252930" />
+                        </g>
+                        <line x1="60" y1="0" x2="60" y2="80" stroke="#888" strokeWidth="0.5" />
+                      </>
+                    )}
+                  </svg>
+                  <span className="text-xs font-medium" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
+                    {i18nService.t(mode)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <h4 className="text-sm font-medium mb-3 mt-5" style={{ color: 'var(--lobster-text-primary)' }}>
+            {i18nService.t('themeColor')}
+          </h4>
+          {(() => {
+            const allThemes = themeService.getAllThemes();
+            const classicThemes = allThemes.filter(t => t.meta.id === 'classic-light' || t.meta.id === 'classic-dark');
+            const otherThemes = allThemes.filter(t => t.meta.id !== 'classic-light' && t.meta.id !== 'classic-dark');
+            const renderTile = (t: import('../theme').ThemeDefinition) => {
+              const isSelected = themeId === t.meta.id;
+              const [bg, c1, c2, c3] = t.meta.preview;
+              return (
+                <button
+                  key={t.meta.id}
+                  type="button"
+                  onClick={() => {
+                    themeService.setThemeById(t.meta.id);
+                    setThemeId(t.meta.id);
+                    setTheme(t.meta.appearance as 'light' | 'dark');
+                  }}
+                  className="flex flex-col items-center rounded-xl border-2 p-2 transition-colors cursor-pointer"
+                  style={{
+                    borderColor: isSelected ? 'var(--lobster-primary)' : undefined,
+                    backgroundColor: isSelected ? 'var(--lobster-primary-muted)' : undefined,
+                  }}
+                >
+                  <svg viewBox="0 0 80 48" className="w-full h-auto rounded-md mb-1.5 overflow-hidden" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="80" height="48" fill={bg} />
+                    <rect x="4" y="6" width="20" height="36" rx="3" fill={c1} opacity="0.7" />
+                    <rect x="28" y="6" width="48" height="36" rx="3" fill={c2} opacity="0.5" />
+                    <circle cx="52" cy="24" r="8" fill={c3} opacity="0.8" />
+                    <rect x="32" y="34" width="40" height="4" rx="2" fill={c1} opacity="0.6" />
+                  </svg>
+                  <span className="text-[10px] font-medium truncate w-full text-center" style={{ color: isSelected ? 'var(--lobster-primary)' : 'var(--lobster-text-primary)' }}>
+                    {t.meta.name}
+                  </span>
+                </button>
+              );
+            };
+            return (
+              <>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  {classicThemes.map(renderTile)}
+                </div>
+                <div className="grid grid-cols-4 gap-3">
+                  {otherThemes.map(renderTile)}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    );
+  };
+
+  const renderModelSettingsPanel = () => {
+    const providerGroupsForRail = buildProviderGroupsForRail();
+    const activeProviderConfig = providers[activeProvider];
+    const activeProviderLabel = getProviderDisplayLabel(activeProvider);
+    const activeProviderBadges = getProviderRailBadges(activeProvider, activeProviderConfig);
+
+    const renderProviderPanelSection = (
+      section: ProviderPanelSectionKey,
+      title: string,
+      children: React.ReactNode,
+      subtitle?: string,
+      trailing?: React.ReactNode,
+    ) => (
+      <div className="space-y-2">
+        {renderDisclosureHeader({
+          title,
+          subtitle,
+          expanded: expandedProviderPanelSections[section],
+          onToggle: () => toggleProviderPanelSection(section),
+          trailing,
+        })}
+        {expandedProviderPanelSections[section] && (
+          <div className="rounded-2xl border border-border bg-surface px-4 py-4">
+            {children}
+          </div>
+        )}
+      </div>
+    );
+
+    return (
+      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-medium text-foreground">{i18nService.t('modelProviders')}</h3>
+              <p className="mt-1 text-xs text-secondary">{i18nService.t('providerSettings')}</p>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleImportProvidersClick}
+                disabled={isImportingProviders || isExportingProviders}
+                className="inline-flex items-center rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {i18nService.t('import')}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportProviders}
+                disabled={isImportingProviders || isExportingProviders}
+                className="inline-flex items-center rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {i18nService.t('export')}
+              </button>
+            </div>
+          </div>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={handleImportProviders}
+          />
+
+          {providerGroupsForRail.map((group) => {
+            const isExpanded = expandedProviderGroup === group.key;
+            return (
+              <div key={group.key} className="rounded-2xl border border-border bg-surface">
+                <button
+                  type="button"
+                  onClick={() => handleProviderGroupToggle(group.key)}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+                >
+                  <div>
+                    <div className="text-sm font-medium text-foreground">{i18nService.t(`providerGroup_${group.key}`)}</div>
+                    <div className="mt-1 text-xs text-secondary">{group.providers.length} {i18nService.t('providerGroupCountUnit')}</div>
+                  </div>
+                  {isExpanded ? (
+                    <ChevronDownIcon className="h-4 w-4 text-secondary" />
+                  ) : (
+                    <ChevronRightIcon className="h-4 w-4 text-secondary" />
+                  )}
+                </button>
+                {isExpanded && (
+                  <div className="space-y-2 border-t border-border px-3 py-3">
+                    {group.providers.map((providerKey) => {
+                      const config = visibleProviders[providerKey];
+                      const badges = getProviderRailBadges(providerKey, config);
+                      const visibleBadges = badges.slice(0, 3);
+                      const isCurrent = activeProvider === providerKey;
+                      return (
+                        <button
+                          key={providerKey}
+                          type="button"
+                          onClick={() => handleProviderChange(providerKey)}
+                          className={`w-full rounded-xl border px-3 py-3 text-left transition-colors ${
+                            isCurrent ? 'border-primary bg-primary/5' : 'border-border bg-background hover:bg-surface-raised'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center text-foreground">
+                              {isCustomProvider(providerKey) ? <CustomProviderIcon /> : providerMeta[providerKey]?.icon}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-medium text-foreground">{getProviderDisplayLabel(providerKey)}</div>
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {visibleBadges.map((badge) => (
+                                  <span key={`${providerKey}-${badge}`} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                    badge === i18nService.t('providerMissingApiKey')
+                                      ? 'bg-red-500/10 text-red-500'
+                                      : badge === i18nService.t('statusCurrent')
+                                        ? 'bg-primary/10 text-primary'
+                                        : 'bg-surface-raised text-secondary'
+                                  }`}>
+                                    {badge}
+                                  </span>
+                                ))}
+                                {badges.length > visibleBadges.length && (
+                                  <span className="rounded-full bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-secondary">
+                                    +{badges.length - visibleBadges.length}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {CUSTOM_PROVIDER_KEYS.some(k => !providers[k]) && (
+            <button
+              type="button"
+              onClick={handleAddCustomProvider}
+              className="w-full rounded-2xl border border-dashed border-border px-4 py-3 text-sm font-medium text-secondary hover:border-primary hover:text-primary"
+            >
+              {i18nService.t('addCustomProvider')}
+            </button>
+          )}
+        </div>
+
+        <div className="min-w-0 space-y-4">
+          <div className="rounded-2xl border border-border bg-background/95 px-4 py-4 backdrop-blur xl:sticky xl:top-0 xl:z-10">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-base font-medium text-foreground">{activeProviderLabel}</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {activeProviderBadges.map((badge) => (
+                    <span key={`${activeProvider}-${badge}`} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      badge === i18nService.t('providerMissingApiKey')
+                        ? 'bg-red-500/10 text-red-500'
+                        : badge === i18nService.t('statusCurrent')
+                          ? 'bg-primary/10 text-primary'
+                          : 'bg-surface-raised text-secondary'
+                    }`}>
+                      {badge}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              {renderSwitch(
+                activeProviderConfig.enabled,
+                () => toggleProviderEnabled(activeProvider),
+                {
+                  disabled: !activeProviderConfig.enabled && providerRequiresApiKey(activeProvider) && !activeProviderConfig.apiKey.trim() && !(activeProvider === 'minimax' && providers.minimax.authType === 'oauth'),
+                },
+              )}
+            </div>
+          </div>
+
+          {renderProviderPanelSection(
+            'credentials',
+            i18nService.t('providerPanel_credentials'),
+            <div className="space-y-4">
+              {activeProvider === 'minimax' && (
+                <div className="space-y-3">
+                  <div className="flex rounded-xl overflow-hidden border border-border">
+                    <button
+                      type="button"
+                      onClick={() => setProviders(prev => ({ ...prev, minimax: { ...prev.minimax, authType: 'oauth' } }))}
+                      className={`flex-1 py-1.5 text-xs font-medium transition-colors ${providers.minimax.authType === 'oauth' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
+                    >
+                      {i18nService.t('minimaxOAuthTabOAuth')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProviders(prev => ({ ...prev, minimax: { ...prev.minimax, authType: 'apikey' } }));
+                        setMinimaxOAuthPhase({ kind: 'idle' });
+                      }}
+                      className={`flex-1 py-1.5 text-xs font-medium transition-colors ${providers.minimax.authType !== 'oauth' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
+                    >
+                      {i18nService.t('minimaxOAuthTabApiKey')}
+                    </button>
+                  </div>
+
+                  {providers.minimax.authType !== 'oauth' && (
+                    <div className="relative">
+                      <input
+                        type={showApiKey ? 'text' : 'password'}
+                        id="minimax-apiKey"
+                        value={providers.minimax.apiKey}
+                        onChange={(e) => handleProviderConfigChange('minimax', 'apiKey', e.target.value)}
+                        className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
+                        placeholder={i18nService.t('apiKeyPlaceholder')}
+                      />
+                      <div className="absolute right-2 inset-y-0 flex items-center gap-1">
+                        {providers.minimax.apiKey && (
+                          <button
+                            type="button"
+                            onClick={() => handleProviderConfigChange('minimax', 'apiKey', '')}
+                            className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                            title={i18nService.t('clear') || 'Clear'}
+                          >
+                            <XCircleIconSolid className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                          title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
+                        >
+                          {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {providers.minimax.authType === 'oauth' && (
+                    <div className="space-y-2">
+                      {minimaxOAuthPhase.kind === 'idle' && providers.minimax.apiKey && (
+                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 space-y-2">
+                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
+                            {i18nService.t('minimaxOAuthLoggedIn')}
+                          </p>
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)} className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors">
+                              {i18nService.t('minimaxOAuthRelogin')}
+                            </button>
+                            <button type="button" onClick={handleMiniMaxOAuthLogout} className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors">
+                              {i18nService.t('minimaxOAuthLogout')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {minimaxOAuthPhase.kind === 'idle' && !providers.minimax.apiKey && (
+                        <div className="space-y-2">
+                          <div>
+                            <label className="block text-xs font-medium text-foreground mb-1">{i18nService.t('minimaxOAuthRegionLabel')}</label>
+                            <div className="flex rounded-xl overflow-hidden border border-border">
+                              <button type="button" onClick={() => setMinimaxOAuthRegion('cn')} className={`flex-1 py-1.5 text-xs font-medium transition-colors ${minimaxOAuthRegion === 'cn' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}>
+                                {i18nService.t('minimaxOAuthRegionCN')}
+                              </button>
+                              <button type="button" onClick={() => setMinimaxOAuthRegion('global')} className={`flex-1 py-1.5 text-xs font-medium transition-colors ${minimaxOAuthRegion === 'global' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}>
+                                {i18nService.t('minimaxOAuthRegionGlobal')}
+                              </button>
+                            </div>
+                          </div>
+                          <button type="button" onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)} className="w-full py-2 text-xs font-medium rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors">
+                            {i18nService.t('minimaxOAuthLogin')}
+                          </button>
+                          <p className="text-[11px] text-secondary">{i18nService.t('minimaxOAuthHint')}</p>
+                        </div>
+                      )}
+
+                      {minimaxOAuthPhase.kind === 'requesting_code' && (
+                        <div className="p-3 rounded-xl bg-surface-inset border border-border">
+                          <p className="text-xs text-secondary">{i18nService.t('minimaxOAuthLoggingIn')}</p>
+                        </div>
+                      )}
+
+                      {minimaxOAuthPhase.kind === 'pending' && (
+                        <div className="p-3 rounded-xl bg-surface-inset border border-border space-y-2">
+                          <p className="text-xs text-foreground font-medium">{i18nService.t('minimaxOAuthOpenBrowserHint')}</p>
+                          <div>
+                            <span className="text-[11px] text-secondary">{i18nService.t('minimaxOAuthUserCode')}: </span>
+                            <code className="text-xs font-mono text-primary">{minimaxOAuthPhase.userCode}</code>
+                          </div>
+                          <a href={minimaxOAuthPhase.verificationUri} onClick={(e) => { e.preventDefault(); void window.electron.shell.openExternal(minimaxOAuthPhase.verificationUri); }} className="block truncate text-[11px] text-primary underline">
+                            {minimaxOAuthPhase.verificationUri}
+                          </a>
+                          <p className="text-[11px] text-secondary">{i18nService.t('minimaxOAuthStatusPending')}</p>
+                          <button type="button" onClick={handleCancelMiniMaxLogin} className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors">
+                            {i18nService.t('minimaxOAuthCancel')}
+                          </button>
+                        </div>
+                      )}
+
+                      {minimaxOAuthPhase.kind === 'success' && (
+                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20">
+                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">{i18nService.t('minimaxOAuthStatusSuccess')}</p>
+                        </div>
+                      )}
+
+                      {minimaxOAuthPhase.kind === 'error' && (
+                        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 space-y-2">
+                          <p className="text-xs text-red-600 dark:text-red-400 font-medium">{i18nService.t('minimaxOAuthStatusError')}</p>
+                          <p className="text-[11px] text-red-600/80 dark:text-red-400/80 break-words">{minimaxOAuthPhase.message}</p>
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)} className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors">
+                              {i18nService.t('minimaxOAuthRelogin')}
+                            </button>
+                            <button type="button" onClick={() => setMinimaxOAuthPhase({ kind: 'idle' })} className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors">
+                              {i18nService.t('minimaxOAuthCancel')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {providerRequiresApiKey(activeProvider) && activeProvider !== 'minimax' && (
+                <div>
+                  <label htmlFor={`${activeProvider}-apiKey`} className="mb-1 block text-xs font-medium text-foreground">
+                    {i18nService.t('apiKey')}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? 'text' : 'password'}
+                      id={`${activeProvider}-apiKey`}
+                      value={activeProviderConfig.apiKey}
+                      onChange={(e) => handleProviderConfigChange(activeProvider, 'apiKey', e.target.value)}
+                      className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
+                      placeholder={i18nService.t('apiKeyPlaceholder')}
+                    />
+                    <div className="absolute right-2 inset-y-0 flex items-center gap-1">
+                      {activeProviderConfig.apiKey && (
+                        <button
+                          type="button"
+                          onClick={() => handleProviderConfigChange(activeProvider, 'apiKey', '')}
+                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                          title={i18nService.t('clear') || 'Clear'}
+                        >
+                          <XCircleIconSolid className="h-4 w-4" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                        title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
+                      >
+                        {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>,
+          )}
+
+          {renderProviderPanelSection(
+            'endpoint',
+            i18nService.t('providerPanel_endpoint'),
+            <div className="space-y-4">
+              {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
+                <div>
+                  <label htmlFor={`${activeProvider}-baseUrl`} className="mb-1 block text-xs font-medium text-foreground">
+                    {i18nService.t('baseUrl')}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      id={`${activeProvider}-baseUrl`}
+                      value={(() => {
+                        const fmt = getEffectiveApiFormat(activeProvider, activeProviderConfig.apiFormat);
+                        if (fmt !== 'gemini') {
+                          const cpUrl = (activeProviderConfig as { codingPlanEnabled?: boolean }).codingPlanEnabled
+                            ? ProviderRegistry.getCodingPlanUrl(activeProvider, fmt)
+                            : undefined;
+                          if (cpUrl) return cpUrl;
+                        }
+                        return activeProviderConfig.baseUrl;
+                      })()}
+                      onChange={(e) => handleProviderConfigChange(activeProvider, 'baseUrl', e.target.value)}
+                      disabled={isBaseUrlLocked}
+                      className={`block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-8 text-xs ${isBaseUrlLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      placeholder={getProviderDefaultBaseUrl(activeProvider, getEffectiveApiFormat(activeProvider, activeProviderConfig.apiFormat)) || defaultConfig.providers?.[activeProvider]?.baseUrl || i18nService.t('baseUrlPlaceholder')}
+                    />
+                    {activeProviderConfig.baseUrl && !isBaseUrlLocked && (
+                      <div className="absolute right-2 inset-y-0 flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => handleProviderConfigChange(activeProvider, 'baseUrl', '')}
+                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                          title={i18nService.t('clear') || 'Clear'}
+                        >
+                          <XCircleIconSolid className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {shouldShowApiFormatSelector(activeProvider) && !(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
+                <div>
+                  <label htmlFor={`${activeProvider}-apiFormat`} className="mb-1 block text-xs font-medium text-foreground">
+                    {i18nService.t('apiFormat')}
+                  </label>
+                  <div className="flex items-center space-x-4">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name={`${activeProvider}-apiFormat`}
+                        value="anthropic"
+                        checked={getEffectiveApiFormat(activeProvider, activeProviderConfig.apiFormat) !== 'openai'}
+                        onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'anthropic')}
+                        className="h-3.5 w-3.5 text-primary focus:ring-primary bg-surface"
+                      />
+                      <span className="ml-2 text-xs text-foreground">{i18nService.t('apiFormatNative')}</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name={`${activeProvider}-apiFormat`}
+                        value="openai"
+                        checked={getEffectiveApiFormat(activeProvider, activeProviderConfig.apiFormat) === 'openai'}
+                        onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'openai')}
+                        className="h-3.5 w-3.5 text-primary focus:ring-primary bg-surface"
+                      />
+                      <span className="ml-2 text-xs text-foreground">{i18nService.t('apiFormatOpenAI')}</span>
+                    </label>
+                  </div>
+                  <p className="mt-1 text-xs text-secondary">{i18nService.t('apiFormatHint')}</p>
+                </div>
+              )}
+
+              {isCustomProvider(activeProvider) && (
+                <div className="rounded-xl border border-dashed border-border px-3 py-3 text-[11px] text-secondary">
+                  <p>
+                    {i18nService.t('baseUrlHint1')}
+                    <code className="ml-1 break-all text-primary">{i18nService.t('baseUrlHintExample1')}</code>
+                  </p>
+                  <p className="mt-1">
+                    {i18nService.t('baseUrlHint2')}
+                    <code className="ml-1 break-all text-primary">{i18nService.t('baseUrlHintExample2')}</code>
+                  </p>
+                </div>
+              )}
+
+              {activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled && (
+                <div className="rounded-lg bg-primary-muted border border-primary-muted p-2 text-[11px] text-primary">
+                  <span className="font-medium">GLM Coding Plan:</span> {i18nService.t('zhipuCodingPlanEndpointHint')}
+                </div>
+              )}
+              {activeProvider === 'qwen' && providers.qwen.codingPlanEnabled && (
+                <div className="rounded-lg bg-primary-muted border border-primary-muted p-2 text-[11px] text-primary">
+                  <span className="font-medium">Coding Plan:</span> {i18nService.t('qwenCodingPlanEndpointHint')}
+                </div>
+              )}
+              {activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled && (
+                <div className="rounded-lg bg-primary-muted border border-primary-muted p-2 text-[11px] text-primary">
+                  <span className="font-medium">Coding Plan:</span> {i18nService.t('volcengineCodingPlanEndpointHint')}
+                </div>
+              )}
+              {activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled && (
+                <div className="rounded-lg bg-primary-muted border border-primary-muted p-2 text-[11px] text-primary">
+                  <span className="font-medium">Coding Plan:</span> {i18nService.t('moonshotCodingPlanEndpointHint')}
+                </div>
+              )}
+            </div>,
+          )}
+
+          {renderProviderPanelSection(
+            'features',
+            i18nService.t('providerPanel_features'),
+            <div className="space-y-3">
+              {activeProvider === 'zhipu' && (
+                <div className="flex items-center justify-between rounded-xl border border-border bg-surface px-3 py-3">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-medium text-foreground">GLM Coding Plan</span>
+                      <span className="rounded-md bg-primary-muted px-1.5 py-0.5 text-[10px] text-primary">Beta</span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-secondary">{i18nService.t('zhipuCodingPlanHint')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3">
+                    <input type="checkbox" checked={providers.zhipu.codingPlanEnabled ?? false} onChange={(e) => handleProviderConfigChange('zhipu', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')} className="sr-only peer" />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                  </label>
+                </div>
+              )}
+              {activeProvider === 'qwen' && (
+                <div className="flex items-center justify-between rounded-xl border border-border bg-surface px-3 py-3">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-medium text-foreground">Coding Plan</span>
+                      <span className="rounded-md bg-primary-muted px-1.5 py-0.5 text-[10px] text-primary">订阅套餐</span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-secondary">{i18nService.t('qwenCodingPlanHint')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3">
+                    <input type="checkbox" checked={providers.qwen.codingPlanEnabled ?? false} onChange={(e) => handleProviderConfigChange('qwen', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')} className="sr-only peer" />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                  </label>
+                </div>
+              )}
+              {activeProvider === 'volcengine' && (
+                <div className="flex items-center justify-between rounded-xl border border-border bg-surface px-3 py-3">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-medium text-foreground">Coding Plan</span>
+                      <span className="rounded-md bg-primary-muted px-1.5 py-0.5 text-[10px] text-primary">Beta</span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-secondary">{i18nService.t('volcengineCodingPlanHint')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3">
+                    <input type="checkbox" checked={providers.volcengine.codingPlanEnabled ?? false} onChange={(e) => handleProviderConfigChange('volcengine', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')} className="sr-only peer" />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                  </label>
+                </div>
+              )}
+              {activeProvider === 'moonshot' && (
+                <div className="flex items-center justify-between rounded-xl border border-border bg-surface px-3 py-3">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-medium text-foreground">Coding Plan</span>
+                      <span className="rounded-md bg-primary-muted px-1.5 py-0.5 text-[10px] text-primary">Beta</span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-secondary">{i18nService.t('moonshotCodingPlanHint')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3">
+                    <input type="checkbox" checked={providers.moonshot.codingPlanEnabled ?? false} onChange={(e) => handleProviderConfigChange('moonshot', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')} className="sr-only peer" />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                  </label>
+                </div>
+              )}
+              {!['zhipu', 'qwen', 'volcengine', 'moonshot'].includes(activeProvider) && (
+                <div className="rounded-xl border border-dashed border-border px-3 py-3 text-xs text-secondary">
+                  {i18nService.t('providerSettings')}
+                </div>
+              )}
+            </div>,
+          )}
+
+          {renderProviderPanelSection(
+            'connection',
+            i18nService.t('providerPanel_connection'),
+            <div className="flex items-center space-x-3">
+              {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={isTesting || (providerRequiresApiKey(activeProvider) && !activeProviderConfig.apiKey)}
+                  className="inline-flex items-center rounded-xl border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <SignalIcon className="mr-1.5 h-3.5 w-3.5" />
+                  {isTesting ? i18nService.t('testing') : i18nService.t('testConnection')}
+                </button>
+              )}
+            </div>,
+          )}
+
+          {renderProviderPanelSection(
+            'models',
+            i18nService.t('providerPanel_models'),
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-secondary">
+                  {(activeProviderConfig.models ?? []).length} {i18nService.t('providerModelCountUnit')}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddModel}
+                  className="inline-flex items-center text-xs text-primary hover:text-primary-hover"
+                >
+                  <PlusCircleIcon className="mr-1 h-3.5 w-3.5" />
+                  {i18nService.t('addModel')}
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                {(activeProviderConfig.models ?? []).map(model => (
+                  <div key={model.id} className="rounded-xl border border-border bg-background p-2 transition-colors hover:border-primary group">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex items-center gap-1.5">
+                        <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-400"></div>
+                        <div className="min-w-0">
+                          <div className="truncate text-[11px] font-medium text-foreground">{model.name}</div>
+                          <div className="truncate text-[10px] text-secondary">{model.id}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center shrink-0 space-x-1">
+                        {model.supportsImage && (
+                          <span className="rounded-md bg-primary-muted px-1.5 py-0.5 text-[10px] text-primary">
+                            {i18nService.t('imageInput')}
+                          </span>
+                        )}
+                        <button type="button" onClick={() => handleEditModel(model.id, model.name, model.supportsImage)} className="p-0.5 text-secondary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                          <PencilIcon className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" onClick={() => handleDeleteModel(model.id)} className="p-0.5 text-secondary hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <TrashIcon className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {(!activeProviderConfig.models || activeProviderConfig.models.length === 0) && (
+                  <div className="rounded-xl border border-border-subtle bg-background p-2.5 text-center">
+                    <p className="text-[11px] text-secondary">{i18nService.t('noModelsAvailable')}</p>
+                    <button type="button" onClick={handleAddModel} className="mt-1.5 inline-flex items-center text-[11px] font-medium text-primary hover:text-primary-hover">
+                      <PlusCircleIcon className="mr-1 h-3 w-3" />
+                      {i18nService.t('addFirstModel')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>,
+          )}
+
+          {renderProviderPanelSection(
+            'advanced',
+            i18nService.t('providerPanel_advanced'),
+            <div className="space-y-4">
+              {isCustomProvider(activeProvider) && (
+                <>
+                  <div>
+                    <label htmlFor={`${activeProvider}-displayName`} className="mb-1 block text-xs font-medium text-foreground">
+                      {i18nService.t('customDisplayName')}
+                    </label>
+                    <input
+                      type="text"
+                      id={`${activeProvider}-displayName`}
+                      value={(activeProviderConfig as ProviderConfig)?.displayName ?? ''}
+                      onChange={(e) => handleProviderConfigChange(activeProvider, 'displayName', e.target.value)}
+                      className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
+                      placeholder={i18nService.t('customDisplayNamePlaceholder')}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCustomProvider(activeProvider)}
+                    className="inline-flex items-center rounded-lg border border-red-500/30 px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-500/10"
+                  >
+                    {i18nService.t('deleteCustomProvider')}
+                  </button>
+                </>
+              )}
+              {!isCustomProvider(activeProvider) && (
+                <div className="rounded-xl border border-dashed border-border px-3 py-3 text-xs text-secondary">
+                  {i18nService.t('providerSettings')}
+                </div>
+              )}
+            </div>,
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderTabContent = () => {
+    switch(activeTab) {
+      case 'general':
+        return renderGeneralSettingsPanel();
 
       case 'email':
         return <EmailSkillConfig />;
@@ -4210,745 +5216,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         );
 
       case 'model':
-        return (
-          <div className="flex h-full">
-            {/* Provider List - Left Side */}
-            <div className="w-2/5 border-r border-border pr-3 space-y-1.5 overflow-y-auto">
-              <div className="flex items-center justify-between mb-2 px-1">
-                <h3 className="text-sm font-medium text-foreground">
-                  {i18nService.t('modelProviders')}
-                </h3>
-                <div className="flex items-center space-x-1">
-                  <button
-                    type="button"
-                    onClick={handleImportProvidersClick}
-                    disabled={isImportingProviders || isExportingProviders}
-                    className="inline-flex items-center px-2 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
-                  >
-                    {i18nService.t('import')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExportProviders}
-                    disabled={isImportingProviders || isExportingProviders}
-                    className="inline-flex items-center px-2 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
-                  >
-                    {i18nService.t('export')}
-                  </button>
-                </div>
-              </div>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={handleImportProviders}
-              />
-              {Object.entries(visibleProviders).map(([provider, config]) => {
-                const providerKey = provider as ProviderType;
-                const isCustom = isCustomProvider(provider);
-                const providerInfo = providerMeta[providerKey];
-                const missingApiKey = providerRequiresApiKey(providerKey) && !config.apiKey.trim();
-                const canToggleProvider = config.enabled || !missingApiKey;
-                const displayLabel = isCustom
-                  ? ((config as ProviderConfig).displayName || getCustomProviderDefaultName(provider))
-                  : (providerInfo?.label ?? getProviderDisplayName(provider));
-                return (
-                  <div
-                    key={provider}
-                    onClick={() => handleProviderChange(providerKey)}
-                    className={`group flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
-                      activeProvider === provider
-                        ? 'bg-primary-muted border border-primary shadow-subtle'
-                        : 'bg-surface hover:bg-surface-raised border border-transparent'
-                    }`}
-                  >
-                    <div className="flex flex-1 items-center min-w-0">
-                      <div className="mr-2 flex h-7 w-7 items-center justify-center shrink-0">
-                        <span className="text-foreground">
-                          {isCustom ? <CustomProviderIcon /> : providerInfo?.icon}
-                        </span>
-                      </div>
-                      <div className="flex flex-col min-w-0">
-                        <span className={`text-sm font-medium truncate ${
-                          activeProvider === provider
-                            ? 'text-primary'
-                            : 'text-foreground'
-                        }`}>
-                          {displayLabel}
-                        </span>
-                        {isCustom && (
-                          <span className="text-[9px] leading-tight mt-0.5 text-primary">
-                            {i18nService.t('customBadge')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center ml-2 gap-1">
-                      {isCustom && (
-                        <button
-                          type="button"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity text-claude-secondaryText hover:text-red-500 dark:text-claude-darkSecondaryText dark:hover:text-red-400 p-0.5"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteCustomProvider(providerKey);
-                          }}
-                          title={i18nService.t('deleteCustomProvider')}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-                          </svg>
-                        </button>
-                      )}
-                      <div
-                        title={!canToggleProvider ? i18nService.t('configureApiKey') : undefined}
-                        className={`w-7 h-4 rounded-full flex items-center transition-colors ${
-                          config.enabled ? 'bg-primary' : 'bg-gray-400 dark:bg-gray-600'
-                        } ${
-                          canToggleProvider ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (!canToggleProvider) {
-                            return;
-                          }
-                          toggleProviderEnabled(providerKey);
-                        }}
-                      >
-                        <div
-                          className={`w-3 h-3 rounded-full bg-white shadow-md transform transition-transform ${
-                            config.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                          }`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {/* Add Custom Provider Button */}
-              {CUSTOM_PROVIDER_KEYS.some(k => !providers[k]) && (
-              <button
-                type="button"
-                onClick={handleAddCustomProvider}
-                className="w-full flex items-center justify-center p-2 rounded-xl border border-dashed border-claude-border dark:border-claude-darkBorder text-claude-secondaryText dark:text-claude-darkSecondaryText hover:border-claude-accent hover:text-claude-accent transition-colors text-sm"
-              >
-                {i18nService.t('addCustomProvider')}
-              </button>
-              )}
-            </div>
-
-            {/* Provider Settings - Right Side */}
-            <div className="w-3/5 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
-              <div className="flex items-center justify-between pb-2 border-b border-border">
-                <h3 className="text-base font-medium text-foreground">
-                  {isCustomProvider(activeProvider)
-                    ? ((providers[activeProvider] as ProviderConfig)?.displayName || getCustomProviderDefaultName(activeProvider))
-                    : (providerMeta[activeProvider]?.label ?? getProviderDisplayName(activeProvider))
-                  } {i18nService.t('providerSettings')}
-                </h3>
-                <div
-                  className={`px-2 py-0.5 rounded-lg text-xs font-medium ${
-                    providers[activeProvider].enabled
-                      ? 'bg-green-500/20 text-green-600 dark:text-green-400'
-                      : 'bg-red-500/20 text-red-600 dark:text-red-400'
-                  }`}
-                >
-                  {providers[activeProvider].enabled ? i18nService.t('providerStatusOn') : i18nService.t('providerStatusOff')}
-                </div>
-              </div>
-
-              {/* MiniMax OAuth auth section */}
-              {activeProvider === 'minimax' && (
-                <div className="space-y-3">
-                  {/* Auth type tabs */}
-                  <div>
-                    <div className="flex rounded-xl overflow-hidden border border-border mb-3">
-                      <button
-                        type="button"
-                        onClick={() => setProviders(prev => ({ ...prev, minimax: { ...prev.minimax, authType: 'oauth' } }))}
-                        className={`flex-1 py-1.5 text-xs font-medium transition-colors ${providers.minimax.authType === 'oauth' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
-                      >
-                        {i18nService.t('minimaxOAuthTabOAuth')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setProviders(prev => ({ ...prev, minimax: { ...prev.minimax, authType: 'apikey' } }));
-                          setMinimaxOAuthPhase({ kind: 'idle' });
-                        }}
-                        className={`flex-1 py-1.5 text-xs font-medium transition-colors ${providers.minimax.authType !== 'oauth' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
-                      >
-                        {i18nService.t('minimaxOAuthTabApiKey')}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* API Key mode */}
-                  {providers.minimax.authType !== 'oauth' && (
-                    <div className="relative">
-                      <input
-                        type={showApiKey ? 'text' : 'password'}
-                        id="minimax-apiKey"
-                        value={providers.minimax.apiKey}
-                        onChange={(e) => handleProviderConfigChange('minimax', 'apiKey', e.target.value)}
-                        className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
-                        placeholder={i18nService.t('apiKeyPlaceholder')}
-                      />
-                      <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                        {providers.minimax.apiKey && (
-                          <button
-                            type="button"
-                            onClick={() => handleProviderConfigChange('minimax', 'apiKey', '')}
-                            className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                            title={i18nService.t('clear') || 'Clear'}
-                          >
-                            <XCircleIconSolid className="h-4 w-4" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setShowApiKey(!showApiKey)}
-                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                          title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                        >
-                          {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* OAuth mode */}
-                  {providers.minimax.authType === 'oauth' && (
-                    <div className="space-y-2">
-                      {/* Already logged in */}
-                      {minimaxOAuthPhase.kind === 'idle' && providers.minimax.apiKey && (
-                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 space-y-2">
-                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
-                            {i18nService.t('minimaxOAuthLoggedIn')}
-                          </p>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthRelogin')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleMiniMaxOAuthLogout}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthLogout')}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Not logged in yet — show region selector + login button */}
-                      {minimaxOAuthPhase.kind === 'idle' && !providers.minimax.apiKey && (
-                        <div className="space-y-2">
-                          <div>
-                            <label className="block text-xs font-medium text-foreground mb-1">
-                              {i18nService.t('minimaxOAuthRegionLabel')}
-                            </label>
-                            <div className="flex rounded-xl overflow-hidden border border-border">
-                              <button
-                                type="button"
-                                onClick={() => setMinimaxOAuthRegion('cn')}
-                                className={`flex-1 py-1.5 text-xs font-medium transition-colors ${minimaxOAuthRegion === 'cn' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
-                              >
-                                {i18nService.t('minimaxOAuthRegionCN')}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setMinimaxOAuthRegion('global')}
-                                className={`flex-1 py-1.5 text-xs font-medium transition-colors ${minimaxOAuthRegion === 'global' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
-                              >
-                                {i18nService.t('minimaxOAuthRegionGlobal')}
-                              </button>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)}
-                            className="w-full py-2 text-xs font-medium rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors"
-                          >
-                            {i18nService.t('minimaxOAuthLogin')}
-                          </button>
-                          <p className="text-[11px] text-secondary">
-                            {i18nService.t('minimaxOAuthHint')}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Requesting code */}
-                      {minimaxOAuthPhase.kind === 'requesting_code' && (
-                        <div className="p-3 rounded-xl bg-surface-inset border border-border">
-                          <p className="text-xs text-secondary">
-                            {i18nService.t('minimaxOAuthLoggingIn')}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Pending — show user code */}
-                      {minimaxOAuthPhase.kind === 'pending' && (
-                        <div className="p-3 rounded-xl bg-surface-inset border border-border space-y-2">
-                          <p className="text-xs text-foreground font-medium">
-                            {i18nService.t('minimaxOAuthOpenBrowserHint')}
-                          </p>
-                          <div>
-                            <span className="text-[11px] text-secondary">
-                              {i18nService.t('minimaxOAuthUserCode')}:&nbsp;
-                            </span>
-                            <code className="text-xs font-mono text-primary">
-                              {minimaxOAuthPhase.userCode}
-                            </code>
-                          </div>
-                          <a
-                            href={minimaxOAuthPhase.verificationUri}
-                            onClick={(e) => { e.preventDefault(); void window.electron.shell.openExternal(minimaxOAuthPhase.verificationUri); }}
-                            className="block text-[11px] text-primary underline truncate"
-                          >
-                            {minimaxOAuthPhase.verificationUri}
-                          </a>
-                          <p className="text-[11px] text-secondary">
-                            {i18nService.t('minimaxOAuthStatusPending')}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={handleCancelMiniMaxLogin}
-                            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
-                          >
-                            {i18nService.t('minimaxOAuthCancel')}
-                          </button>
-                        </div>
-                      )}
-
-                      {/* Success */}
-                      {minimaxOAuthPhase.kind === 'success' && (
-                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
-                            {i18nService.t('minimaxOAuthStatusSuccess')}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Error */}
-                      {minimaxOAuthPhase.kind === 'error' && (
-                        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 space-y-2">
-                          <p className="text-xs text-red-600 dark:text-red-400 font-medium">
-                            {i18nService.t('minimaxOAuthStatusError')}
-                          </p>
-                          <p className="text-[11px] text-red-600/80 dark:text-red-400/80 break-words">
-                            {minimaxOAuthPhase.message}
-                          </p>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleMiniMaxDeviceLogin(minimaxOAuthRegion)}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthRelogin')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setMinimaxOAuthPhase({ kind: 'idle' })}
-                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
-                            >
-                              {i18nService.t('minimaxOAuthCancel')}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Standard API key section for non-MiniMax providers */}
-              {providerRequiresApiKey(activeProvider) && activeProvider !== 'minimax' && (
-                <div>
-                  <label htmlFor={`${activeProvider}-apiKey`} className="block text-xs font-medium text-foreground mb-1">
-                    {i18nService.t('apiKey')}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showApiKey ? 'text' : 'password'}
-                      id={`${activeProvider}-apiKey`}
-                      value={providers[activeProvider].apiKey}
-                      onChange={(e) => handleProviderConfigChange(activeProvider, 'apiKey', e.target.value)}
-                      className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
-                      placeholder={i18nService.t('apiKeyPlaceholder')}
-                    />
-                    <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                      {providers[activeProvider].apiKey && (
-                        <button
-                          type="button"
-                          onClick={() => handleProviderConfigChange(activeProvider, 'apiKey', '')}
-                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                          title={i18nService.t('clear') || 'Clear'}
-                        >
-                          <XCircleIconSolid className="h-4 w-4" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setShowApiKey(!showApiKey)}
-                        className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                        title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                      >
-                        {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {isCustomProvider(activeProvider) && (
-                <div>
-                  <label htmlFor={`${activeProvider}-displayName`} className="block text-xs font-medium dark:text-claude-darkText text-claude-text mb-1">
-                    {i18nService.t('customDisplayName')}
-                  </label>
-                  <input
-                    type="text"
-                    id={`${activeProvider}-displayName`}
-                    value={(providers[activeProvider] as ProviderConfig)?.displayName ?? ''}
-                    onChange={(e) => handleProviderConfigChange(activeProvider, 'displayName', e.target.value)}
-                    className="block w-full rounded-xl bg-claude-surfaceInset dark:bg-claude-darkSurfaceInset dark:border-claude-darkBorder border-claude-border border focus:border-claude-accent focus:ring-1 focus:ring-claude-accent/30 dark:text-claude-darkText text-claude-text px-3 py-2 text-xs"
-                    placeholder={i18nService.t('customDisplayNamePlaceholder')}
-                  />
-                </div>
-              )}
-
-              {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
-              <div>
-                <label htmlFor={`${activeProvider}-baseUrl`} className="block text-xs font-medium text-foreground mb-1">
-                  {i18nService.t('baseUrl')}
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    id={`${activeProvider}-baseUrl`}
-                    value={
-                      (() => {
-                        const fmt = getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat);
-                        if (fmt !== 'gemini') {
-                          const cpUrl = (providers[activeProvider] as { codingPlanEnabled?: boolean }).codingPlanEnabled
-                            ? ProviderRegistry.getCodingPlanUrl(activeProvider, fmt)
-                            : undefined;
-                          if (cpUrl) return cpUrl;
-                        }
-                        return providers[activeProvider].baseUrl;
-                      })()
-                    }
-                    onChange={(e) => handleProviderConfigChange(activeProvider, 'baseUrl', e.target.value)}
-                    disabled={isBaseUrlLocked}
-                    className={`block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-8 text-xs ${isBaseUrlLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    placeholder={getProviderDefaultBaseUrl(activeProvider, getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat)) || defaultConfig.providers?.[activeProvider]?.baseUrl || i18nService.t('baseUrlPlaceholder')}
-                  />
-                  {providers[activeProvider].baseUrl && !isBaseUrlLocked && (
-                    <div className="absolute right-2 inset-y-0 flex items-center">
-                      <button
-                        type="button"
-                        onClick={() => handleProviderConfigChange(activeProvider, 'baseUrl', '')}
-                        className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                        title={i18nService.t('clear') || 'Clear'}
-                      >
-                        <XCircleIconSolid className="h-4 w-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {isCustomProvider(activeProvider) && (
-                <div className="mt-1.5 space-y-0.5 text-[11px] text-secondary">
-                  <p>
-                    <span className="text-sm text-muted mr-1">•</span>
-                    {i18nService.t('baseUrlHint1')}
-                    <code className="ml-1 text-primary break-all">{i18nService.t('baseUrlHintExample1')}</code>
-                  </p>
-                  <p>
-                    <span className="text-sm text-muted mr-1">•</span>
-                    {i18nService.t('baseUrlHint2')}
-                    <code className="ml-1 text-primary break-all">{i18nService.t('baseUrlHintExample2')}</code>
-                  </p>
-                </div>
-                )}
-                {/* GLM Coding Plan 提示 */}
-                {activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">GLM Coding Plan:</span> {i18nService.t('zhipuCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-                {/* Qwen Coding Plan 提示 */}
-                {activeProvider === 'qwen' && providers.qwen.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">Coding Plan:</span> {i18nService.t('qwenCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-                {/* Volcengine Coding Plan 提示 */}
-                {activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">Coding Plan:</span> {i18nService.t('volcengineCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-                {/* Moonshot Coding Plan 提示 */}
-                {activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled && (
-                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
-                    <p className="text-[11px] text-primary dark:text-primary">
-                      <span className="font-medium">Coding Plan:</span> {i18nService.t('moonshotCodingPlanEndpointHint')}
-                    </p>
-                  </div>
-                )}
-              </div>
-              )}
-
-              {/* API 格式选择器 */}
-              {shouldShowApiFormatSelector(activeProvider) && !(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
-                <div>
-                  <label htmlFor={`${activeProvider}-apiFormat`} className="block text-xs font-medium text-foreground mb-1">
-                    {i18nService.t('apiFormat')}
-                  </label>
-                  <div className="flex items-center space-x-4">
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name={`${activeProvider}-apiFormat`}
-                        value="anthropic"
-                        checked={getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) !== 'openai'}
-                        onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'anthropic')}
-                        className="h-3.5 w-3.5 text-primary focus:ring-primary bg-surface"
-                      />
-                      <span className="ml-2 text-xs text-foreground">
-                        {i18nService.t('apiFormatNative')}
-                      </span>
-                    </label>
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name={`${activeProvider}-apiFormat`}
-                        value="openai"
-                        checked={getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat) === 'openai'}
-                        onChange={() => handleProviderConfigChange(activeProvider, 'apiFormat', 'openai')}
-                        className="h-3.5 w-3.5 text-primary focus:ring-primary bg-surface"
-                      />
-                      <span className="ml-2 text-xs text-foreground">
-                        {i18nService.t('apiFormatOpenAI')}
-                      </span>
-                    </label>
-                  </div>
-                  <p className="mt-1 text-xs text-secondary">
-                    {i18nService.t('apiFormatHint')}
-                  </p>
-                </div>
-              )}
-
-              {/* GLM Coding Plan 开关 (仅 Zhipu) */}
-              {activeProvider === 'zhipu' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        GLM Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        Beta
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('zhipuCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.zhipu.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('zhipu', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* Qwen Coding Plan 开关 (仅 Qwen) */}
-              {activeProvider === 'qwen' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        订阅套餐
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('qwenCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.qwen.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('qwen', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* Volcengine Coding Plan 开关 (仅 Volcengine) */}
-              {activeProvider === 'volcengine' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        Beta
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('volcengineCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.volcengine.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('volcengine', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* Moonshot Coding Plan 开关 (仅 Moonshot) */}
-              {activeProvider === 'moonshot' && (
-                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-medium text-foreground">
-                        Coding Plan
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        Beta
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                      {i18nService.t('moonshotCodingPlanHint')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-3">
-                    <input
-                      type="checkbox"
-                      checked={providers.moonshot.codingPlanEnabled ?? false}
-                      onChange={(e) => handleProviderConfigChange('moonshot', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                  </label>
-                </div>
-              )}
-
-              {/* 测试连接按钮 */}
-              {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
-              <div className="flex items-center space-x-3">
-                <button
-                  type="button"
-                  onClick={handleTestConnection}
-                  disabled={isTesting || (providerRequiresApiKey(activeProvider) && !providers[activeProvider].apiKey)}
-                  className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-xl border border-border text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
-                >
-                  <SignalIcon className="h-3.5 w-3.5 mr-1.5" />
-                  {isTesting ? i18nService.t('testing') : i18nService.t('testConnection')}
-                </button>
-              </div>
-              )}
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <h3 className="text-xs font-medium text-foreground">
-                    {i18nService.t('availableModels')}
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={handleAddModel}
-                    className="inline-flex items-center text-xs text-primary hover:text-primary-hover"
-                  >
-                    <PlusCircleIcon className="h-3.5 w-3.5 mr-1" />
-                    {i18nService.t('addModel')}
-                  </button>
-                </div>
-
-                {/* Models List */}
-                <div className="space-y-1.5 max-h-60 overflow-y-auto">
-                  {(providers[activeProvider].models ?? []).map(model => (
-                    <div
-                      key={model.id}
-                      className="bg-surface p-2 rounded-xl border-border border transition-colors hover:border-primary group"
-                    >
-                      <div className="flex items-center justify-between gap-2 min-w-0">
-                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                          <div className="w-1.5 h-1.5 shrink-0 rounded-full bg-green-400"></div>
-                          <div className="min-w-0">
-                            <div className="text-foreground font-medium text-[11px] truncate">{model.name}</div>
-                            <div className="text-[10px] text-secondary truncate">{model.id}</div>
-                          </div>
-                        </div>
-                        <div className="flex items-center shrink-0 space-x-1">
-                          {model.supportsImage && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                              {i18nService.t('imageInput')}
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleEditModel(model.id, model.name, model.supportsImage)}
-                            className="p-0.5 text-secondary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <PencilIcon className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteModel(model.id)}
-                            className="p-0.5 text-secondary hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <TrashIcon className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-
-                  {(!providers[activeProvider].models || providers[activeProvider].models.length === 0) && (
-                    <div className="bg-surface p-2.5 rounded-xl border border-border-subtle text-center">
-                      <p className="text-[11px] text-secondary">{i18nService.t('noModelsAvailable')}</p>
-                      <button
-                        type="button"
-                        onClick={handleAddModel}
-                        className="mt-1.5 inline-flex items-center text-[11px] font-medium text-primary hover:text-primary-hover"
-                      >
-                        <PlusCircleIcon className="h-3 w-3 mr-1" />
-                        {i18nService.t('addFirstModel')}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
+        return renderModelSettingsPanel();
 
       case 'coworkAgent':
         return (
@@ -5171,20 +5439,20 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="relative flex w-[900px] h-[80vh] rounded-2xl border-border border shadow-modal overflow-hidden modal-content"
+        className="relative flex h-[min(90vh,960px)] w-[min(1120px,96vw)] flex-col overflow-hidden rounded-2xl border border-border shadow-modal modal-content md:h-[min(88vh,920px)] md:flex-row"
         onClick={handleSettingsClick}
       >
         {/* Left sidebar */}
-        <div className="w-[220px] shrink-0 flex flex-col bg-surface-raised border-r border-border rounded-l-2xl overflow-y-auto">
-          <div className="px-5 pt-5 pb-3">
+        <div className="flex max-h-[34vh] w-full shrink-0 flex-col overflow-hidden border-b border-border bg-surface-raised md:max-h-none md:w-[220px] md:border-b-0 md:border-r md:rounded-l-2xl">
+          <div className="px-4 pt-4 pb-3 md:px-5 md:pt-5">
             <h2 className="text-lg font-semibold text-foreground">{i18nService.t('settings')}</h2>
           </div>
-          <nav className="flex flex-col gap-0.5 px-3 pb-4">
+          <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:gap-0.5 md:overflow-visible md:pb-4">
             {sidebarTabs.map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => handleTabChange(tab.key)}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left ${
+                className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors md:w-full ${
                   activeTab === tab.key
                     ? 'bg-primary-muted text-primary'
                     : 'text-secondary hover:text-foreground hover:bg-surface-raised'
@@ -5198,9 +5466,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         </div>
 
         {/* Right content */}
-        <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden bg-background rounded-r-2xl">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-2xl bg-background md:min-w-0 md:rounded-b-none md:rounded-r-2xl">
           {/* Content header */}
-          <div className="flex justify-between items-center px-6 pt-5 pb-3 shrink-0">
+          <div className="flex shrink-0 items-center justify-between px-4 pt-4 pb-3 sm:px-6 sm:pt-5">
             <h3 className="text-lg font-semibold text-foreground">{activeTabLabel}</h3>
             <button
               onClick={onClose}
@@ -5211,7 +5479,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           </div>
 
           {noticeMessage && (
-            <div className="px-6">
+            <div className="px-4 sm:px-6">
               <ErrorMessage
                 message={noticeMessage}
                 onClose={() => setNoticeMessage(null)}
@@ -5220,7 +5488,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           )}
 
           {error && (
-            <div className="px-6">
+            <div className="px-4 sm:px-6">
               <ErrorMessage
                 message={error}
                 onClose={() => setError(null)}
@@ -5232,25 +5500,25 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
             {/* Tab content */}
             <div
               ref={contentRef}
-              className="px-6 py-4 flex-1 overflow-y-auto"
+              className="flex-1 overflow-y-auto px-4 py-4 sm:px-6"
               style={{ scrollbarGutter: 'stable' }}
             >
               {renderTabContent()}
             </div>
 
             {/* Footer buttons */}
-            <div className="flex justify-end space-x-4 p-4 border-border border-t bg-background shrink-0">
+            <div className="flex shrink-0 flex-col-reverse gap-3 border-t border-border bg-background p-4 sm:flex-row sm:justify-end">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-foreground hover:bg-surface-raised rounded-xl transition-colors text-sm font-medium border border-border active:scale-[0.98]"
+                className="w-full rounded-xl border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised active:scale-[0.98] sm:w-auto"
               >
                 {i18nService.t('cancel')}
               </button>
               <button
                 type="submit"
                 disabled={isSaving}
-                className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-xl transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+                className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.98] sm:w-auto"
               >
                 {isSaving ? i18nService.t('saving') : i18nService.t('save')}
               </button>

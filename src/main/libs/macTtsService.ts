@@ -4,6 +4,8 @@ import fs from 'fs';
 import { EventEmitter } from 'events';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import {
+  TtsEngine,
+  TtsPrepareStatus,
   TtsStateType,
   type TtsAvailability,
   type TtsSpeakOptions,
@@ -123,6 +125,9 @@ export class MacTtsService extends EventEmitter {
         supported: false,
         platform: process.platform,
         speaking: false,
+        currentEngine: TtsEngine.MacosNative,
+        availableEngines: [],
+        prepareStatus: TtsPrepareStatus.Error,
       };
     }
 
@@ -133,6 +138,9 @@ export class MacTtsService extends EventEmitter {
         supported: true,
         platform: process.platform,
         speaking: this.speaking,
+        currentEngine: TtsEngine.MacosNative,
+        availableEngines: [TtsEngine.MacosNative],
+        prepareStatus: TtsPrepareStatus.Ready,
       };
     } catch (error) {
       return {
@@ -140,6 +148,10 @@ export class MacTtsService extends EventEmitter {
         supported: false,
         platform: process.platform,
         speaking: false,
+        currentEngine: TtsEngine.MacosNative,
+        availableEngines: [],
+        prepareStatus: TtsPrepareStatus.Error,
+        recentError: error instanceof Error ? error.message : 'Failed to initialize macOS TTS helper.',
         error: error instanceof Error ? error.message : 'Failed to initialize macOS TTS helper.',
       };
     }
@@ -167,7 +179,12 @@ export class MacTtsService extends EventEmitter {
       return [];
     }
     const response = JSON.parse(line) as HelperVoiceResponse;
-    return Array.isArray(response.voices) ? response.voices : [];
+    return Array.isArray(response.voices)
+      ? response.voices.map((voice) => ({
+        ...voice,
+        engine: TtsEngine.MacosNative,
+      }))
+      : [];
   }
 
   async speak(options: TtsSpeakOptions): Promise<{ success: boolean; error?: string }> {
@@ -244,6 +261,13 @@ export class MacTtsService extends EventEmitter {
 
   dispose(): void {
     void this.stop();
+  }
+
+  onStateChanged(listener: (event: TtsStateEvent) => void): () => void {
+    this.on('stateChanged', listener);
+    return () => {
+      this.off('stateChanged', listener);
+    };
   }
 }
 

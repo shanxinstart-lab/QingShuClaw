@@ -8,5 +8,6 @@ export const AppCustomEvent = {
   ShowLoginWelcome: 'app:showLoginWelcome',
   FocusCoworkInput: 'app:focusCoworkInput',
   StartWakeDictation: 'app:startWakeDictation',
+  AssistantReplyPlaybackStateChanged: 'app:assistantReplyPlaybackStateChanged',
 } as const;
 export type AppCustomEvent = typeof AppCustomEvent[keyof typeof AppCustomEvent];

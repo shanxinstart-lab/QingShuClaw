@@ -249,6 +249,7 @@ export interface AppConfig {
   tts?: {
     enabled: boolean;
     autoPlayAssistantReply: boolean;
+    engine: import('../shared/tts/constants').TtsEngine;
     voiceId: string;
     rate: number;
     volume: number;

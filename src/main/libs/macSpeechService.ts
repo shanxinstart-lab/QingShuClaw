@@ -285,6 +285,48 @@ export class MacSpeechService extends EventEmitter {
     }
   }
 
+  async requestPermissionsIfNeeded(): Promise<SpeechAvailability> {
+    const availability = await this.getAvailability();
+    if (
+      process.platform !== 'darwin'
+      || !app.isPackaged
+      || !availability.supported
+      || (
+        availability.speechAuthorization !== SpeechPermissionStatus.NotDetermined
+        && availability.microphoneAuthorization !== SpeechPermissionStatus.NotDetermined
+      )
+    ) {
+      return availability;
+    }
+
+    try {
+      const response = this.runHelperCommand(['request-permission']);
+      const speechAuthorization = isSpeechPermissionStatus(response.speechAuthorization)
+        ? response.speechAuthorization
+        : SpeechPermissionStatus.Unsupported;
+      const microphoneAuthorization = isSpeechPermissionStatus(response.microphoneAuthorization)
+        ? response.microphoneAuthorization
+        : SpeechPermissionStatus.Unsupported;
+
+      return {
+        enabled: true,
+        supported: response.supported === true,
+        platform: process.platform,
+        permission: resolvePermission(speechAuthorization, microphoneAuthorization),
+        speechAuthorization,
+        microphoneAuthorization,
+        locale: response.locale,
+        listening: this.activeChild !== null,
+      };
+    } catch (error) {
+      console.warn('[MacSpeechService] Failed to request speech permissions:', error);
+      return {
+        ...availability,
+        error: error instanceof Error ? error.message : 'Failed to request macOS speech permissions.',
+      };
+    }
+  }
+
   async start(options?: SpeechStartOptions): Promise<{ success: boolean; error?: string }> {
     if (process.platform !== 'darwin') {
       return { success: false, error: SpeechErrorCode.UnsupportedPlatform };

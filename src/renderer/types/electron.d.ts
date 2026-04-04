@@ -20,6 +20,8 @@ type SpeechTranscribeAudioResult = import('../../shared/speech/constants').Speec
 type WakeInputStatus = import('../../shared/wakeInput/constants').WakeInputStatus;
 type WakeInputDictationRequest = import('../../shared/wakeInput/constants').WakeInputDictationRequest;
 type TtsAvailability = import('../../shared/tts/constants').TtsAvailability;
+type TtsEngine = import('../../shared/tts/constants').TtsEngine;
+type TtsPlaybackMode = import('../../shared/tts/constants').TtsPlaybackMode;
 type TtsSpeakResult = import('../../shared/tts/constants').TtsSpeakResult;
 type TtsVoice = import('../../shared/tts/constants').TtsVoice;
 type TtsStateEvent = import('../../shared/tts/constants').TtsStateEvent;
@@ -429,10 +431,15 @@ interface IElectronAPI {
     onDictationRequested: (callback: (data: WakeInputDictationRequest) => void) => () => void;
   };
   tts: {
-    getAvailability: () => Promise<TtsAvailability>;
-    getVoices: () => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
-    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => Promise<TtsSpeakResult>;
+    getAvailability: (options?: { engine?: TtsEngine }) => Promise<TtsAvailability>;
+    getVoices: (options?: { engine?: TtsEngine }) => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
+    prepare: (options?: { engine?: TtsEngine }) => Promise<{ success: boolean; availability?: TtsAvailability; error?: string }>;
+    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number; playbackMode?: TtsPlaybackMode }) => Promise<TtsSpeakResult>;
     stop: () => Promise<{ success: boolean; error?: string }>;
+    reportAssistantReplyPlayback: (options: {
+      sessionId?: string;
+      state: import('../../shared/tts/constants').TtsAssistantReplyPlaybackState;
+    }) => Promise<{ success: boolean }>;
     onStateChanged: (callback: (data: TtsStateEvent) => void) => () => void;
   };
   shell: {

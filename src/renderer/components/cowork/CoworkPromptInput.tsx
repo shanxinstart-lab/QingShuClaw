@@ -18,11 +18,16 @@ import { CoworkImageAttachment } from '../../types/cowork';
 import { getCompactFolderName } from '../../utils/path';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
 import { isRecoverableSpeechErrorCode, SpeechErrorCode } from '../../../shared/speech/constants';
-import { DEFAULT_SPEECH_INPUT_CONFIG } from '../../config';
+import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 import { VoiceProvider, type VoiceCapabilityMatrix } from '../../../shared/voice/constants';
+import {
+  getAssistantSpeechTriggerGuardDeadline,
+  isAssistantSpeechTriggerSuppressed,
+} from '../../../shared/voice/triggerWordGuard';
 import { startCloudSpeechRecording, type CloudSpeechRecording } from './coworkCloudSpeechRecorder';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
+import { TtsAssistantReplyPlaybackState, TtsStateType } from '../../../shared/tts/constants';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -110,6 +115,17 @@ type WakeDictationCommandConfig = {
   source?: 'wake' | 'follow_up';
 };
 
+type AssistantReplyPlaybackState =
+  typeof TtsAssistantReplyPlaybackState[keyof typeof TtsAssistantReplyPlaybackState];
+type AssistantReplyPlaybackDetail = {
+  sessionId: string;
+  state: AssistantReplyPlaybackState;
+};
+
+const FOLLOW_UP_ASSISTANT_REPLY_EXPECTATION_WINDOW_MS = 3_000;
+const FOLLOW_UP_ASSISTANT_REPLY_SETTLE_GUARD_MS = 700;
+const FOLLOW_UP_RETRY_CHECK_INTERVAL_MS = 1_000;
+
 const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInputProps>(
   (props, ref) => {
     const {
@@ -156,6 +172,15 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const manualSttProviderRef = useRef<string>(VoiceProvider.MacosNative);
     const cloudSpeechRecordingRef = useRef<CloudSpeechRecording | null>(null);
     const speechFinalizingRef = useRef(false);
+    const ttsSpeakingRef = useRef(false);
+    const ttsTriggerSuppressedUntilRef = useRef(0);
+    const pendingFollowUpDictationRef = useRef<WakeDictationCommandConfig | null>(null);
+    const pendingFollowUpTimerRef = useRef<number | null>(null);
+    const pendingFollowUpStartRetryTimerRef = useRef<number | null>(null);
+    const pendingFollowUpDeadlineRef = useRef<number | null>(null);
+    const assistantReplyPlaybackPendingRef = useRef(false);
+    const assistantReplyPlaybackExpectationUntilRef = useRef(0);
+    const assistantReplyPlaybackSettledGuardUntilRef = useRef(0);
 
   // 暴露方法给父组件
   React.useImperativeHandle(ref, () => ({
@@ -231,16 +256,160 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
   }, [shouldCorrectSttText]);
 
+  const shouldSuppressSpeechTriggerMatch = useCallback((): boolean => {
+    return isAssistantSpeechTriggerSuppressed({
+      isAssistantSpeaking: ttsSpeakingRef.current,
+      suppressedUntilMs: ttsTriggerSuppressedUntilRef.current,
+    });
+  }, []);
+
+  const resolveSpeechVoiceCommandForCurrentContext = useCallback((speechText: string) => {
+    const activeConfig = getActiveSpeechCommandConfig();
+    const primaryResult = resolveSpeechVoiceCommand(speechText, activeConfig);
+    if (primaryResult.action || wakeDictationConfigRef.current?.source !== 'follow_up') {
+      return primaryResult;
+    }
+
+    const manualStopCommand = configService.getConfig().voice?.commands?.manualStopCommand?.trim() ?? '';
+    const activeStopCommand = activeConfig.stopCommand.trim();
+    if (!manualStopCommand || manualStopCommand === activeStopCommand) {
+      return primaryResult;
+    }
+
+    return resolveSpeechVoiceCommand(speechText, {
+      ...activeConfig,
+      stopCommand: manualStopCommand,
+    });
+  }, [getActiveSpeechCommandConfig]);
+
   const applyFinalSpeechText = useCallback(async (rawText: string) => {
     const correctedText = await correctSpeechTextIfNeeded(rawText);
-    const commandResult = resolveSpeechVoiceCommand(correctedText, getActiveSpeechCommandConfig());
+    const shouldSuppressCommandMatch = !wakeDictationConfigRef.current
+      && shouldSuppressSpeechTriggerMatch();
+    const commandResult = shouldSuppressCommandMatch
+        ? {
+          action: null,
+          cleanedSpeechText: correctedText,
+        }
+      : resolveSpeechVoiceCommandForCurrentContext(correctedText);
     const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
     speechBaseValueRef.current = nextValue;
     setValue(nextValue);
     if (commandResult.action) {
       pendingSpeechVoiceCommandRef.current = commandResult.action;
     }
-  }, [correctSpeechTextIfNeeded, getActiveSpeechCommandConfig]);
+  }, [correctSpeechTextIfNeeded, resolveSpeechVoiceCommandForCurrentContext, shouldSuppressSpeechTriggerMatch]);
+
+  const clearPendingFollowUpDictation = useCallback(() => {
+    pendingFollowUpDictationRef.current = null;
+    pendingFollowUpDeadlineRef.current = null;
+    assistantReplyPlaybackPendingRef.current = false;
+    assistantReplyPlaybackExpectationUntilRef.current = 0;
+    assistantReplyPlaybackSettledGuardUntilRef.current = 0;
+    if (pendingFollowUpTimerRef.current) {
+      window.clearTimeout(pendingFollowUpTimerRef.current);
+      pendingFollowUpTimerRef.current = null;
+    }
+    if (pendingFollowUpStartRetryTimerRef.current) {
+      window.clearTimeout(pendingFollowUpStartRetryTimerRef.current);
+      pendingFollowUpStartRetryTimerRef.current = null;
+    }
+  }, []);
+
+  const dispatchWakeDictationStart = useCallback((detail: WakeDictationCommandConfig) => {
+    clearPendingFollowUpDictation();
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
+      detail,
+    }));
+  }, [clearPendingFollowUpDictation]);
+
+  const shouldBlockFollowUpDictationStart = useCallback((): boolean => {
+    const now = Date.now();
+    return ttsSpeakingRef.current
+      || assistantReplyPlaybackPendingRef.current
+      || assistantReplyPlaybackExpectationUntilRef.current > now
+      || assistantReplyPlaybackSettledGuardUntilRef.current > now;
+  }, []);
+
+  const tryStartPendingFollowUpDictation = useCallback((): boolean => {
+    const pendingDetail = pendingFollowUpDictationRef.current;
+    if (!pendingDetail) {
+      return false;
+    }
+    const deadline = pendingFollowUpDeadlineRef.current;
+    const now = Date.now();
+    const deadlineExpired = typeof deadline === 'number' && Date.now() >= deadline;
+    if (ttsSpeakingRef.current) {
+      return false;
+    }
+    if (
+      !deadlineExpired
+      && (
+        assistantReplyPlaybackPendingRef.current
+        || assistantReplyPlaybackExpectationUntilRef.current > now
+        || assistantReplyPlaybackSettledGuardUntilRef.current > now
+      )
+    ) {
+      return false;
+    }
+    dispatchWakeDictationStart(pendingDetail);
+    return true;
+  }, [dispatchWakeDictationStart]);
+
+  const schedulePendingFollowUpCheck = useCallback((delayMs: number) => {
+    if (pendingFollowUpTimerRef.current) {
+      window.clearTimeout(pendingFollowUpTimerRef.current);
+    }
+    pendingFollowUpTimerRef.current = window.setTimeout(() => {
+      pendingFollowUpTimerRef.current = null;
+      if (!pendingFollowUpDictationRef.current) {
+        return;
+      }
+      if (tryStartPendingFollowUpDictation()) {
+        return;
+      }
+      schedulePendingFollowUpCheck(FOLLOW_UP_RETRY_CHECK_INTERVAL_MS);
+    }, delayMs);
+  }, [tryStartPendingFollowUpDictation]);
+
+  const scheduleFollowUpStartRetry = useCallback((detail: WakeDictationCommandConfig, delayMs: number) => {
+    if (pendingFollowUpStartRetryTimerRef.current) {
+      window.clearTimeout(pendingFollowUpStartRetryTimerRef.current);
+    }
+    pendingFollowUpStartRetryTimerRef.current = window.setTimeout(() => {
+      pendingFollowUpStartRetryTimerRef.current = null;
+      if (
+        detail.source !== 'follow_up'
+        || disabled
+        || isStreaming
+        || speechStatus !== 'idle'
+      ) {
+        return;
+      }
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
+        detail,
+      }));
+    }, delayMs);
+  }, [disabled, isStreaming, speechStatus]);
+
+  const scheduleFollowUpDictation = useCallback((
+    detail: WakeDictationCommandConfig,
+    options?: { waitForAssistantReplyPlayback?: boolean }
+  ) => {
+    const waitForAssistantReplyPlayback = options?.waitForAssistantReplyPlayback === true;
+    pendingFollowUpDictationRef.current = detail;
+    assistantReplyPlaybackPendingRef.current = false;
+    assistantReplyPlaybackExpectationUntilRef.current = waitForAssistantReplyPlayback
+      ? Date.now() + FOLLOW_UP_ASSISTANT_REPLY_EXPECTATION_WINDOW_MS
+      : 0;
+    assistantReplyPlaybackSettledGuardUntilRef.current = 0;
+    pendingFollowUpDeadlineRef.current = Date.now() + (waitForAssistantReplyPlayback ? 90_000 : 20_000);
+    if (!waitForAssistantReplyPlayback && !shouldBlockFollowUpDictationStart()) {
+      dispatchWakeDictationStart(detail);
+      return;
+    }
+    schedulePendingFollowUpCheck(waitForAssistantReplyPlayback ? 1_500 : 600);
+  }, [dispatchWakeDictationStart, schedulePendingFollowUpCheck, shouldBlockFollowUpDictationStart]);
 
   const isCloudRecordedSpeechProvider = useCallback((provider: string): boolean => {
     return provider === VoiceProvider.LocalWhisperCpp
@@ -385,8 +554,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           setSpeechStatus('listening');
           break;
         case 'partial': {
-          const currentCommandConfig = getActiveSpeechCommandConfig();
-          const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
+          const shouldSuppressCommandMatch = !wakeDictationConfigRef.current
+            && shouldSuppressSpeechTriggerMatch();
+          const commandResult = shouldSuppressCommandMatch
+            ? {
+                action: null,
+                cleanedSpeechText: event.text || '',
+              }
+            : resolveSpeechVoiceCommandForCurrentContext(event.text || '');
           const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
           setValue(nextValue);
           if (commandResult.action) {
@@ -432,17 +607,73 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       }
     });
 
+    const unsubscribeTts = window.electron.tts.onStateChanged((event) => {
+      if (event.type === TtsStateType.Speaking) {
+        ttsSpeakingRef.current = true;
+        ttsTriggerSuppressedUntilRef.current = Number.MAX_SAFE_INTEGER;
+        return;
+      }
+      if (event.type !== TtsStateType.Stopped && event.type !== TtsStateType.Error) {
+        return;
+      }
+      ttsSpeakingRef.current = false;
+      ttsTriggerSuppressedUntilRef.current = getAssistantSpeechTriggerGuardDeadline(Date.now());
+      tryStartPendingFollowUpDictation();
+    });
+
+    const handleAssistantReplyPlaybackStateChanged = (event: Event) => {
+      const detail = (event as CustomEvent<AssistantReplyPlaybackDetail>).detail;
+      if (!detail || detail.sessionId !== currentSessionId) {
+        return;
+      }
+      if (detail.state === TtsAssistantReplyPlaybackState.Pending) {
+        assistantReplyPlaybackPendingRef.current = true;
+        assistantReplyPlaybackExpectationUntilRef.current = 0;
+        assistantReplyPlaybackSettledGuardUntilRef.current = 0;
+        return;
+      }
+
+      assistantReplyPlaybackPendingRef.current = false;
+      assistantReplyPlaybackExpectationUntilRef.current = 0;
+      assistantReplyPlaybackSettledGuardUntilRef.current = Date.now() + FOLLOW_UP_ASSISTANT_REPLY_SETTLE_GUARD_MS;
+      if (
+        detail.state === TtsAssistantReplyPlaybackState.Settled
+        && pendingFollowUpDictationRef.current
+        && !ttsSpeakingRef.current
+      ) {
+        schedulePendingFollowUpCheck(FOLLOW_UP_ASSISTANT_REPLY_SETTLE_GUARD_MS);
+      }
+    };
+    window.addEventListener(
+      AppCustomEvent.AssistantReplyPlaybackStateChanged,
+      handleAssistantReplyPlaybackStateChanged
+    );
+
     return () => {
       active = false;
       unsubscribeVoice();
       unsubscribe();
+      unsubscribeTts();
+      window.removeEventListener(
+        AppCustomEvent.AssistantReplyPlaybackStateChanged,
+        handleAssistantReplyPlaybackStateChanged
+      );
+      clearPendingFollowUpDictation();
       if (cloudSpeechRecordingRef.current) {
         void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
         cloudSpeechRecordingRef.current = null;
       }
       void window.electron.speech.stop().catch(() => undefined);
     };
-  }, [applyFinalSpeechText, getActiveSpeechCommandConfig]);
+  }, [
+    applyFinalSpeechText,
+    clearPendingFollowUpDictation,
+    currentSessionId,
+    resolveSpeechVoiceCommandForCurrentContext,
+    shouldSuppressSpeechTriggerMatch,
+    tryStartPendingFollowUpDictation,
+    schedulePendingFollowUpCheck,
+  ]);
 
   // Sync value from draft when sessionId changes
   useEffect(() => {
@@ -607,12 +838,15 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         return;
       }
       const detail = getFollowUpCommandConfig();
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-      });
-      window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
-        detail,
-      }));
+      const ttsConfig = {
+        ...DEFAULT_TTS_CONFIG,
+        ...(configService.getConfig().tts ?? {}),
+      };
+      const waitForAssistantReplyPlayback = Boolean(
+        ttsConfig.enabled
+        && ttsConfig.autoPlayAssistantReply
+      );
+      scheduleFollowUpDictation(detail, { waitForAssistantReplyPlayback });
     }).catch((error) => {
       console.error('Failed to inspect follow-up voice capability:', error);
     });
@@ -628,6 +862,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     isSpeechActive,
     isStreaming,
     remoteManaged,
+    scheduleFollowUpDictation,
     sessionId,
   ]);
 
@@ -639,6 +874,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       }
       const manualProvider = manualSttProviderRef.current;
       if (manualProvider !== VoiceProvider.MacosNative && !isCloudRecordedSpeechProvider(manualProvider)) {
+        return;
+      }
+      if (detail.source === 'follow_up' && shouldBlockFollowUpDictationStart()) {
+        scheduleFollowUpStartRetry(detail, FOLLOW_UP_RETRY_CHECK_INTERVAL_MS);
         return;
       }
 
@@ -688,6 +927,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             window.clearTimeout(wakeDictationTimerRef.current);
             wakeDictationTimerRef.current = null;
           }
+          if (result.error === SpeechErrorCode.AssistantReplyPlaybackPending && detail.source === 'follow_up') {
+            scheduleFollowUpStartRetry(detail, FOLLOW_UP_RETRY_CHECK_INTERVAL_MS);
+            return;
+          }
+          if (result.error === SpeechErrorCode.AssistantReplyPlaybackTimeout && detail.source === 'follow_up') {
+            console.warn('Skipped follow-up dictation because assistant reply playback did not settle before timeout.');
+            return;
+          }
           window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
             detail: resolveSpeechErrorMessage(result.error, result.error),
           }));
@@ -699,7 +946,17 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     return () => {
       window.removeEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
     };
-  }, [disabled, isCloudRecordedSpeechProvider, isMac, isStreaming, speechStatus, speechVisible, startCloudSpeechRecordingForCurrentProvider]);
+  }, [
+    disabled,
+    isCloudRecordedSpeechProvider,
+    isMac,
+    isStreaming,
+    scheduleFollowUpStartRetry,
+    shouldBlockFollowUpDictationStart,
+    speechStatus,
+    speechVisible,
+    startCloudSpeechRecordingForCurrentProvider,
+  ]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -854,6 +1111,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     speechBaseValueRef.current = valueRef.current;
     pendingSpeechVoiceCommandRef.current = null;
+    if (pendingFollowUpDictationRef.current?.source === 'follow_up') {
+      clearPendingFollowUpDictation();
+    }
 
     if (isCloudRecordedSpeechProvider(manualProvider)) {
       try {
@@ -880,7 +1140,17 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       setSpeechStatus('idle');
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
     }
-  }, [disabled, finishCloudSpeechRecording, isCloudRecordedSpeechProvider, isMac, isSpeechActive, isStreaming, speechVisible, startCloudSpeechRecordingForCurrentProvider]);
+  }, [
+    clearPendingFollowUpDictation,
+    disabled,
+    finishCloudSpeechRecording,
+    isCloudRecordedSpeechProvider,
+    isMac,
+    isSpeechActive,
+    isStreaming,
+    speechVisible,
+    startCloudSpeechRecordingForCurrentProvider,
+  ]);
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;

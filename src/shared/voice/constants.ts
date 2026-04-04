@@ -1,4 +1,5 @@
 import type { WakeInputConfig } from '../wakeInput/constants';
+import { TtsEngine } from '../tts/constants';
 
 export const VoiceCapability = {
   ManualStt: 'manual_stt',
@@ -67,6 +68,7 @@ export interface LegacySpeechInputConfig {
 export interface LegacyTtsConfig {
   enabled: boolean;
   autoPlayAssistantReply: boolean;
+  engine: TtsEngine;
   voiceId: string;
   rate: number;
   volume: number;
@@ -79,9 +81,17 @@ export interface VoiceCapabilityConfig {
 
 export interface VoiceTtsCapabilityConfig extends VoiceCapabilityConfig {
   autoPlayAssistantReply: boolean;
+  engine: TtsEngine;
 }
 
 export interface VoiceMacosNativeProviderConfig {
+  enabled: boolean;
+  ttsVoiceId: string;
+  ttsRate: number;
+  ttsVolume: number;
+}
+
+export interface VoiceEdgeTtsProviderConfig {
   enabled: boolean;
   ttsVoiceId: string;
   ttsRate: number;
@@ -192,9 +202,12 @@ export interface VoiceConfig {
     wakeSubmitCommand: string;
     wakeCancelCommand: string;
     wakeSessionTimeoutMs: number;
+    wakeActivationReplyEnabled: boolean;
+    wakeActivationReplyText: string;
   };
   providers: {
     macosNative: VoiceMacosNativeProviderConfig;
+    edgeTts: VoiceEdgeTtsProviderConfig;
     localWhisperCpp: VoiceLocalWhisperCppProviderConfig;
     localQwen3Tts: VoiceLocalQwen3TtsProviderConfig;
     openai: VoiceOpenAiProviderConfig;
@@ -363,18 +376,27 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
       enabled: true,
       autoPlayAssistantReply: false,
       provider: VoiceProvider.MacosNative,
+      engine: TtsEngine.MacosNative,
     },
   },
   commands: {
-    manualStopCommand: '停止输入',
+    manualStopCommand: '停止',
     manualSubmitCommand: '结束发送',
     wakeWords: DEFAULT_WAKE_WORDS,
     wakeSubmitCommand: '发送',
     wakeCancelCommand: '取消',
     wakeSessionTimeoutMs: 20_000,
+    wakeActivationReplyEnabled: false,
+    wakeActivationReplyText: '在的',
   },
   providers: {
     macosNative: {
+      enabled: true,
+      ttsVoiceId: '',
+      ttsRate: 0.5,
+      ttsVolume: 1,
+    },
+    edgeTts: {
       enabled: true,
       ttsVoiceId: '',
       ttsRate: 0.5,
@@ -532,11 +554,18 @@ export const mergeVoiceConfig = (config?: Partial<VoiceConfig> | null): VoiceCon
       ...DEFAULT_VOICE_CONFIG.commands,
       ...(config?.commands ?? {}),
       wakeWords: normalizeWakeWords(config?.commands?.wakeWords),
+      wakeActivationReplyText: typeof config?.commands?.wakeActivationReplyText === 'string'
+        ? config.commands.wakeActivationReplyText.trim() || DEFAULT_VOICE_CONFIG.commands.wakeActivationReplyText
+        : DEFAULT_VOICE_CONFIG.commands.wakeActivationReplyText,
     },
     providers: {
       macosNative: {
         ...DEFAULT_VOICE_CONFIG.providers.macosNative,
         ...(config?.providers?.macosNative ?? {}),
+      },
+      edgeTts: {
+        ...DEFAULT_VOICE_CONFIG.providers.edgeTts,
+        ...(config?.providers?.edgeTts ?? {}),
       },
       localWhisperCpp: {
         ...DEFAULT_VOICE_CONFIG.providers.localWhisperCpp,
@@ -609,6 +638,7 @@ export const createVoiceConfigFromLegacy = (options?: {
           ?? tts?.autoPlayAssistantReply
           ?? DEFAULT_VOICE_CONFIG.capabilities.tts.autoPlayAssistantReply,
         provider: voice?.capabilities?.tts?.provider ?? DEFAULT_VOICE_CONFIG.capabilities.tts.provider,
+        engine: voice?.capabilities?.tts?.engine ?? tts?.engine ?? DEFAULT_VOICE_CONFIG.capabilities.tts.engine,
       },
     },
     commands: {
@@ -619,15 +649,53 @@ export const createVoiceConfigFromLegacy = (options?: {
       wakeSubmitCommand: voice?.commands?.wakeSubmitCommand ?? wakeInput?.submitCommand ?? DEFAULT_VOICE_CONFIG.commands.wakeSubmitCommand,
       wakeCancelCommand: voice?.commands?.wakeCancelCommand ?? wakeInput?.cancelCommand ?? DEFAULT_VOICE_CONFIG.commands.wakeCancelCommand,
       wakeSessionTimeoutMs: voice?.commands?.wakeSessionTimeoutMs ?? wakeInput?.sessionTimeoutMs ?? DEFAULT_VOICE_CONFIG.commands.wakeSessionTimeoutMs,
+      wakeActivationReplyEnabled: voice?.commands?.wakeActivationReplyEnabled
+        ?? wakeInput?.activationReplyEnabled
+        ?? DEFAULT_VOICE_CONFIG.commands.wakeActivationReplyEnabled,
+      wakeActivationReplyText: voice?.commands?.wakeActivationReplyText
+        ?? wakeInput?.activationReplyText
+        ?? DEFAULT_VOICE_CONFIG.commands.wakeActivationReplyText,
     },
     providers: {
       macosNative: {
         ...DEFAULT_VOICE_CONFIG.providers.macosNative,
         ...(voice?.providers?.macosNative ?? {}),
         enabled: voice?.providers?.macosNative?.enabled ?? DEFAULT_VOICE_CONFIG.providers.macosNative.enabled,
-        ttsVoiceId: voice?.providers?.macosNative?.ttsVoiceId ?? tts?.voiceId ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVoiceId,
-        ttsRate: voice?.providers?.macosNative?.ttsRate ?? tts?.rate ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsRate,
-        ttsVolume: voice?.providers?.macosNative?.ttsVolume ?? tts?.volume ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVolume,
+        ttsVoiceId: voice?.providers?.macosNative?.ttsVoiceId ?? (
+          tts?.engine === TtsEngine.MacosNative
+            ? (tts.voiceId ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVoiceId)
+            : DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVoiceId
+        ),
+        ttsRate: voice?.providers?.macosNative?.ttsRate ?? (
+          tts?.engine === TtsEngine.MacosNative
+            ? (tts.rate ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsRate)
+            : DEFAULT_VOICE_CONFIG.providers.macosNative.ttsRate
+        ),
+        ttsVolume: voice?.providers?.macosNative?.ttsVolume ?? (
+          tts?.engine === TtsEngine.MacosNative
+            ? (tts.volume ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVolume)
+            : DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVolume
+        ),
+      },
+      edgeTts: {
+        ...DEFAULT_VOICE_CONFIG.providers.edgeTts,
+        ...(voice?.providers?.edgeTts ?? {}),
+        enabled: voice?.providers?.edgeTts?.enabled ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.enabled,
+        ttsVoiceId: voice?.providers?.edgeTts?.ttsVoiceId ?? (
+          tts?.engine === TtsEngine.EdgeTts
+            ? (tts.voiceId ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVoiceId)
+            : DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVoiceId
+        ),
+        ttsRate: voice?.providers?.edgeTts?.ttsRate ?? (
+          tts?.engine === TtsEngine.EdgeTts
+            ? (tts.rate ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsRate)
+            : DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsRate
+        ),
+        ttsVolume: voice?.providers?.edgeTts?.ttsVolume ?? (
+          tts?.engine === TtsEngine.EdgeTts
+            ? (tts.volume ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVolume)
+            : DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVolume
+        ),
       },
       localWhisperCpp: {
         ...DEFAULT_VOICE_CONFIG.providers.localWhisperCpp,
@@ -678,12 +746,21 @@ export const deriveLegacyWakeInputConfig = (voiceConfig: VoiceConfig): WakeInput
   submitCommand: voiceConfig.commands.wakeSubmitCommand,
   cancelCommand: voiceConfig.commands.wakeCancelCommand,
   sessionTimeoutMs: voiceConfig.commands.wakeSessionTimeoutMs,
+  activationReplyEnabled: voiceConfig.commands.wakeActivationReplyEnabled,
+  activationReplyText: voiceConfig.commands.wakeActivationReplyText,
 });
 
 export const deriveLegacyTtsConfig = (voiceConfig: VoiceConfig): LegacyTtsConfig => ({
   enabled: voiceConfig.capabilities.tts.enabled,
   autoPlayAssistantReply: voiceConfig.capabilities.tts.autoPlayAssistantReply,
-  voiceId: voiceConfig.providers.macosNative.ttsVoiceId,
-  rate: voiceConfig.providers.macosNative.ttsRate,
-  volume: voiceConfig.providers.macosNative.ttsVolume,
+  engine: voiceConfig.capabilities.tts.engine,
+  voiceId: voiceConfig.capabilities.tts.engine === TtsEngine.MacosNative
+    ? voiceConfig.providers.macosNative.ttsVoiceId
+    : voiceConfig.providers.edgeTts.ttsVoiceId,
+  rate: voiceConfig.capabilities.tts.engine === TtsEngine.MacosNative
+    ? voiceConfig.providers.macosNative.ttsRate
+    : voiceConfig.providers.edgeTts.ttsRate,
+  volume: voiceConfig.capabilities.tts.engine === TtsEngine.MacosNative
+    ? voiceConfig.providers.macosNative.ttsVolume
+    : voiceConfig.providers.edgeTts.ttsVolume,
 });
