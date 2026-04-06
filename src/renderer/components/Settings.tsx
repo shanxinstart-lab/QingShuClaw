@@ -29,8 +29,19 @@ import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
-import type { WakeInputStatus } from '../../shared/wakeInput/constants';
-import type { VoiceCapabilityMatrix, VoiceConfig } from '../../shared/voice/constants';
+import {
+  DEFAULT_DESKTOP_ASSISTANT_CONFIG,
+  DesktopAssistantReplySpeakMode,
+  type DesktopAssistantConfig,
+} from '../../shared/desktopAssistant/constants';
+import type { SpeechAvailability } from '../../shared/speech/constants';
+import {
+  WakeInputProviderMode,
+  WakeInputRuntimeProvider,
+  normalizeWakeInputProviderMode,
+  type WakeInputStatus,
+} from '../../shared/wakeInput/constants';
+import type { VoiceCapabilityMatrix, VoiceConfig, VoiceLocalSherpaOnnxStatus } from '../../shared/voice/constants';
 import {
   VoiceCapability,
   VoiceLocalQwen3TtsTask,
@@ -74,6 +85,7 @@ import {
   OllamaIcon,
   CustomProviderIcon,
 } from './icons/providers';
+import { canOpenLocalModelPath, isLocalModelInstallBusy } from './localVoiceModelUi';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
 
@@ -117,6 +129,21 @@ const providerKeys = [
 
 type ProviderType = (typeof providerKeys)[number];
 type ProvidersConfig = NonNullable<AppConfig['providers']>;
+
+const normalizeWakeInputProviderForUi = (value: unknown): typeof WakeInputProviderMode[keyof typeof WakeInputProviderMode] => {
+  const normalizedProvider = normalizeWakeInputProviderMode(value);
+  return normalizedProvider === WakeInputProviderMode.Auto
+    ? WakeInputProviderMode.TextMatch
+    : normalizedProvider;
+};
+
+const resolveWakeInputProviderPanelKey = (
+  providerMode: typeof WakeInputProviderMode[keyof typeof WakeInputProviderMode],
+): VoiceProviderPanelKey => {
+  return providerMode === WakeInputProviderMode.SherpaOnnx
+    ? VoiceProvider.LocalSherpaOnnx
+    : VoiceProvider.MacosNative;
+};
 type ProviderConfig = ProvidersConfig[string];
 type Model = NonNullable<ProviderConfig['models']>[number];
 type ProviderConnectionTestResult = {
@@ -131,6 +158,7 @@ type VoiceCapabilityKey = typeof VoiceCapability[keyof typeof VoiceCapability];
 type VoiceProviderPanelKey = Exclude<typeof VoiceProvider[keyof typeof VoiceProvider], typeof VoiceProvider.None>;
 type VoiceLocalWhisperCppConfig = VoiceConfig['providers']['localWhisperCpp'];
 type VoiceLocalWhisperCppRuntimeStatus = import('../../shared/voice/constants').VoiceLocalWhisperCppStatus;
+type VoiceSherpaOnnxConfig = VoiceConfig['providers']['sherpaOnnx'];
 type VoiceLocalQwen3TtsConfig = VoiceConfig['providers']['localQwen3Tts'];
 type VoiceLocalQwen3TtsRuntimeStatus = import('../../shared/voice/constants').VoiceLocalQwen3TtsStatus;
 type VoiceLocalModelLibrary = import('../../shared/voice/constants').VoiceLocalModelLibrary;
@@ -147,6 +175,7 @@ type ProviderPanelSectionKey = 'credentials' | 'endpoint' | 'features' | 'connec
 
 const voiceProviderPanelKeys = [
   VoiceProvider.MacosNative,
+  VoiceProvider.LocalSherpaOnnx,
   VoiceProvider.LocalWhisperCpp,
   VoiceProvider.LocalQwen3Tts,
   VoiceProvider.CloudOpenAi,
@@ -526,6 +555,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [speechSubmitCommand, setSpeechSubmitCommand] = useState(DEFAULT_SPEECH_INPUT_CONFIG.submitCommand);
   const [sttLlmCorrectionEnabled, setSttLlmCorrectionEnabled] = useState(false);
   const [wakeInputEnabled, setWakeInputEnabled] = useState(DEFAULT_WAKE_INPUT_CONFIG.enabled);
+  const [wakeInputProviderMode, setWakeInputProviderMode] = useState(normalizeWakeInputProviderForUi(DEFAULT_WAKE_INPUT_CONFIG.provider));
   const [wakeInputWakeWordsText, setWakeInputWakeWordsText] = useState(DEFAULT_WAKE_INPUT_CONFIG.wakeWords.join('\n'));
   const [wakeInputSubmitCommand, setWakeInputSubmitCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.submitCommand);
   const [wakeInputCancelCommand, setWakeInputCancelCommand] = useState(DEFAULT_WAKE_INPUT_CONFIG.cancelCommand);
@@ -533,17 +563,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [wakeActivationReplyText, setWakeActivationReplyText] = useState(DEFAULT_WAKE_INPUT_CONFIG.activationReplyText);
   const [followUpDictationEnabled, setFollowUpDictationEnabled] = useState(false);
   const [wakeInputStatus, setWakeInputStatus] = useState<WakeInputStatus | null>(null);
+  const [speechAvailability, setSpeechAvailability] = useState<SpeechAvailability | null>(null);
   const [voiceCapabilityMatrix, setVoiceCapabilityMatrix] = useState<VoiceCapabilityMatrix | null>(null);
   const [voiceStrategy, setVoiceStrategy] = useState<VoiceStrategyValue>(defaultConfig.voice!.strategy);
-  const [manualSttProvider, setManualSttProvider] = useState<VoiceCapabilityProvider>(VoiceProvider.MacosNative);
-  const [ttsProvider, setTtsProvider] = useState<VoiceCapabilityProvider>(VoiceProvider.MacosNative);
+  const [manualSttProvider, setManualSttProvider] = useState<VoiceCapabilityProvider>(defaultConfig.voice!.capabilities.manualStt.provider);
+  const [ttsProvider, setTtsProvider] = useState<VoiceCapabilityProvider>(defaultConfig.voice!.capabilities.tts.provider);
   const [ttsEngine, setTtsEngine] = useState<TtsEngine>(DEFAULT_TTS_CONFIG.engine);
   const [voiceMacosNativeTtsConfig, setVoiceMacosNativeTtsConfig] = useState(defaultConfig.voice!.providers.macosNative);
+  const [voiceSherpaOnnxConfig, setVoiceSherpaOnnxConfig] = useState<VoiceSherpaOnnxConfig>(defaultConfig.voice!.providers.sherpaOnnx);
+  const [voiceSherpaOnnxStatus, setVoiceSherpaOnnxStatus] = useState<VoiceLocalSherpaOnnxStatus | null>(null);
   const [voiceLocalWhisperCppConfig, setVoiceLocalWhisperCppConfig] = useState<VoiceLocalWhisperCppConfig>(defaultConfig.voice!.providers.localWhisperCpp);
   const [voiceLocalWhisperCppStatus, setVoiceLocalWhisperCppStatus] = useState<VoiceLocalWhisperCppRuntimeStatus | null>(null);
   const [voiceLocalQwen3TtsConfig, setVoiceLocalQwen3TtsConfig] = useState<VoiceLocalQwen3TtsConfig>(defaultConfig.voice!.providers.localQwen3Tts);
   const [voiceLocalQwen3TtsStatus, setVoiceLocalQwen3TtsStatus] = useState<VoiceLocalQwen3TtsRuntimeStatus | null>(null);
   const [voiceLocalModelLibrary, setVoiceLocalModelLibrary] = useState<VoiceLocalModelLibrary | null>(null);
+  const [pendingLocalModelInstallIds, setPendingLocalModelInstallIds] = useState<string[]>([]);
   const [voiceEdgeTtsConfig, setVoiceEdgeTtsConfig] = useState<VoiceEdgeTtsConfig>(defaultConfig.voice!.providers.edgeTts);
   const [voiceOpenAiConfig, setVoiceOpenAiConfig] = useState<VoiceOpenAiConfig>(defaultConfig.voice!.providers.openai);
   const [voiceAliyunConfig, setVoiceAliyunConfig] = useState<VoiceAliyunConfig>(defaultConfig.voice!.providers.aliyun);
@@ -559,6 +593,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [ttsVolume, setTtsVolume] = useState(DEFAULT_TTS_CONFIG.volume);
   const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
   const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
+  const [desktopAssistantMasterEnabled, setDesktopAssistantMasterEnabled] = useState(DEFAULT_DESKTOP_ASSISTANT_CONFIG.masterEnabled);
+  const [desktopAssistantLaunchAtLogin, setDesktopAssistantLaunchAtLogin] = useState(DEFAULT_DESKTOP_ASSISTANT_CONFIG.launchAtLogin);
+  const [desktopAssistantAutoOpenPreviewGuide, setDesktopAssistantAutoOpenPreviewGuide] = useState(DEFAULT_DESKTOP_ASSISTANT_CONFIG.autoOpenPreviewGuide);
+  const [desktopAssistantAutoEnterSceneGuide, setDesktopAssistantAutoEnterSceneGuide] = useState(DEFAULT_DESKTOP_ASSISTANT_CONFIG.autoEnterSceneGuide);
+  const [desktopAssistantGuideVoiceCommandsEnabled, setDesktopAssistantGuideVoiceCommandsEnabled] = useState(DEFAULT_DESKTOP_ASSISTANT_CONFIG.guideVoiceCommandsEnabled);
+  const [desktopAssistantAssistantReplySpeakMode, setDesktopAssistantAssistantReplySpeakMode] = useState<DesktopAssistantConfig['assistantReplySpeakMode']>(DEFAULT_DESKTOP_ASSISTANT_CONFIG.assistantReplySpeakMode);
   const [expandedVoiceSection, setExpandedVoiceSection] = useState<VoiceCapabilityKey | null>(VoiceCapability.ManualStt);
   const [selectedVoiceProvider, setSelectedVoiceProvider] = useState<VoiceProviderPanelKey>(VoiceProvider.MacosNative);
   const [showAllVoiceProviderStatuses, setShowAllVoiceProviderStatuses] = useState(false);
@@ -649,6 +689,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     return i18nService.t('voiceProvider_' + provider);
   }, []);
 
+  const getWakeInputProviderLabel = useCallback((providerMode?: string | null) => {
+    const normalizedProvider = normalizeWakeInputProviderForUi(providerMode);
+    return i18nService.t(`wakeInputProvider_${normalizedProvider}`);
+  }, []);
+
+  const getWakeInputRuntimeProviderLabel = useCallback((provider?: string | null) => {
+    if (provider === WakeInputRuntimeProvider.SherpaOnnx) {
+      return getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx);
+    }
+    if (provider === WakeInputRuntimeProvider.TextMatch) {
+      return getVoiceProviderLabel(VoiceProvider.MacosNative);
+    }
+    return getVoiceProviderLabel(VoiceProvider.None);
+  }, [getVoiceProviderLabel]);
+
   const getVoiceReasonLabel = useCallback((reason?: string | null) => {
     if (!reason) {
       return i18nService.t('voiceCapabilityReason_available');
@@ -678,6 +733,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       return await window.electron.voice.getCapabilityMatrix();
     } catch (error) {
       console.error('Failed to load voice capability matrix:', error);
+      return null;
+    }
+  }, []);
+
+  const loadSpeechAvailability = useCallback(async () => {
+    try {
+      return await window.electron.speech.getAvailability();
+    } catch (error) {
+      console.error('Failed to load speech availability:', error);
+      return null;
+    }
+  }, []);
+
+  const loadLocalSherpaOnnxStatus = useCallback(async () => {
+    try {
+      return await window.electron.voice.getLocalSherpaOnnxStatus();
+    } catch (error) {
+      console.error('Failed to load local Sherpa-ONNX status:', error);
       return null;
     }
   }, []);
@@ -733,6 +806,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     setVoiceLocalWhisperCppConfig((prev) => ({ ...prev, ...updates }));
   }, []);
 
+  const updateVoiceSherpaOnnxConfig = useCallback((updates: Partial<VoiceSherpaOnnxConfig>) => {
+    setVoiceSherpaOnnxConfig((prev) => ({ ...prev, ...updates }));
+  }, []);
+
   const updateVoiceLocalQwen3TtsConfig = useCallback((updates: Partial<VoiceLocalQwen3TtsConfig>) => {
     setVoiceLocalQwen3TtsConfig((prev) => ({ ...prev, ...updates }));
   }, []);
@@ -756,6 +833,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   const manualSttProviderOptions = [
     { value: VoiceProvider.MacosNative, label: getVoiceProviderLabel(VoiceProvider.MacosNative) },
+    { value: VoiceProvider.LocalSherpaOnnx, label: getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx) },
     { value: VoiceProvider.LocalWhisperCpp, label: getVoiceProviderLabel(VoiceProvider.LocalWhisperCpp) },
     { value: VoiceProvider.CloudOpenAi, label: getVoiceProviderLabel(VoiceProvider.CloudOpenAi) },
     { value: VoiceProvider.CloudAliyun, label: getVoiceProviderLabel(VoiceProvider.CloudAliyun) },
@@ -771,6 +849,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     { value: VoiceProvider.CloudAzure, label: getVoiceProviderLabel(VoiceProvider.CloudAzure) },
   ];
 
+  const wakeInputProviderOptions = [
+    { value: WakeInputProviderMode.TextMatch, label: i18nService.t('wakeInputProvider_text_match') },
+    { value: WakeInputProviderMode.SherpaOnnx, label: i18nService.t('wakeInputProvider_sherpa_onnx') },
+  ];
+
   const getLocalModelStatus = useCallback((modelId: string): VoiceLocalModelInstallStatus | null => {
     return voiceLocalModelLibrary?.statuses?.[modelId] ?? null;
   }, [voiceLocalModelLibrary]);
@@ -779,7 +862,31 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     return (voiceLocalModelLibrary?.catalog ?? []).filter((entry) => entry.provider === provider);
   }, [voiceLocalModelLibrary]);
 
+  const setLocalModelInstallPending = useCallback((modelId: string, pending: boolean) => {
+    setPendingLocalModelInstallIds((prev) => {
+      const next = new Set(prev);
+      if (pending) {
+        next.add(modelId);
+      } else {
+        next.delete(modelId);
+      }
+      return Array.from(next);
+    });
+  }, []);
+
   const renderVoiceCapabilityMeta = (capabilityKey: typeof VoiceCapability[keyof typeof VoiceCapability]) => {
+    if (capabilityKey === VoiceCapability.WakeInput) {
+      return (
+        <div className="mt-2 space-y-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+          <div>{i18nService.t('voiceCurrentProviderLabel')}: {getWakeInputProviderLabel(wakeInputProviderMode)}</div>
+          <div>{i18nService.t('wakeInputStatusLabel')}: {getWakeInputStatusText()}</div>
+          {wakeInputStatus && wakeInputStatus.provider !== WakeInputRuntimeProvider.None && (
+            <div>{i18nService.t('voiceOverviewActualProvider')}: {getWakeInputRuntimeProviderLabel(wakeInputStatus.provider)}</div>
+          )}
+        </div>
+      );
+    }
+
     const capability = getVoiceCapabilityStatus(capabilityKey);
     if (!capability) {
       return (
@@ -789,6 +896,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       );
     }
 
+    const runtimeProviderMeta = (() => {
+      if (capabilityKey === VoiceCapability.ManualStt || capabilityKey === VoiceCapability.FollowUpDictation) {
+        return speechAvailability;
+      }
+      if (capabilityKey === VoiceCapability.Tts) {
+        return ttsAvailability;
+      }
+      return null;
+    })();
+    const runtimeFallbackReason = runtimeProviderMeta && 'lastFallbackReason' in runtimeProviderMeta
+      ? (runtimeProviderMeta.lastFallbackReason || runtimeProviderMeta.error)
+      : (runtimeProviderMeta && 'fallbackReason' in runtimeProviderMeta ? runtimeProviderMeta.fallbackReason : undefined);
+
     return (
       <div className="mt-2 space-y-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
         <div>{i18nService.t('voiceCurrentProviderLabel')}: {getVoiceProviderLabel(capability.selectedProvider)}</div>
@@ -796,6 +916,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         <div>{i18nService.t('voicePackagedSupportLabel')}: {capability.packaged ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
         <div>{i18nService.t('voiceRuntimeAvailableLabel')}: {capability.runtimeAvailable ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
         <div>{i18nService.t('voiceReasonLabel')}: {getVoiceReasonLabel(capability.reason)}</div>
+        {runtimeProviderMeta?.requestedProvider && (
+          <div>{i18nService.t('voiceOverviewRequestedProvider')}: {getVoiceProviderLabel(runtimeProviderMeta.requestedProvider)}</div>
+        )}
+        {runtimeProviderMeta?.actualProvider && (
+          <div>{i18nService.t('voiceOverviewActualProvider')}: {getVoiceProviderLabel(runtimeProviderMeta.actualProvider)}</div>
+        )}
+        {typeof runtimeProviderMeta?.fallbackActive === 'boolean' && (
+          <div>{i18nService.t('voiceOverviewFallbackStatus')}: {runtimeProviderMeta.fallbackActive ? i18nService.t('voiceFallbackActive') : i18nService.t('voiceFallbackInactive')}</div>
+        )}
+        {runtimeFallbackReason && (
+          <div>{i18nService.t('voiceOverviewFallbackReason')}: {runtimeFallbackReason}</div>
+        )}
       </div>
     );
   };
@@ -846,14 +978,14 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     if (ttsProvider === providerKey) {
       tags.push(i18nService.t('voiceCapabilityTtsTitle'));
     }
-    if (wakeInputEnabled && providerKey === VoiceProvider.MacosNative) {
+    if (wakeInputEnabled && providerKey === resolveWakeInputProviderPanelKey(wakeInputProviderMode)) {
       tags.push(i18nService.t('voiceCapabilityWakeInputTitle'));
     }
     if (followUpDictationEnabled && manualSttProvider === providerKey) {
       tags.push(i18nService.t('voiceCapabilityFollowUpTitle'));
     }
     return tags;
-  }, [followUpDictationEnabled, manualSttProvider, ttsProvider, wakeInputEnabled]);
+  }, [followUpDictationEnabled, manualSttProvider, ttsProvider, wakeInputEnabled, wakeInputProviderMode]);
 
   const getProviderRailBadges = useCallback((providerKey: ProviderType, config: ProviderConfig): string[] => {
     const badges: string[] = [];
@@ -912,25 +1044,41 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const getVoiceCapabilitySummary = useCallback((capabilityKey: VoiceCapabilityKey): string => {
     switch (capabilityKey) {
       case VoiceCapability.ManualStt:
-        return getVoiceProviderLabel(manualSttProvider);
+        return [
+          getVoiceProviderLabel(manualSttProvider),
+          speechAvailability?.actualProvider && speechAvailability.actualProvider !== manualSttProvider
+            ? `${i18nService.t('voiceOverviewActualProvider')}: ${getVoiceProviderLabel(speechAvailability.actualProvider)}`
+            : null,
+        ].filter(Boolean).join(' · ');
       case VoiceCapability.WakeInput:
         return wakeInputEnabled
-          ? getWakeInputStatusText()
+          ? [
+            getWakeInputProviderLabel(wakeInputProviderMode),
+            getWakeInputStatusText(),
+          ].filter(Boolean).join(' · ')
           : i18nService.t('statusDisabled');
       case VoiceCapability.FollowUpDictation:
         return followUpDictationEnabled
-          ? `${i18nService.t('voiceCurrentProviderLabel')}: ${getVoiceProviderLabel(manualSttProvider)}`
+          ? [
+            `${i18nService.t('voiceCurrentProviderLabel')}: ${getVoiceProviderLabel(manualSttProvider)}`,
+            speechAvailability?.actualProvider && speechAvailability.actualProvider !== manualSttProvider
+              ? `${i18nService.t('voiceOverviewActualProvider')}: ${getVoiceProviderLabel(speechAvailability.actualProvider)}`
+              : null,
+          ].filter(Boolean).join(' · ')
           : i18nService.t('statusDisabled');
       case VoiceCapability.Tts:
         return [
           getVoiceProviderLabel(ttsProvider),
           ttsProvider === VoiceProvider.MacosNative ? i18nService.t(`ttsEngine_${ttsEngine}`) : null,
+          ttsAvailability?.actualProvider && ttsAvailability.actualProvider !== ttsProvider
+            ? `${i18nService.t('voiceOverviewActualProvider')}: ${getVoiceProviderLabel(ttsAvailability.actualProvider)}`
+            : null,
           ttsAvailability?.lastResolvedEngine ? i18nService.t(`ttsEngine_${ttsAvailability.lastResolvedEngine}`) : null,
         ].filter(Boolean).join(' · ');
       default:
         return '';
     }
-  }, [followUpDictationEnabled, getVoiceProviderLabel, getWakeInputStatusText, manualSttProvider, ttsAvailability?.lastResolvedEngine, ttsEngine, ttsProvider, wakeInputEnabled]);
+  }, [followUpDictationEnabled, getVoiceProviderLabel, getWakeInputProviderLabel, getWakeInputStatusText, i18nService, manualSttProvider, speechAvailability?.actualProvider, ttsAvailability?.actualProvider, ttsAvailability?.lastResolvedEngine, ttsEngine, ttsProvider, wakeInputEnabled, wakeInputProviderMode]);
 
   const inUseVoiceProviderKeys = useMemo(() => {
     const keys = new Set<VoiceProviderPanelKey>();
@@ -941,15 +1089,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       keys.add(ttsProvider as VoiceProviderPanelKey);
     }
     if (wakeInputEnabled) {
-      keys.add(VoiceProvider.MacosNative);
+      keys.add(resolveWakeInputProviderPanelKey(wakeInputProviderMode));
     }
     return Array.from(keys);
-  }, [manualSttProvider, ttsProvider, wakeInputEnabled]);
+  }, [manualSttProvider, ttsProvider, wakeInputEnabled, wakeInputProviderMode]);
 
   const renderLocalModelEntry = (entry: VoiceLocalModelCatalogEntry) => {
     const status = getLocalModelStatus(entry.id);
+    const isInstallPending = pendingLocalModelInstallIds.includes(entry.id);
     const isDownloading = status?.downloading === true;
+    const isInstallBusy = isLocalModelInstallBusy({
+      status,
+      pending: isInstallPending,
+    });
     const isInstalled = status?.installed === true;
+    const isSherpaAsrModel = entry.provider === VoiceProvider.LocalSherpaOnnx;
+    const isCurrentSherpaAsrModel = isSherpaAsrModel && voiceSherpaOnnxConfig.asrModelId === entry.id;
+    const canOpenPath = canOpenLocalModelPath(status);
+    const resolvedPath = status?.resolvedPath ?? '';
     return (
       <div key={entry.id} className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-2 space-y-2">
         <div className="flex items-start justify-between gap-3">
@@ -957,11 +1114,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
             <div className="text-xs font-medium dark:text-claude-darkText text-claude-text">{entry.label}</div>
             <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">{entry.description}</div>
           </div>
-          {entry.recommended && (
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-              {i18nService.t('voiceLocalModelRecommendedTag')}
-            </span>
-          )}
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            {entry.recommended && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                {i18nService.t('voiceLocalModelRecommendedTag')}
+              </span>
+            )}
+            {isCurrentSherpaAsrModel && (
+              <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                {i18nService.t('voiceLocalModelInUseTag')}
+              </span>
+            )}
+          </div>
         </div>
         <div className="space-y-1 text-[11px] dark:text-claude-darkTextSecondary text-claude-textSecondary">
           <div>{i18nService.t('voiceLocalModelSizeLabel')}: ~{entry.approximateSizeMb} MB</div>
@@ -975,31 +1139,45 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {!isDownloading && (
+          {!isInstallBusy && (
             <button
               type="button"
               onClick={() => { void handleInstallLocalModel(entry); }}
-              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
+              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isInstalled ? i18nService.t('voiceLocalModelReinstallButton') : i18nService.t('voiceLocalModelInstallButton')}
             </button>
           )}
-          {isDownloading && (
+          {isInstallBusy && (
             <button
               type="button"
-              onClick={() => { void handleCancelLocalModelInstall(entry.id); }}
-              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
+              onClick={() => {
+                if (isDownloading) {
+                  void handleCancelLocalModelInstall(entry.id);
+                }
+              }}
+              disabled={!isDownloading}
+              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {i18nService.t('voiceLocalModelCancelButton')}
+              {isDownloading ? i18nService.t('voiceLocalModelCancelButton') : i18nService.t('voiceLocalModelState_downloading')}
             </button>
           )}
-          {status?.resolvedPath && (
+          {canOpenPath && (
             <button
               type="button"
-              onClick={() => { void window.electron.shell.openPath(status.resolvedPath); }}
-              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
+              onClick={() => { void handleOpenLocalModelDirectory(resolvedPath); }}
+              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {i18nService.t('voiceLocalModelOpenPathButton')}
+            </button>
+          )}
+          {isSherpaAsrModel && isInstalled && !isCurrentSherpaAsrModel && (
+            <button
+              type="button"
+              onClick={() => updateVoiceSherpaOnnxConfig({ asrModelId: entry.id, asrModelPath: '' })}
+              className="rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-[11px] font-medium dark:text-claude-darkText text-claude-text hover:bg-gray-50 dark:hover:bg-claude-darkHover"
+            >
+              {i18nService.t('voiceLocalModelUseButton')}
             </button>
           )}
         </div>
@@ -1134,6 +1312,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   }, [loadVoiceCapabilityMatrix]);
 
   const handleInstallLocalModel = useCallback(async (entry: VoiceLocalModelCatalogEntry) => {
+    const status = getLocalModelStatus(entry.id);
+    if (pendingLocalModelInstallIds.includes(entry.id) || status?.downloading) {
+      return;
+    }
+
     const requirements = entry.requirements.join('\n');
     const warnings = entry.warnings.join('\n');
     const confirmed = window.confirm(
@@ -1144,35 +1327,61 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     }
 
     setError(null);
-    const result = await window.electron.voice.installLocalModel(entry.id);
-    if (!result.success) {
-      setError(result.error || i18nService.t('voiceLocalModelInstallFailed'));
+    setLocalModelInstallPending(entry.id, true);
+    try {
+      const result = await window.electron.voice.installLocalModel(entry.id);
+      if (!result.success) {
+        setError(result.error || i18nService.t('voiceLocalModelInstallFailed'));
+      }
+      if (result.library) {
+        setVoiceLocalModelLibrary(result.library);
+      }
+      const [speechRuntime, sherpaStatus, whisperStatus, qwenStatus, matrix] = await Promise.all([
+        loadSpeechAvailability(),
+        loadLocalSherpaOnnxStatus(),
+        loadLocalWhisperCppStatus(),
+        loadLocalQwen3TtsStatus(),
+        loadVoiceCapabilityMatrix(),
+      ]);
+      if (speechRuntime) {
+        setSpeechAvailability(speechRuntime);
+      }
+      if (sherpaStatus) {
+        setVoiceSherpaOnnxStatus(sherpaStatus);
+      }
+      if (whisperStatus) {
+        setVoiceLocalWhisperCppStatus(whisperStatus);
+      }
+      if (qwenStatus) {
+        setVoiceLocalQwen3TtsStatus(qwenStatus);
+      }
+      if (matrix) {
+        setVoiceCapabilityMatrix(matrix);
+      }
+    } finally {
+      setLocalModelInstallPending(entry.id, false);
     }
-    if (result.library) {
-      setVoiceLocalModelLibrary(result.library);
-    }
-    const [whisperStatus, qwenStatus, matrix] = await Promise.all([
-      loadLocalWhisperCppStatus(),
-      loadLocalQwen3TtsStatus(),
-      loadVoiceCapabilityMatrix(),
-    ]);
-    if (whisperStatus) {
-      setVoiceLocalWhisperCppStatus(whisperStatus);
-    }
-    if (qwenStatus) {
-      setVoiceLocalQwen3TtsStatus(qwenStatus);
-    }
-    if (matrix) {
-      setVoiceCapabilityMatrix(matrix);
-    }
-  }, [loadLocalQwen3TtsStatus, loadLocalWhisperCppStatus, loadVoiceCapabilityMatrix]);
+  }, [getLocalModelStatus, i18nService, loadLocalQwen3TtsStatus, loadLocalSherpaOnnxStatus, loadLocalWhisperCppStatus, loadSpeechAvailability, loadVoiceCapabilityMatrix, pendingLocalModelInstallIds, setLocalModelInstallPending]);
 
   const handleCancelLocalModelInstall = useCallback(async (modelId: string) => {
+    setLocalModelInstallPending(modelId, false);
     const result = await window.electron.voice.cancelLocalModelInstall(modelId);
     if (result.library) {
       setVoiceLocalModelLibrary(result.library);
     }
-  }, []);
+  }, [setLocalModelInstallPending]);
+
+  const handleOpenLocalModelDirectory = useCallback(async (targetPath: string) => {
+    setError(null);
+    const revealResult = await window.electron.shell.showItemInFolder(targetPath);
+    if (revealResult.success) {
+      return;
+    }
+    const openResult = await window.electron.shell.openPath(targetPath);
+    if (!openResult.success) {
+      setError(openResult.error || revealResult.error || i18nService.t('voiceLocalModelOpenPathFailed'));
+    }
+  }, [i18nService]);
 
   const handleOpenLocalWhisperCppDirectory = useCallback(async (target: 'resourceRoot' | 'binaryDirectory' | 'modelsDirectory') => {
     setError(null);
@@ -1279,6 +1488,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setSpeechSubmitCommand(voiceConfig.commands.manualSubmitCommand);
       setSttLlmCorrectionEnabled(voiceConfig.postProcess.sttLlmCorrectionEnabled);
       setWakeInputEnabled(voiceConfig.capabilities.wakeInput.enabled);
+      setWakeInputProviderMode(normalizeWakeInputProviderForUi(config.wakeInput?.provider ?? voiceConfig.capabilities.wakeInput.provider));
       setWakeInputWakeWordsText(voiceConfig.commands.wakeWords.join('\n'));
       setWakeInputSubmitCommand(voiceConfig.commands.wakeSubmitCommand);
       setWakeInputCancelCommand(voiceConfig.commands.wakeCancelCommand);
@@ -1290,6 +1500,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setTtsProvider(voiceConfig.capabilities.tts.provider);
       setTtsEngine(voiceConfig.capabilities.tts.engine);
       setVoiceMacosNativeTtsConfig(voiceConfig.providers.macosNative);
+      setVoiceSherpaOnnxConfig(voiceConfig.providers.sherpaOnnx);
       setVoiceLocalWhisperCppConfig(voiceConfig.providers.localWhisperCpp);
       setVoiceLocalQwen3TtsConfig(voiceConfig.providers.localQwen3Tts);
       setVoiceEdgeTtsConfig(voiceConfig.providers.edgeTts);
@@ -1302,6 +1513,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       setTtsAutoPlayAssistantReply(voiceConfig.capabilities.tts.autoPlayAssistantReply);
       setTtsLlmRewriteEnabled(voiceConfig.postProcess.ttsLlmRewriteEnabled);
       setTtsSkipKeywordsText(voiceConfig.postProcess.ttsSkipKeywords.join('\n'));
+      const desktopAssistantConfig = {
+        ...DEFAULT_DESKTOP_ASSISTANT_CONFIG,
+        ...(config.desktopAssistant ?? {}),
+      };
+      setDesktopAssistantMasterEnabled(desktopAssistantConfig.masterEnabled);
+      setDesktopAssistantLaunchAtLogin(desktopAssistantConfig.launchAtLogin);
+      setDesktopAssistantAutoOpenPreviewGuide(desktopAssistantConfig.autoOpenPreviewGuide);
+      setDesktopAssistantAutoEnterSceneGuide(desktopAssistantConfig.autoEnterSceneGuide);
+      setDesktopAssistantGuideVoiceCommandsEnabled(desktopAssistantConfig.guideVoiceCommandsEnabled);
+      setDesktopAssistantAssistantReplySpeakMode(desktopAssistantConfig.assistantReplySpeakMode ?? DesktopAssistantReplySpeakMode.Summary);
       setTtsVoiceId(voiceConfig.capabilities.tts.engine === TtsEngine.EdgeTts
         ? voiceConfig.providers.edgeTts.ttsVoiceId
         : voiceConfig.providers.macosNative.ttsVoiceId);
@@ -1319,7 +1540,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         setSelectedVoiceProvider(voiceConfig.capabilities.manualStt.provider as VoiceProviderPanelKey);
       } else if (voiceConfig.capabilities.wakeInput.enabled) {
         setExpandedVoiceSection(VoiceCapability.WakeInput);
-        setSelectedVoiceProvider(VoiceProvider.MacosNative);
+        setSelectedVoiceProvider(resolveWakeInputProviderPanelKey(normalizeWakeInputProviderForUi(config.wakeInput?.provider ?? voiceConfig.capabilities.wakeInput.provider)));
       } else if (voiceConfig.capabilities.followUpDictation.enabled) {
         setExpandedVoiceSection(VoiceCapability.FollowUpDictation);
         setSelectedVoiceProvider(voiceConfig.capabilities.manualStt.provider as VoiceProviderPanelKey);
@@ -1533,11 +1754,23 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   useEffect(() => {
     let active = true;
+    void loadSpeechAvailability().then((availability) => {
+      if (!active || !availability) {
+        return;
+      }
+      setSpeechAvailability(availability);
+    });
     void loadVoiceCapabilityMatrix().then((matrix) => {
       if (!active || !matrix) {
         return;
       }
       setVoiceCapabilityMatrix(matrix);
+    });
+    void loadLocalSherpaOnnxStatus().then((status) => {
+      if (!active || !status) {
+        return;
+      }
+      setVoiceSherpaOnnxStatus(status);
     });
     void loadLocalWhisperCppStatus().then((status) => {
       if (!active || !status) {
@@ -1574,6 +1807,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     const unsubscribeVoice = window.electron.voice.onCapabilityChanged((matrix) => {
       if (active) {
         setVoiceCapabilityMatrix(matrix);
+        void loadSpeechAvailability().then((availability) => {
+          if (active && availability) {
+            setSpeechAvailability(availability);
+          }
+        });
+        void loadLocalSherpaOnnxStatus().then((status) => {
+          if (active && status) {
+            setVoiceSherpaOnnxStatus(status);
+          }
+        });
         void loadLocalWhisperCppStatus().then((status) => {
           if (active && status) {
             setVoiceLocalWhisperCppStatus(status);
@@ -1585,6 +1828,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           }
         });
       }
+    });
+    const unsubscribeSpeech = window.electron.speech.onStateChanged((event) => {
+      if (!active || (event.type !== 'listening' && event.type !== 'stopped' && event.type !== 'error')) {
+        return;
+      }
+      void loadSpeechAvailability().then((availability) => {
+        if (active && availability) {
+          setSpeechAvailability(availability);
+        }
+      });
     });
     const unsubscribeLocalModels = window.electron.voice.onLocalModelLibraryChanged((library) => {
       if (active) {
@@ -1602,10 +1855,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       active = false;
       unsubscribeWakeInput();
       unsubscribeVoice();
+      unsubscribeSpeech();
       unsubscribeLocalModels();
       unsubscribeTts();
     };
-  }, [loadLocalModelLibrary, loadLocalQwen3TtsStatus, loadLocalWhisperCppStatus, loadVoiceCapabilityMatrix]);
+  }, [loadLocalModelLibrary, loadLocalQwen3TtsStatus, loadLocalSherpaOnnxStatus, loadLocalWhisperCppStatus, loadSpeechAvailability, loadVoiceCapabilityMatrix]);
 
   useEffect(() => {
     if (ttsEngine === TtsEngine.EdgeTts) {
@@ -1618,6 +1872,12 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     setTtsRate(voiceMacosNativeTtsConfig.ttsRate);
     setTtsVolume(voiceMacosNativeTtsConfig.ttsVolume);
   }, [ttsEngine, voiceEdgeTtsConfig.ttsRate, voiceEdgeTtsConfig.ttsVoiceId, voiceEdgeTtsConfig.ttsVolume, voiceMacosNativeTtsConfig.ttsRate, voiceMacosNativeTtsConfig.ttsVoiceId, voiceMacosNativeTtsConfig.ttsVolume]);
+
+  useEffect(() => {
+    if (ttsEngine === TtsEngine.SherpaOnnx) {
+      setTtsEngine(TtsEngine.MacosNative);
+    }
+  }, [ttsEngine]);
 
   useEffect(() => {
     let active = true;
@@ -1750,9 +2010,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       return;
     }
     if (expandedVoiceSection === VoiceCapability.WakeInput) {
-      setSelectedVoiceProvider(VoiceProvider.MacosNative);
+      setSelectedVoiceProvider(resolveWakeInputProviderPanelKey(wakeInputProviderMode));
     }
-  }, [expandedVoiceSection, manualSttProvider, ttsProvider]);
+  }, [expandedVoiceSection, manualSttProvider, ttsProvider, wakeInputProviderMode]);
 
   const handleVoiceSectionToggle = useCallback((section: VoiceCapabilityKey) => {
     setExpandedVoiceSection((current) => (current === section ? null : section));
@@ -2345,7 +2605,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         voice: {
           capabilities: {
             manualStt: { enabled: manualSttEnabled, provider: manualSttProvider },
-            wakeInput: { enabled: wakeInputEnabled, provider: VoiceProvider.MacosNative },
+            wakeInput: {
+              enabled: wakeInputEnabled,
+              provider: wakeInputProviderMode as unknown as VoiceConfig['capabilities']['wakeInput']['provider'],
+            },
             followUpDictation: { enabled: followUpDictationEnabled, provider: manualSttProvider },
             tts: {
               enabled: ttsEnabled,
@@ -2367,6 +2630,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           providers: {
             macosNative: voiceMacosNativeTtsConfig,
             edgeTts: voiceEdgeTtsConfig,
+            sherpaOnnx: voiceSherpaOnnxConfig,
             localWhisperCpp: voiceLocalWhisperCppConfig,
             localQwen3Tts: voiceLocalQwen3TtsConfig,
             openai: voiceOpenAiConfig,
@@ -2382,7 +2646,26 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           },
           strategy: voiceStrategy,
         },
+        wakeInput: {
+          enabled: wakeInputEnabled,
+          provider: wakeInputProviderMode,
+          wakeWords: normalizedWakeWords,
+          wakeWord: normalizedWakeWords[0] ?? DEFAULT_WAKE_INPUT_CONFIG.wakeWord,
+          submitCommand: normalizedWakeSubmitCommand,
+          cancelCommand: normalizedWakeCancelCommand,
+          sessionTimeoutMs: DEFAULT_WAKE_INPUT_CONFIG.sessionTimeoutMs,
+          activationReplyEnabled: wakeActivationReplyEnabled,
+          activationReplyText: normalizedWakeActivationReplyText,
+        },
         shortcuts,
+        desktopAssistant: {
+          masterEnabled: desktopAssistantMasterEnabled,
+          launchAtLogin: desktopAssistantLaunchAtLogin,
+          autoOpenPreviewGuide: desktopAssistantAutoOpenPreviewGuide,
+          autoEnterSceneGuide: desktopAssistantAutoEnterSceneGuide,
+          guideVoiceCommandsEnabled: desktopAssistantGuideVoiceCommandsEnabled,
+          assistantReplySpeakMode: desktopAssistantAssistantReplySpeakMode,
+        },
         app: {
           ...configService.getConfig().app,
           testMode,
@@ -3072,6 +3355,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     switch (providerKey) {
       case VoiceProvider.MacosNative:
         return i18nService.t('ttsDescription');
+      case VoiceProvider.LocalSherpaOnnx:
+        return i18nService.t('voiceLocalSherpaOnnxDescription');
       case VoiceProvider.LocalWhisperCpp:
         return i18nService.t('voiceLocalWhisperCppDescription');
       case VoiceProvider.LocalQwen3Tts:
@@ -3151,10 +3436,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               i18nService.t('settingsPanelRuntime'),
               <div className="space-y-3">
                 <div className="grid gap-2 text-xs text-secondary sm:grid-cols-2">
+                  <div>{i18nService.t('voiceOverviewRequestedProvider')}: {ttsAvailability?.requestedProvider ? getVoiceProviderLabel(ttsAvailability.requestedProvider) : getVoiceProviderLabel(VoiceProvider.MacosNative)}</div>
+                  <div>{i18nService.t('voiceOverviewActualProvider')}: {ttsAvailability?.actualProvider ? getVoiceProviderLabel(ttsAvailability.actualProvider) : getVoiceProviderLabel(VoiceProvider.MacosNative)}</div>
                   <div>{i18nService.t('ttsEngineLabel')}: {i18nService.t(`ttsEngine_${ttsEngine}`)}</div>
                   <div>{i18nService.t('voiceOverviewActualEngine')}: {ttsAvailability?.lastResolvedEngine ? i18nService.t(`ttsEngine_${ttsAvailability.lastResolvedEngine}`) : i18nService.t('ttsActualEngineNone')}</div>
                   <div>{i18nService.t('voiceOverviewRuntimeStatus')}: {ttsAvailability ? i18nService.t(`ttsPrepareStatus_${ttsAvailability.prepareStatus}`) : i18nService.t('loading')}</div>
-                  <div>{i18nService.t('ttsPrepareLastErrorLabel')}: {ttsAvailability?.recentError || '-'}</div>
+                  <div>{i18nService.t('voiceOverviewFallbackStatus')}: {ttsAvailability?.fallbackActive ? i18nService.t('voiceFallbackActive') : i18nService.t('voiceFallbackInactive')}</div>
+                  <div>{i18nService.t('ttsPrepareLastErrorLabel')}: {ttsAvailability?.recentError || ttsAvailability?.lastFallbackReason || '-'}</div>
                 </div>
                 <div className="rounded-xl border border-dashed border-border px-3 py-3 text-xs text-secondary">
                   {i18nService.t('voiceProviderManagedInTtsHint')}
@@ -3241,6 +3529,71 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               i18nService.t('providerPanel_models'),
               <div className="space-y-2">
                 {getLocalModelsByProvider(VoiceProvider.LocalWhisperCpp).map(renderLocalModelEntry)}
+              </div>,
+            )}
+          </div>
+        );
+      case VoiceProvider.LocalSherpaOnnx:
+        return (
+          <div className="space-y-4">
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelBasic'),
+              <div className="space-y-3">
+                <p className="text-sm text-secondary">{getVoiceProviderDescription(VoiceProvider.LocalSherpaOnnx)}</p>
+                {renderVoiceProviderStatusFacts(VoiceProvider.LocalSherpaOnnx)}
+              </div>,
+              undefined,
+              renderSwitch(voiceSherpaOnnxConfig.enabled, () => updateVoiceSherpaOnnxConfig({ enabled: !voiceSherpaOnnxConfig.enabled })),
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('settingsPanelRuntime'),
+              <div className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSherpaAsrModelIdLabel')}</div>
+                    <input type="text" value={voiceSherpaOnnxConfig.asrModelId} onChange={(event) => updateVoiceSherpaOnnxConfig({ asrModelId: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                </div>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSherpaAsrModelPathLabel')}</div>
+                  <input type="text" value={voiceSherpaOnnxConfig.asrModelPath} onChange={(event) => updateVoiceSherpaOnnxConfig({ asrModelPath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderThreadsLabel')}</div>
+                    <input type="number" min={1} max={16} value={voiceSherpaOnnxConfig.threads} onChange={(event) => updateVoiceSherpaOnnxConfig({ threads: Math.max(1, Number(event.target.value) || 1) })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSherpaSampleRateLabel')}</div>
+                    <input type="text" value={voiceSherpaOnnxConfig.sampleRate} onChange={(event) => updateVoiceSherpaOnnxConfig({ sampleRate: Math.max(8000, Number(event.target.value) || 16000) })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                  </label>
+                </div>
+                <label className="block">
+                  <div className="mb-1 text-xs text-secondary">{i18nService.t('voiceProviderSherpaProviderLabel')}</div>
+                  <input type="text" value={voiceSherpaOnnxConfig.provider} onChange={(event) => updateVoiceSherpaOnnxConfig({ provider: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
+                </label>
+                <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
+                  <div>{i18nService.t('voiceOverviewRequestedProvider')}: {speechAvailability?.requestedProvider ? getVoiceProviderLabel(speechAvailability.requestedProvider) : getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx)}</div>
+                  <div>{i18nService.t('voiceOverviewActualProvider')}: {speechAvailability?.actualProvider ? getVoiceProviderLabel(speechAvailability.actualProvider) : getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx)}</div>
+                  <div>{i18nService.t('voiceOverviewFallbackStatus')}: {speechAvailability?.fallbackActive ? i18nService.t('voiceFallbackActive') : i18nService.t('voiceFallbackInactive')}</div>
+                  {speechAvailability?.fallbackReason && (
+                    <div>{i18nService.t('voiceOverviewFallbackReason')}: {speechAvailability.fallbackReason}</div>
+                  )}
+                  <div>{i18nService.t('voiceSherpaFallbackPolicyLabel')}: {window.electron.platform === 'darwin' ? i18nService.t('voiceSherpaFallbackPolicyMacos') : i18nService.t('voiceSherpaFallbackPolicyNone')}</div>
+                </div>
+                {voiceSherpaOnnxStatus && (
+                  <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
+                    <div>{i18nService.t('voiceSherpaResourceRootLabel')}: {voiceSherpaOnnxStatus.resourceRoot || '-'}</div>
+                    <div>{i18nService.t('voiceSherpaAsrReadyLabel')}: {voiceSherpaOnnxStatus.asrReady ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+                    <div>{i18nService.t('voiceSherpaResolvedAsrModelLabel')}: {voiceSherpaOnnxStatus.asrModelPath || '-'}</div>
+                  </div>
+                )}
+              </div>,
+            )}
+            {renderSettingsCardSection(
+              i18nService.t('providerPanel_models'),
+              <div className="space-y-2">
+                {getLocalModelsByProvider(VoiceProvider.LocalSherpaOnnx).map(renderLocalModelEntry)}
               </div>,
             )}
           </div>
@@ -3680,6 +4033,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   i18nService.t('wakeInputTitle'),
                   <div className="space-y-3">
                     <label className="block">
+                      <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputProviderLabel')}</div>
+                      <ThemedSelect
+                        id="wake-input-provider-panel"
+                        value={wakeInputProviderMode}
+                        onChange={(value) => setWakeInputProviderMode(value as typeof WakeInputProviderMode[keyof typeof WakeInputProviderMode])}
+                        options={wakeInputProviderOptions}
+                      />
+                      <p className="mt-2 text-xs text-secondary">{i18nService.t('wakeInputProviderHint')}</p>
+                    </label>
+                    <label className="block">
                       <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputWakeWordsLabel')}</div>
                       <textarea value={wakeInputWakeWordsText} onChange={(event) => setWakeInputWakeWordsText(event.target.value)} placeholder={i18nService.t('wakeInputWakeWordsPlaceholder')} rows={4} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />
                     </label>
@@ -3820,8 +4183,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 <div className="space-y-3">
                   {renderVoiceCapabilityMeta(VoiceCapability.Tts)}
                   <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
+                    <div>{i18nService.t('voiceOverviewRequestedProvider')}: {ttsAvailability?.requestedProvider ? getVoiceProviderLabel(ttsAvailability.requestedProvider) : getVoiceProviderLabel(ttsProvider)}</div>
+                    <div>{i18nService.t('voiceOverviewActualProvider')}: {ttsAvailability?.actualProvider ? getVoiceProviderLabel(ttsAvailability.actualProvider) : getVoiceProviderLabel(ttsProvider)}</div>
                     <div>{i18nService.t('voiceOverviewRuntimeStatus')}: {ttsAvailability ? i18nService.t(`ttsPrepareStatus_${ttsAvailability.prepareStatus}`) : i18nService.t('loading')}</div>
                     <div>{i18nService.t('voiceOverviewActualEngine')}: {ttsAvailability?.lastResolvedEngine ? i18nService.t(`ttsEngine_${ttsAvailability.lastResolvedEngine}`) : i18nService.t('ttsActualEngineNone')}</div>
+                    <div>{i18nService.t('voiceOverviewFallbackStatus')}: {ttsAvailability?.fallbackActive ? i18nService.t('voiceFallbackActive') : i18nService.t('voiceFallbackInactive')}</div>
                     {ttsAvailability?.lastRequestedEngine && ttsAvailability?.lastResolvedEngine && ttsAvailability.lastRequestedEngine !== ttsAvailability.lastResolvedEngine && (
                       <div className="text-amber-600 dark:text-amber-400">
                         {i18nService.t('ttsActualEngineFallbackLabel')}: {i18nService.t(`ttsEngine_${ttsAvailability.lastRequestedEngine}`)}
@@ -4185,6 +4551,56 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 </div>
               )}
             </div>
+          </div>
+        </section>
+
+        <section className="space-y-4">
+          <div>
+            <h4 className="text-sm font-medium text-foreground">{i18nService.t('desktopAssistantTitle')}</h4>
+            <p className="mt-1 text-sm text-secondary">{i18nService.t('desktopAssistantDescription')}</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-surface px-4 py-4 space-y-4">
+            <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+              <span className="text-sm text-foreground">{i18nService.t('desktopAssistantMasterEnabled')}</span>
+              {renderSwitch(desktopAssistantMasterEnabled, () => setDesktopAssistantMasterEnabled((prev) => !prev))}
+            </label>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                <span className="text-sm text-foreground">{i18nService.t('desktopAssistantLaunchAtLogin')}</span>
+                {renderSwitch(desktopAssistantLaunchAtLogin, () => setDesktopAssistantLaunchAtLogin((prev) => !prev))}
+              </label>
+              <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                <span className="text-sm text-foreground">{i18nService.t('desktopAssistantAutoOpenPreviewGuide')}</span>
+                {renderSwitch(desktopAssistantAutoOpenPreviewGuide, () => setDesktopAssistantAutoOpenPreviewGuide((prev) => !prev))}
+              </label>
+              <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                <span className="text-sm text-foreground">{i18nService.t('desktopAssistantAutoEnterSceneGuide')}</span>
+                {renderSwitch(desktopAssistantAutoEnterSceneGuide, () => setDesktopAssistantAutoEnterSceneGuide((prev) => !prev))}
+              </label>
+              <label className="flex items-center justify-between rounded-xl border border-border px-3 py-3">
+                <span className="text-sm text-foreground">{i18nService.t('desktopAssistantGuideVoiceCommandsEnabled')}</span>
+                {renderSwitch(desktopAssistantGuideVoiceCommandsEnabled, () => setDesktopAssistantGuideVoiceCommandsEnabled((prev) => !prev))}
+              </label>
+            </div>
+            <label className="block">
+              <div className="mb-1 text-xs text-secondary">{i18nService.t('desktopAssistantAssistantReplySpeakMode')}</div>
+              <ThemedSelect
+                id="desktop-assistant-reply-speak-mode"
+                value={desktopAssistantAssistantReplySpeakMode}
+                onChange={(value) => setDesktopAssistantAssistantReplySpeakMode(value as DesktopAssistantConfig['assistantReplySpeakMode'])}
+                options={[
+                  {
+                    value: DesktopAssistantReplySpeakMode.Summary,
+                    label: i18nService.t('desktopAssistantAssistantReplySpeakMode_summary'),
+                  },
+                  {
+                    value: DesktopAssistantReplySpeakMode.Detailed,
+                    label: i18nService.t('desktopAssistantAssistantReplySpeakMode_detailed'),
+                  },
+                ]}
+              />
+            </label>
+            <p className="text-xs text-secondary">{i18nService.t('desktopAssistantExperimentalHint')}</p>
           </div>
         </section>
 

@@ -30,6 +30,10 @@ export default defineConfig({
                 const staticExternals = ['sql.js', 'discord.js', 'zlib-sync', '@discordjs/opus', 'bufferutil', 'utf-8-validate', 'node-nim', 'nim-web-sdk-ng'];
                 if (staticExternals.includes(id)) return true;
                 if (id.startsWith('@larksuite/openclaw-lark-tools') || id.startsWith('@larksuite/openclaw-lark')) return true;
+                if (id === '@picovoice/pvrecorder-node' || id.startsWith('@picovoice/pvrecorder-node/')) return true;
+                if (id === '@picovoice/porcupine-node' || id.startsWith('@picovoice/porcupine-node/')) return true;
+                if (id === 'sherpa-onnx-node' || id.startsWith('sherpa-onnx-node/')) return true;
+                if (id.startsWith('sherpa-onnx-')) return true;
                 return false;
               },
               output: {

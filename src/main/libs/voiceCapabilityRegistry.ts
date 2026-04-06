@@ -21,6 +21,9 @@ import {
 } from '../../shared/voice/constants';
 import { inspectLocalWhisperCppRuntime } from './localWhisperCppSpeechService';
 import { inspectLocalQwen3TtsRuntime } from './localQwen3TtsService';
+import {
+  inspectSherpaOnnxAsrRuntime,
+} from './sherpaOnnxResourceService';
 
 const MAC_SPEECH_HELPER_NAME = 'MacSpeechHelper';
 const MAC_TTS_HELPER_NAME = 'MacTtsHelper';
@@ -30,9 +33,9 @@ const VOICE_MANIFEST_NAME = 'voice-capabilities.json';
 type CapabilityProviderSupport = Record<typeof VoiceCapability[keyof typeof VoiceCapability], VoiceProvider[]>;
 
 const CAPABILITY_PROVIDER_SUPPORT: CapabilityProviderSupport = {
-  [VoiceCapability.ManualStt]: [VoiceProvider.MacosNative, VoiceProvider.LocalWhisperCpp, VoiceProvider.CloudOpenAi, VoiceProvider.CloudAliyun, VoiceProvider.CloudVolcengine],
+  [VoiceCapability.ManualStt]: [VoiceProvider.MacosNative, VoiceProvider.LocalSherpaOnnx, VoiceProvider.LocalWhisperCpp, VoiceProvider.CloudOpenAi, VoiceProvider.CloudAliyun, VoiceProvider.CloudVolcengine],
   [VoiceCapability.WakeInput]: [VoiceProvider.MacosNative],
-  [VoiceCapability.FollowUpDictation]: [VoiceProvider.MacosNative, VoiceProvider.LocalWhisperCpp, VoiceProvider.CloudOpenAi, VoiceProvider.CloudAliyun, VoiceProvider.CloudVolcengine],
+  [VoiceCapability.FollowUpDictation]: [VoiceProvider.MacosNative, VoiceProvider.LocalSherpaOnnx, VoiceProvider.LocalWhisperCpp, VoiceProvider.CloudOpenAi, VoiceProvider.CloudAliyun, VoiceProvider.CloudVolcengine],
   [VoiceCapability.Tts]: [VoiceProvider.MacosNative, VoiceProvider.LocalQwen3Tts, VoiceProvider.CloudOpenAi, VoiceProvider.CloudAliyun, VoiceProvider.CloudVolcengine, VoiceProvider.CloudAzure],
 };
 
@@ -76,6 +79,13 @@ const buildFallbackManifest = (platform: string, arch: string): VoiceCapabilityM
         capabilities: macosNativeCapabilities,
       },
       [VoiceProvider.LocalWhisperCpp]: {
+        packaged: false,
+        capabilities: {
+          [VoiceCapability.ManualStt]: true,
+          [VoiceCapability.FollowUpDictation]: true,
+        },
+      },
+      [VoiceProvider.LocalSherpaOnnx]: {
         packaged: false,
         capabilities: {
           [VoiceCapability.ManualStt]: true,
@@ -176,6 +186,27 @@ const resolveLocalWhisperCppReason = (options: {
   return VoiceCapabilityReason.Available;
 };
 
+const resolveLocalSherpaOnnxReason = (options: {
+  platform: string;
+  packaged: boolean;
+  enabled: boolean;
+  ready: boolean;
+}): typeof VoiceCapabilityReason[keyof typeof VoiceCapabilityReason] => {
+  if (options.platform !== 'darwin' && options.platform !== 'win32') {
+    return VoiceCapabilityReason.UnsupportedPlatform;
+  }
+  if (!options.packaged) {
+    return VoiceCapabilityReason.ProviderNotPackaged;
+  }
+  if (!options.enabled) {
+    return VoiceCapabilityReason.DisabledByConfig;
+  }
+  if (!options.ready) {
+    return VoiceCapabilityReason.MissingLocalModel;
+  }
+  return VoiceCapabilityReason.Available;
+};
+
 const resolveCloudProviderReason = (options: {
   packaged: boolean;
   enabled: boolean;
@@ -206,6 +237,7 @@ class VoiceProviderResolver {
       configuredProvider,
       capability === VoiceCapability.FollowUpDictation ? manualSttProvider : configuredProvider,
       VoiceProvider.MacosNative,
+      VoiceProvider.LocalSherpaOnnx,
       VoiceProvider.LocalWhisperCpp,
       VoiceProvider.LocalQwen3Tts,
       VoiceProvider.CloudOpenAi,
@@ -222,6 +254,7 @@ class VoiceProviderResolver {
       VoiceProvider.CloudVolcengine,
       VoiceProvider.CloudAzure,
       VoiceProvider.CloudCustom,
+      VoiceProvider.LocalSherpaOnnx,
       VoiceProvider.LocalWhisperCpp,
       VoiceProvider.LocalQwen3Tts,
       VoiceProvider.MacosNative,
@@ -289,13 +322,18 @@ export class VoiceCapabilityRegistry {
 
   private buildProviderStatuses(manifest: VoiceCapabilityManifest, voiceConfig: VoiceConfig): Record<VoiceProvider, VoiceProviderStatus> {
     const macosNativePackaged = manifest.providers[VoiceProvider.MacosNative]?.packaged === true;
-  const localWhisperCppRuntime = inspectLocalWhisperCppRuntime(voiceConfig.providers.localWhisperCpp);
-  const localWhisperCppPackaged = manifest.providers[VoiceProvider.LocalWhisperCpp]?.packaged === true
-    || localWhisperCppRuntime.executableExists;
-  const localWhisperCppEnabled = voiceConfig.providers.localWhisperCpp.enabled;
-  const localWhisperCppConfigured = voiceConfig.providers.localWhisperCpp.enabled
-    && localWhisperCppRuntime.executableExists
-    && localWhisperCppRuntime.modelExists;
+    const sherpaOnnxAsrRuntime = inspectSherpaOnnxAsrRuntime(voiceConfig.providers.sherpaOnnx);
+    const sherpaOnnxPackaged = manifest.providers[VoiceProvider.LocalSherpaOnnx]?.packaged === true
+      || sherpaOnnxAsrRuntime.ready;
+    const sherpaOnnxEnabled = voiceConfig.providers.sherpaOnnx.enabled;
+    const sherpaOnnxConfigured = sherpaOnnxEnabled && sherpaOnnxAsrRuntime.ready;
+    const localWhisperCppRuntime = inspectLocalWhisperCppRuntime(voiceConfig.providers.localWhisperCpp);
+    const localWhisperCppPackaged = manifest.providers[VoiceProvider.LocalWhisperCpp]?.packaged === true
+      || localWhisperCppRuntime.executableExists;
+    const localWhisperCppEnabled = voiceConfig.providers.localWhisperCpp.enabled;
+    const localWhisperCppConfigured = voiceConfig.providers.localWhisperCpp.enabled
+      && localWhisperCppRuntime.executableExists
+      && localWhisperCppRuntime.modelExists;
     const localQwen3TtsRuntime = inspectLocalQwen3TtsRuntime(voiceConfig.providers.localQwen3Tts);
     const localQwen3TtsPackaged = manifest.providers[VoiceProvider.LocalQwen3Tts]?.packaged === true
       || localQwen3TtsRuntime.modelExists;
@@ -358,6 +396,19 @@ export class VoiceCapabilityRegistry {
           modelExists: localWhisperCppRuntime.modelExists,
         }),
         capabilities: manifest.providers[VoiceProvider.LocalWhisperCpp]?.capabilities ?? {},
+      },
+      [VoiceProvider.LocalSherpaOnnx]: {
+        provider: VoiceProvider.LocalSherpaOnnx,
+        packaged: sherpaOnnxPackaged,
+        platformSupported: this.options.platform === 'darwin' || this.options.platform === 'win32',
+        configured: sherpaOnnxConfigured,
+        reason: resolveLocalSherpaOnnxReason({
+          platform: this.options.platform,
+          packaged: sherpaOnnxPackaged,
+          enabled: sherpaOnnxEnabled,
+          ready: sherpaOnnxAsrRuntime.ready,
+        }),
+        capabilities: manifest.providers[VoiceProvider.LocalSherpaOnnx]?.capabilities ?? {},
       },
       [VoiceProvider.LocalQwen3Tts]: {
         provider: VoiceProvider.LocalQwen3Tts,
@@ -454,6 +505,11 @@ export class VoiceCapabilityRegistry {
   }): VoiceCapabilityStatus {
     const providerStatus = options.providerStatuses[options.selectedProvider] ?? options.providerStatuses[VoiceProvider.None];
     const packaged = providerStatus.packaged && (providerStatus.capabilities[options.capability] ?? true);
+    const providerRuntimeStatus = this.resolveCapabilityRuntimeStatus(
+      options.capability,
+      options.selectedProvider,
+      providerStatus,
+    );
     const baseStatus: VoiceCapabilityStatus = {
       capability: options.capability,
       selectedProvider: options.selectedProvider,
@@ -479,12 +535,12 @@ export class VoiceCapabilityRegistry {
         reason: VoiceCapabilityReason.ProviderNotPackaged,
       };
     }
-    if (options.selectedProvider !== VoiceProvider.MacosNative && !providerStatus.configured) {
+    if (options.selectedProvider !== VoiceProvider.MacosNative && !providerRuntimeStatus.configured) {
       return {
         ...baseStatus,
-        reason: providerStatus.reason === VoiceCapabilityReason.Available
+        reason: providerRuntimeStatus.reason === VoiceCapabilityReason.Available
           ? VoiceCapabilityReason.ProviderConfigRequired
-          : providerStatus.reason,
+          : providerRuntimeStatus.reason,
       };
     }
 
@@ -514,10 +570,54 @@ export class VoiceCapabilityRegistry {
 
     return {
       ...baseStatus,
-      runtimeAvailable: providerStatus.configured,
-      reason: providerStatus.configured
+      runtimeAvailable: providerRuntimeStatus.configured,
+      reason: providerRuntimeStatus.configured
         ? VoiceCapabilityReason.Available
-        : VoiceCapabilityReason.ProviderConfigRequired,
+        : providerRuntimeStatus.reason,
+    };
+  }
+
+  private resolveCapabilityRuntimeStatus(
+    capability: typeof VoiceCapability[keyof typeof VoiceCapability],
+    selectedProvider: VoiceProvider,
+    providerStatus: VoiceProviderStatus,
+  ): {
+    configured: boolean;
+    reason: typeof VoiceCapabilityReason[keyof typeof VoiceCapabilityReason];
+  } {
+    if (selectedProvider !== VoiceProvider.LocalSherpaOnnx) {
+      return {
+        configured: providerStatus.configured,
+        reason: providerStatus.reason,
+      };
+    }
+
+    const voiceConfig = this.options.getVoiceConfig();
+    if (!voiceConfig.providers.sherpaOnnx.enabled) {
+      return {
+        configured: false,
+        reason: VoiceCapabilityReason.DisabledByConfig,
+      };
+    }
+
+    if (capability === VoiceCapability.Tts) {
+      return {
+        configured: false,
+        reason: VoiceCapabilityReason.UnsupportedPlatform,
+      };
+    }
+
+    if (capability === VoiceCapability.ManualStt || capability === VoiceCapability.FollowUpDictation) {
+      const asrRuntime = inspectSherpaOnnxAsrRuntime(voiceConfig.providers.sherpaOnnx);
+      return {
+        configured: asrRuntime.ready,
+        reason: asrRuntime.ready ? VoiceCapabilityReason.Available : VoiceCapabilityReason.MissingLocalModel,
+      };
+    }
+
+    return {
+      configured: providerStatus.configured,
+      reason: providerStatus.reason,
     };
   }
 

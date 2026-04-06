@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { PaperAirplaneIcon, StopIcon, FolderIcon } from '@heroicons/react/24/solid';
 import { PhotoIcon, ExclamationTriangleIcon, MicrophoneIcon } from '@heroicons/react/24/outline';
@@ -8,16 +8,37 @@ import ModelSelector from '../ModelSelector';
 import FolderSelectorPopover from './FolderSelectorPopover';
 import { SkillsButton, ActiveSkillBadge } from '../skills';
 import { i18nService } from '../../services/i18n';
+import { coworkService } from '../../services/cowork';
 import { skillService } from '../../services/skill';
 import { configService } from '../../services/config';
 import { RootState } from '../../store';
-import { setDraftPrompt, setDraftAttachments, clearDraftAttachments, type DraftAttachment } from '../../store/slices/coworkSlice';
+import {
+  setDraftPrompt,
+  setDraftAttachments,
+  clearDraftAttachments,
+  type DraftAttachment,
+} from '../../store/slices/coworkSlice';
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
+import { type CoworkSession, type CoworkSubmissionMetadata } from '../../types/cowork';
 import { Skill } from '../../types/skill';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { getCompactFolderName } from '../../utils/path';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
-import { isRecoverableSpeechErrorCode, SpeechErrorCode } from '../../../shared/speech/constants';
+import { GuideVoiceCommandAction, resolveGuideVoiceCommand } from './guideVoiceCommand';
+import { matchGuideSceneForQuery } from './guideSceneMatcher';
+import {
+  DesktopAssistantPromptCommandAction,
+  resolveDesktopAssistantPromptCommand,
+} from './desktopAssistantPromptCommand';
+import { resolveGuideContentFromConversation } from './guideContent';
+import { GuidePreviewMode } from './guidePresentationBridge';
+import { openGuideScenePreview, prepareGuideStartContext } from './guidePreview';
+import {
+  buildAutoAttachedPresentationHtmlRuntimeContract,
+  buildDesktopAssistantAutoSkillMetadata,
+  resolveAutoAttachedDesktopAssistantSkill,
+} from './desktopAssistantSkillRouting';
+import { isRecoverableSpeechErrorCode, SpeechErrorCode, SpeechStopReason } from '../../../shared/speech/constants';
 import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 import { VoiceProvider, type VoiceCapabilityMatrix } from '../../../shared/voice/constants';
@@ -28,6 +49,14 @@ import {
 import { startCloudSpeechRecording, type CloudSpeechRecording } from './coworkCloudSpeechRecorder';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 import { TtsAssistantReplyPlaybackState, TtsStateType } from '../../../shared/tts/constants';
+import { desktopAssistantService } from '../../services/desktopAssistant';
+import {
+  DesktopAssistantReplySpeakMode,
+  GuideSource,
+  DesktopAssistantState,
+  type DesktopAssistantConfig,
+  type DesktopAssistantStatus,
+} from '../../../shared/desktopAssistant/constants';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -82,6 +111,38 @@ const buildInlinedSkillPrompt = (skill: Skill): string => {
   ].join('\n');
 };
 
+const findLatestGuideMessageInSession = (
+  session: Pick<CoworkSession, 'messages' | 'cwd'> | null | undefined,
+): CoworkSession['messages'][number] | null => {
+  if (!session) {
+    return null;
+  }
+
+  return [...session.messages].reverse().find((message) => {
+    if (message.type !== 'assistant' || message.metadata?.isStreaming) {
+      return false;
+    }
+    return resolveGuideContentFromConversation(message, session.messages, {
+      cwd: session.cwd,
+    }).eligible;
+  }) ?? null;
+};
+
+const findGuideSourceInSession = (
+  session: CoworkSession | null | undefined,
+): { session: CoworkSession; message: CoworkSession['messages'][number] } | null => {
+  if (!session) {
+    return null;
+  }
+
+  const message = findLatestGuideMessageInSession(session);
+  if (!message) {
+    return null;
+  }
+
+  return { session, message };
+};
+
 export interface CoworkPromptInputRef {
   /** 设置输入框值 */
   setValue: (value: string) => void;
@@ -90,7 +151,12 @@ export interface CoworkPromptInputRef {
 }
 
 interface CoworkPromptInputProps {
-  onSubmit: (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => boolean | void | Promise<boolean | void>;
+  onSubmit: (
+    prompt: string,
+    skillPrompt?: string,
+    imageAttachments?: CoworkImageAttachment[],
+    submissionMetadata?: CoworkSubmissionMetadata,
+  ) => boolean | void | Promise<boolean | void>;
   onStop?: () => void;
   isStreaming?: boolean;
   placeholder?: string;
@@ -108,6 +174,7 @@ interface CoworkPromptInputProps {
 
 type InputSpeechStatus = 'idle' | 'requesting_permission' | 'listening' | 'transcribing';
 type PendingSpeechVoiceCommand = SpeechVoiceCommandAction | null;
+type PendingGuideVoiceCommand = GuideVoiceCommandAction | null;
 type WakeDictationCommandConfig = {
   submitCommand: string;
   cancelCommand: string;
@@ -125,6 +192,8 @@ type AssistantReplyPlaybackDetail = {
 const FOLLOW_UP_ASSISTANT_REPLY_EXPECTATION_WINDOW_MS = 3_000;
 const FOLLOW_UP_ASSISTANT_REPLY_SETTLE_GUARD_MS = 700;
 const FOLLOW_UP_RETRY_CHECK_INTERVAL_MS = 1_000;
+const VOICE_COMMAND_STOP_SUPPRESS_WAKE_RESUME_MS = 8_000;
+const MANUAL_STOP_SUPPRESS_WAKE_RESUME_MS = 5_000;
 
 const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInputProps>(
   (props, ref) => {
@@ -156,7 +225,23 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [isAddingFile, setIsAddingFile] = useState(false);
     const [imageVisionHint, setImageVisionHint] = useState(false);
     const [speechStatus, setSpeechStatus] = useState<InputSpeechStatus>('idle');
-    const [speechVisible, setSpeechVisible] = useState(window.electron.platform === 'darwin');
+    const [speechVisible, setSpeechVisible] = useState(
+      window.electron.platform === 'darwin' || window.electron.platform === 'win32'
+    );
+    const [desktopAssistantConfig, setDesktopAssistantConfig] = useState<DesktopAssistantConfig>({
+      masterEnabled: false,
+      launchAtLogin: true,
+      autoOpenPreviewGuide: true,
+      autoEnterSceneGuide: true,
+      guideVoiceCommandsEnabled: true,
+      assistantReplySpeakMode: DesktopAssistantReplySpeakMode.Summary,
+    });
+    const [desktopAssistantStatus, setDesktopAssistantStatus] = useState<DesktopAssistantStatus>({
+      masterEnabled: false,
+      state: DesktopAssistantState.Idle,
+      guideSession: null,
+    });
+    const currentSession = useSelector((state: RootState) => state.cowork.currentSession);
     const currentSessionStatus = useSelector((state: RootState) => state.cowork.currentSession?.status ?? null);
     const currentSessionId = useSelector((state: RootState) => state.cowork.currentSession?.id ?? null);
 
@@ -164,12 +249,22 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const folderButtonRef = useRef<HTMLButtonElement>(null);
     const dragDepthRef = useRef(0);
     const valueRef = useRef(value);
+    const speechSessionInitialValueRef = useRef('');
     const speechBaseValueRef = useRef('');
     const pendingSpeechVoiceCommandRef = useRef<PendingSpeechVoiceCommand>(null);
+    const pendingGuideVoiceCommandRef = useRef<PendingGuideVoiceCommand>(null);
     const wakeDictationConfigRef = useRef<WakeDictationCommandConfig | null>(null);
     const wakeDictationTimerRef = useRef<number | null>(null);
     const previousSessionStatusRef = useRef<string | null>(null);
     const manualSttProviderRef = useRef<string>(VoiceProvider.MacosNative);
+    const activeSpeechProviderRef = useRef<string>(VoiceProvider.None);
+    const deferredSpeechStopRef = useRef(false);
+    const deferredSpeechStopCommandRef = useRef<PendingSpeechVoiceCommand>(null);
+    const handleSubmitRef = useRef<((options?: { allowWhileSpeechActive?: boolean }) => Promise<void>) | null>(null);
+    const speechStopInFlightRef = useRef(false);
+    const speechSubmitAfterStopRef = useRef(false);
+    const speechStopSuppressWakeResumeMsRef = useRef(0);
+    const speechStopReasonRef = useRef<typeof SpeechStopReason[keyof typeof SpeechStopReason] | undefined>(undefined);
     const cloudSpeechRecordingRef = useRef<CloudSpeechRecording | null>(null);
     const speechFinalizingRef = useRef(false);
     const ttsSpeakingRef = useRef(false);
@@ -202,7 +297,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
-  const isMac = window.electron.platform === 'darwin';
+  const autoAttachedPresentationSkill = useMemo(() => resolveAutoAttachedDesktopAssistantSkill({
+    prompt: value,
+    desktopAssistantEnabled: desktopAssistantConfig.masterEnabled,
+    skills,
+    activeSkillIds,
+  }), [activeSkillIds, desktopAssistantConfig.masterEnabled, skills, value]);
   const isSpeechActive = speechStatus !== 'idle';
 
   const isLarge = size === 'large';
@@ -263,6 +363,45 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     });
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const syncDesktopAssistantState = async () => {
+      try {
+        const [config, status] = await Promise.all([
+          desktopAssistantService.getConfig(),
+          desktopAssistantService.getStatus(),
+        ]);
+        if (!active) {
+          return;
+        }
+        setDesktopAssistantConfig(config);
+        setDesktopAssistantStatus(status);
+      } catch (error) {
+        console.error('Failed to load desktop assistant state for cowork prompt input:', error);
+      }
+    };
+
+    void syncDesktopAssistantState();
+    const unsubscribe = desktopAssistantService.onStateChanged((status) => {
+      if (!active) {
+        return;
+      }
+      setDesktopAssistantStatus(status);
+      void desktopAssistantService.getConfig().then((config) => {
+        if (active) {
+          setDesktopAssistantConfig(config);
+        }
+      }).catch((error) => {
+        console.error('Failed to refresh desktop assistant config for cowork prompt input:', error);
+      });
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
   const resolveSpeechVoiceCommandForCurrentContext = useCallback((speechText: string) => {
     const activeConfig = getActiveSpeechCommandConfig();
     const primaryResult = resolveSpeechVoiceCommand(speechText, activeConfig);
@@ -282,6 +421,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     });
   }, [getActiveSpeechCommandConfig]);
 
+  const resolveGuideVoiceCommandForCurrentContext = useCallback((speechText: string): PendingGuideVoiceCommand => {
+    if (!desktopAssistantConfig.masterEnabled || !desktopAssistantConfig.guideVoiceCommandsEnabled) {
+      return null;
+    }
+    return resolveGuideVoiceCommand(speechText, desktopAssistantStatus.guideSession).action;
+  }, [desktopAssistantConfig.guideVoiceCommandsEnabled, desktopAssistantConfig.masterEnabled, desktopAssistantStatus.guideSession]);
+
   const applyFinalSpeechText = useCallback(async (rawText: string) => {
     const correctedText = await correctSpeechTextIfNeeded(rawText);
     const shouldSuppressCommandMatch = !wakeDictationConfigRef.current
@@ -292,13 +438,151 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           cleanedSpeechText: correctedText,
         }
       : resolveSpeechVoiceCommandForCurrentContext(correctedText);
-    const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+    const guideCommand = commandResult.action
+      ? null
+      : resolveGuideVoiceCommandForCurrentContext(correctedText);
+    pendingGuideVoiceCommandRef.current = guideCommand;
+    const nextValue = buildSpeechDraftText(
+      speechBaseValueRef.current,
+      guideCommand ? '' : commandResult.cleanedSpeechText,
+    );
     speechBaseValueRef.current = nextValue;
+    valueRef.current = nextValue;
     setValue(nextValue);
     if (commandResult.action) {
       pendingSpeechVoiceCommandRef.current = commandResult.action;
     }
-  }, [correctSpeechTextIfNeeded, resolveSpeechVoiceCommandForCurrentContext, shouldSuppressSpeechTriggerMatch]);
+  }, [
+    correctSpeechTextIfNeeded,
+    resolveGuideVoiceCommandForCurrentContext,
+    resolveSpeechVoiceCommandForCurrentContext,
+    shouldSuppressSpeechTriggerMatch,
+  ]);
+
+  const clearSpeechCommandState = useCallback(() => {
+    pendingSpeechVoiceCommandRef.current = null;
+    pendingGuideVoiceCommandRef.current = null;
+    wakeDictationConfigRef.current = null;
+    if (wakeDictationTimerRef.current) {
+      window.clearTimeout(wakeDictationTimerRef.current);
+      wakeDictationTimerRef.current = null;
+    }
+  }, []);
+
+  const requestLiveSpeechStop = useCallback((options?: {
+    submitAfterStop?: boolean;
+    suppressWakeInputResumeMs?: number;
+    reason?: typeof SpeechStopReason[keyof typeof SpeechStopReason];
+  }) => {
+    if (speechStopInFlightRef.current) {
+      if (options?.submitAfterStop) {
+        speechSubmitAfterStopRef.current = true;
+      }
+      if ((options?.suppressWakeInputResumeMs ?? 0) > speechStopSuppressWakeResumeMsRef.current) {
+        speechStopSuppressWakeResumeMsRef.current = options?.suppressWakeInputResumeMs ?? 0;
+      }
+      if (options?.reason === SpeechStopReason.VoiceCommandStop) {
+        speechStopReasonRef.current = SpeechStopReason.VoiceCommandStop;
+      }
+      return;
+    }
+
+    speechStopInFlightRef.current = true;
+    if (options?.submitAfterStop) {
+      speechSubmitAfterStopRef.current = true;
+    }
+    speechStopSuppressWakeResumeMsRef.current = options?.suppressWakeInputResumeMs ?? 0;
+    speechStopReasonRef.current = options?.reason;
+
+    void window.electron.speech.stop({
+      reason: speechStopReasonRef.current,
+      suppressWakeInputResumeMs: speechStopSuppressWakeResumeMsRef.current,
+    })
+      .then((result) => {
+        if (!result.success) {
+          window.dispatchEvent(new CustomEvent('app:showToast', {
+            detail: resolveSpeechErrorMessage(result.error, result.error),
+          }));
+          return;
+        }
+
+        // Some stop paths complete in the main process without a trailing
+        // foreground `stopped` event reaching the renderer. Close the local
+        // UI state eagerly so the mic button never gets stuck in "recording".
+        if (!speechFinalizingRef.current) {
+          finalizeStoppedSpeech(pendingSpeechVoiceCommandRef.current);
+        }
+
+        if (speechSubmitAfterStopRef.current) {
+          speechSubmitAfterStopRef.current = false;
+          void handleSubmitRef.current?.({ allowWhileSpeechActive: true });
+        }
+      })
+      .finally(() => {
+        speechStopInFlightRef.current = false;
+        speechStopSuppressWakeResumeMsRef.current = 0;
+        speechStopReasonRef.current = undefined;
+      });
+  }, []);
+
+  function finalizeStoppedSpeech(pendingVoiceCommand: PendingSpeechVoiceCommand): void {
+    const pendingGuideVoiceCommand = pendingGuideVoiceCommandRef.current;
+    deferredSpeechStopRef.current = false;
+    deferredSpeechStopCommandRef.current = null;
+    activeSpeechProviderRef.current = VoiceProvider.None;
+    setSpeechStatus('idle');
+    if (speechSubmitAfterStopRef.current) {
+      clearSpeechCommandState();
+      return;
+    }
+    if (pendingVoiceCommand === SpeechVoiceCommandAction.Submit) {
+      clearSpeechCommandState();
+      void handleSubmitRef.current?.({ allowWhileSpeechActive: true });
+      return;
+    }
+
+    if (pendingVoiceCommand === SpeechVoiceCommandAction.Stop && wakeDictationConfigRef.current) {
+      const restoredValue = speechSessionInitialValueRef.current;
+      speechBaseValueRef.current = restoredValue;
+      valueRef.current = restoredValue;
+      setValue(restoredValue);
+    }
+
+    if (pendingGuideVoiceCommand) {
+      switch (pendingGuideVoiceCommand) {
+        case GuideVoiceCommandAction.NextScene:
+          void desktopAssistantService.nextScene();
+          break;
+        case GuideVoiceCommandAction.PreviousScene:
+          void desktopAssistantService.previousScene();
+          break;
+        case GuideVoiceCommandAction.PauseGuide:
+          void desktopAssistantService.pauseGuide();
+          break;
+        case GuideVoiceCommandAction.ResumeGuide:
+          void desktopAssistantService.resumeGuide();
+          break;
+        case GuideVoiceCommandAction.StopGuide:
+          void desktopAssistantService.stopGuide();
+          break;
+        case GuideVoiceCommandAction.ReplayScene:
+          void desktopAssistantService.replayScene();
+          break;
+        case GuideVoiceCommandAction.FirstScene:
+          void desktopAssistantService.goToScene(0);
+          break;
+        case GuideVoiceCommandAction.SummaryScene: {
+          const summarySceneIndex = Math.max((desktopAssistantStatus.guideSession?.scenes.length ?? 1) - 1, 0);
+          void desktopAssistantService.goToScene(summarySceneIndex);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
+    clearSpeechCommandState();
+  }
 
   const clearPendingFollowUpDictation = useCallback(() => {
     pendingFollowUpDictationRef.current = null;
@@ -418,6 +702,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       || provider === VoiceProvider.CloudAliyun;
   }, []);
 
+  const isLiveSpeechProvider = useCallback((provider: string): boolean => {
+    return provider === VoiceProvider.MacosNative
+      || provider === VoiceProvider.LocalSherpaOnnx;
+  }, []);
+
   const startCloudSpeechRecordingForCurrentProvider = useCallback(async (): Promise<void> => {
     setSpeechStatus('requesting_permission');
     cloudSpeechRecordingRef.current = await startCloudSpeechRecording();
@@ -514,6 +803,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const syncVoiceCapability = (matrix: VoiceCapabilityMatrix) => {
       const manualStt = matrix.capabilities['manual_stt'];
       manualSttProviderRef.current = manualStt?.selectedProvider ?? VoiceProvider.None;
+      const sherpaCanFallbackToMacosNative = Boolean(
+        manualStt
+        && window.electron.platform === 'darwin'
+        && manualStt.selectedProvider === VoiceProvider.LocalSherpaOnnx
+        && manualStt.enabled
+        && manualStt.platformSupported
+        && manualStt.packaged
+      );
       const shouldShowSpeechButton = Boolean(
         manualStt?.enabled
         && manualStt.platformSupported
@@ -521,6 +818,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         && (
           manualStt.selectedProvider === VoiceProvider.MacosNative
           || manualStt.runtimeAvailable
+          || sherpaCanFallbackToMacosNative
         )
       );
       setSpeechVisible(Boolean(
@@ -550,6 +848,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const unsubscribe = window.electron.speech.onStateChanged((event) => {
       switch (event.type) {
         case 'listening':
+          deferredSpeechStopRef.current = false;
+          deferredSpeechStopCommandRef.current = null;
           speechFinalizingRef.current = false;
           setSpeechStatus('listening');
           break;
@@ -563,33 +863,72 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               }
             : resolveSpeechVoiceCommandForCurrentContext(event.text || '');
           const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
+          valueRef.current = nextValue;
           setValue(nextValue);
           if (commandResult.action) {
             speechBaseValueRef.current = nextValue;
             pendingSpeechVoiceCommandRef.current = commandResult.action;
-            void window.electron.speech.stop().catch(() => undefined);
+            requestLiveSpeechStop({
+              submitAfterStop: commandResult.action === SpeechVoiceCommandAction.Submit,
+              suppressWakeInputResumeMs: commandResult.action === SpeechVoiceCommandAction.Stop
+                ? VOICE_COMMAND_STOP_SUPPRESS_WAKE_RESUME_MS
+                : 0,
+              reason: commandResult.action === SpeechVoiceCommandAction.Stop
+                ? SpeechStopReason.VoiceCommandStop
+                : undefined,
+            });
           }
           break;
         }
         case 'final': {
+          const keepListeningAfterFinal = activeSpeechProviderRef.current === VoiceProvider.LocalSherpaOnnx;
           speechFinalizingRef.current = true;
-          setSpeechStatus('transcribing');
+          if (!keepListeningAfterFinal) {
+            setSpeechStatus('transcribing');
+          }
           void applyFinalSpeechText(event.text || '').finally(() => {
+            const pendingVoiceCommand = pendingSpeechVoiceCommandRef.current;
+            const pendingGuideVoiceCommand = pendingGuideVoiceCommandRef.current;
             speechFinalizingRef.current = false;
+            if (deferredSpeechStopRef.current) {
+              finalizeStoppedSpeech(deferredSpeechStopCommandRef.current ?? pendingVoiceCommand);
+              return;
+            }
+            if (pendingVoiceCommand || pendingGuideVoiceCommand) {
+              requestLiveSpeechStop({
+                submitAfterStop: pendingVoiceCommand === SpeechVoiceCommandAction.Submit,
+                suppressWakeInputResumeMs: pendingVoiceCommand === SpeechVoiceCommandAction.Stop
+                  ? VOICE_COMMAND_STOP_SUPPRESS_WAKE_RESUME_MS
+                  : 0,
+                reason: pendingVoiceCommand === SpeechVoiceCommandAction.Stop
+                  ? SpeechStopReason.VoiceCommandStop
+                  : undefined,
+              });
+              return;
+            }
+            if (keepListeningAfterFinal && activeSpeechProviderRef.current === VoiceProvider.LocalSherpaOnnx) {
+              setSpeechStatus('listening');
+              return;
+            }
             setSpeechStatus('idle');
           });
           break;
         }
         case 'stopped':
           if (speechFinalizingRef.current) {
+            deferredSpeechStopRef.current = true;
+            deferredSpeechStopCommandRef.current = pendingSpeechVoiceCommandRef.current;
             return;
           }
-          setSpeechStatus('idle');
+          finalizeStoppedSpeech(pendingSpeechVoiceCommandRef.current);
           break;
         case 'error':
+          deferredSpeechStopRef.current = false;
+          deferredSpeechStopCommandRef.current = null;
           speechFinalizingRef.current = false;
+          activeSpeechProviderRef.current = VoiceProvider.None;
           setSpeechStatus('idle');
-          pendingSpeechVoiceCommandRef.current = null;
+          clearSpeechCommandState();
           if (event.code === SpeechErrorCode.SpeechRequestCancelled) {
             return;
           }
@@ -663,12 +1002,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
         cloudSpeechRecordingRef.current = null;
       }
-      void window.electron.speech.stop().catch(() => undefined);
+      requestLiveSpeechStop();
     };
   }, [
     applyFinalSpeechText,
     clearPendingFollowUpDictation,
+    clearSpeechCommandState,
     currentSessionId,
+    requestLiveSpeechStop,
     resolveSpeechVoiceCommandForCurrentContext,
     shouldSuppressSpeechTriggerMatch,
     tryStartPendingFollowUpDictation,
@@ -686,6 +1027,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
     pendingSpeechVoiceCommandRef.current = null;
+    pendingGuideVoiceCommandRef.current = null;
     speechFinalizingRef.current = false;
     if (cloudSpeechRecordingRef.current) {
       void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
@@ -693,7 +1035,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       setSpeechStatus('idle');
       return;
     }
-    void window.electron.speech.stop().catch(() => undefined);
+    requestLiveSpeechStop();
   }, [draftKey]);
 
   useEffect(() => {
@@ -701,6 +1043,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
     pendingSpeechVoiceCommandRef.current = null;
+    pendingGuideVoiceCommandRef.current = null;
     speechFinalizingRef.current = false;
     if (cloudSpeechRecordingRef.current) {
       void cloudSpeechRecordingRef.current.cancel().catch(() => undefined);
@@ -708,8 +1051,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       setSpeechStatus('idle');
       return;
     }
-    void window.electron.speech.stop().catch(() => undefined);
-  }, [isStreaming, isSpeechActive]);
+    requestLiveSpeechStop();
+  }, [isStreaming, isSpeechActive, requestLiveSpeechStop]);
 
   useEffect(() => {
     if (value !== draftPrompt) {
@@ -720,22 +1063,163 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
   }, [value, draftPrompt, dispatch, draftKey]);
 
-  const handleSubmit = useCallback(async () => {
+  const resetComposerState = useCallback(() => {
+    valueRef.current = '';
+    setValue('');
+    speechBaseValueRef.current = '';
+    pendingSpeechVoiceCommandRef.current = null;
+    pendingGuideVoiceCommandRef.current = null;
+    dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+    dispatch(clearDraftAttachments(draftKey));
+    setImageVisionHint(false);
+  }, [dispatch, draftKey]);
+
+  const tryHandleDesktopAssistantPromptCommand = useCallback(async (
+    prompt: string,
+    attachmentCount: number,
+  ): Promise<boolean> => {
+    if (!desktopAssistantConfig.masterEnabled || attachmentCount > 0 || !currentSession) {
+      return false;
+    }
+
+    const command = resolveDesktopAssistantPromptCommand(prompt);
+    if (command.action !== DesktopAssistantPromptCommandAction.StartLatestGuide) {
+      return false;
+    }
+
+    let guideSource = findGuideSourceInSession(currentSession);
+
+    if (!guideSource) {
+      const refreshedSession = await coworkService.loadSession(currentSession.id);
+      guideSource = findGuideSourceInSession(refreshedSession);
+    }
+
+    if (!guideSource) {
+      const recentSessionsResult = await window.electron.cowork.listSessions();
+      const recentSessionIds = (recentSessionsResult.sessions ?? [])
+        .map((session) => session.id)
+        .filter((sessionId) => !sessionId.startsWith('temp-'))
+        .slice(0, 6);
+
+      for (const sessionId of recentSessionIds) {
+        const result = await window.electron.cowork.getSession(sessionId);
+        if (!result.success || !result.session) {
+          continue;
+        }
+        guideSource = findGuideSourceInSession(result.session);
+        if (guideSource) {
+          break;
+        }
+      }
+    }
+
+    if (!guideSource) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('desktopAssistantGuideSourceNotFound'),
+      }));
+      return true;
+    }
+
+    const sessionForGuide = guideSource.session;
+    const latestGuideMessage = guideSource.message;
+
+    const guideContent = resolveGuideContentFromConversation(latestGuideMessage, sessionForGuide.messages, {
+      cwd: sessionForGuide.cwd,
+    });
+    if (!guideContent.eligible || !guideContent.previewTarget) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('desktopAssistantGuideSourceNotFound'),
+      }));
+      return true;
+    }
+
+    const preparedGuideContext = await prepareGuideStartContext({
+      message: latestGuideMessage,
+      previewTarget: guideContent.previewTarget,
+      scenes: guideContent.scenes,
+      cwd: sessionForGuide.cwd,
+    });
+    if (!preparedGuideContext.success || !preparedGuideContext.previewTarget) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: preparedGuideContext.error || i18nService.t('desktopAssistantState_error'),
+      }));
+      return true;
+    }
+
+    const startResult = await desktopAssistantService.startGuide({
+      sessionId: sessionForGuide.id,
+      messageId: latestGuideMessage.id,
+      source: GuideSource.Manual,
+      previewTarget: preparedGuideContext.previewTarget,
+      scenes: preparedGuideContext.scenes,
+    });
+    if (!startResult.success) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: startResult.error || i18nService.t('desktopAssistantState_error'),
+      }));
+      return true;
+    }
+
+    if (preparedGuideContext.previewDescriptor?.mode !== GuidePreviewMode.Linked) {
+      const previewResult = await openGuideScenePreview(
+        preparedGuideContext.previewTarget,
+        preparedGuideContext.scenes[0]?.anchor,
+      );
+      if (!previewResult.success) {
+        if (startResult.guideSession) {
+          void desktopAssistantService.stopGuide();
+        }
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: previewResult.error || i18nService.t('desktopAssistantState_error'),
+        }));
+        return true;
+      }
+    }
+
+    resetComposerState();
+    return true;
+  }, [currentSession, desktopAssistantConfig.masterEnabled, resetComposerState]);
+
+  const handleSubmit = useCallback(async (options?: { allowWhileSpeechActive?: boolean }) => {
     if (showFolderSelector && !workingDirectory?.trim()) {
       setShowFolderRequiredWarning(true);
       return;
     }
 
-    const trimmedValue = value.trim();
-    if ((!trimmedValue && attachments.length === 0) || isStreaming || disabled || isSpeechActive) return;
+    const currentValue = valueRef.current;
+    const trimmedValue = currentValue.trim();
+    if (
+      (!trimmedValue && attachments.length === 0)
+      || isStreaming
+      || disabled
+      || (isSpeechActive && options?.allowWhileSpeechActive !== true)
+    ) {
+      return;
+    }
     setShowFolderRequiredWarning(false);
+
+    if (await tryHandleDesktopAssistantPromptCommand(trimmedValue, attachments.length)) {
+      return;
+    }
 
     // Get active skills prompts and combine them
     const activeSkills = activeSkillIds
       .map(id => skills.find(s => s.id === id))
       .filter((s): s is Skill => s !== undefined);
-    const skillPrompt = activeSkills.length > 0
-      ? activeSkills.map(buildInlinedSkillPrompt).join('\n\n')
+    const autoAttachedPresentationRuntimeContract = buildAutoAttachedPresentationHtmlRuntimeContract(autoAttachedPresentationSkill);
+    const skillPromptParts = [
+      ...activeSkills.map(buildInlinedSkillPrompt),
+      ...(autoAttachedPresentationSkill ? [buildInlinedSkillPrompt(autoAttachedPresentationSkill)] : []),
+      ...(autoAttachedPresentationRuntimeContract ? [autoAttachedPresentationRuntimeContract] : []),
+    ];
+    const skillPrompt = skillPromptParts.length > 0
+      ? skillPromptParts.join('\n\n')
+      : undefined;
+    const submissionMetadata: CoworkSubmissionMetadata | undefined = autoAttachedPresentationSkill
+      ? {
+        userMessageMetadata: buildDesktopAssistantAutoSkillMetadata(autoAttachedPresentationSkill),
+        transientSkillIds: [autoAttachedPresentationSkill.id],
+      }
       : undefined;
 
     // Extract image attachments (with base64 data) for vision-capable models
@@ -772,39 +1256,37 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         base64Lengths: imageAtts.map(a => a.base64Data.length),
       });
     }
-    const result = await onSubmit(finalPrompt, skillPrompt, imageAtts.length > 0 ? imageAtts : undefined);
+    const result = await onSubmit(
+      finalPrompt,
+      skillPrompt,
+      imageAtts.length > 0 ? imageAtts : undefined,
+      submissionMetadata,
+    );
     if (result === false) return;
-    setValue('');
-    speechBaseValueRef.current = '';
-    pendingSpeechVoiceCommandRef.current = null;
-    dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
-    dispatch(clearDraftAttachments(draftKey));
-    setImageVisionHint(false);
-  }, [value, isStreaming, disabled, isSpeechActive, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch]);
+    if (trimmedValue && desktopAssistantConfig.masterEnabled) {
+      const matchedGuideScene = matchGuideSceneForQuery(trimmedValue, desktopAssistantStatus.guideSession);
+      if (matchedGuideScene) {
+        void desktopAssistantService.goToScene(matchedGuideScene.sceneIndex);
+      }
+    }
+    resetComposerState();
+  }, [value, isStreaming, disabled, isSpeechActive, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, desktopAssistantConfig.masterEnabled, desktopAssistantStatus.guideSession, autoAttachedPresentationSkill, resetComposerState, tryHandleDesktopAssistantPromptCommand]);
+
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
 
   useEffect(() => {
     if (speechStatus !== 'idle') {
       return;
     }
 
-    if (pendingSpeechVoiceCommandRef.current !== SpeechVoiceCommandAction.Submit) {
-      pendingSpeechVoiceCommandRef.current = null;
-      wakeDictationConfigRef.current = null;
-      if (wakeDictationTimerRef.current) {
-        window.clearTimeout(wakeDictationTimerRef.current);
-        wakeDictationTimerRef.current = null;
-      }
+    if (pendingSpeechVoiceCommandRef.current) {
       return;
     }
 
-    pendingSpeechVoiceCommandRef.current = null;
-    wakeDictationConfigRef.current = null;
-    if (wakeDictationTimerRef.current) {
-      window.clearTimeout(wakeDictationTimerRef.current);
-      wakeDictationTimerRef.current = null;
-    }
-    void handleSubmit();
-  }, [handleSubmit, speechStatus]);
+    clearSpeechCommandState();
+  }, [clearSpeechCommandState, speechStatus]);
 
   useEffect(() => {
     const previousStatus = previousSessionStatusRef.current;
@@ -869,11 +1351,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   useEffect(() => {
     const handleWakeDictationStart = (event: Event) => {
       const detail = (event as CustomEvent<WakeDictationCommandConfig>).detail;
-      if (!detail || disabled || isStreaming || !isMac || !speechVisible) {
+      if (!detail || disabled || isStreaming || !speechVisible) {
         return;
       }
       const manualProvider = manualSttProviderRef.current;
-      if (manualProvider !== VoiceProvider.MacosNative && !isCloudRecordedSpeechProvider(manualProvider)) {
+      if (!isLiveSpeechProvider(manualProvider) && !isCloudRecordedSpeechProvider(manualProvider)) {
         return;
       }
       if (detail.source === 'follow_up' && shouldBlockFollowUpDictationStart()) {
@@ -882,7 +1364,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       }
 
       speechBaseValueRef.current = valueRef.current;
+      speechSessionInitialValueRef.current = valueRef.current;
       pendingSpeechVoiceCommandRef.current = null;
+      pendingGuideVoiceCommandRef.current = null;
       wakeDictationConfigRef.current = detail;
       if (wakeDictationTimerRef.current) {
         window.clearTimeout(wakeDictationTimerRef.current);
@@ -890,6 +1374,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       wakeDictationTimerRef.current = window.setTimeout(() => {
         if (speechStatus !== 'idle') {
           pendingSpeechVoiceCommandRef.current = null;
+          pendingGuideVoiceCommandRef.current = null;
           wakeDictationConfigRef.current = null;
           if (cloudSpeechRecordingRef.current) {
             const recording = cloudSpeechRecordingRef.current;
@@ -897,7 +1382,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             void recording.cancel().catch(() => undefined);
             setSpeechStatus('idle');
           } else {
-            void window.electron.speech.stop().catch(() => undefined);
+            requestLiveSpeechStop();
           }
         }
         wakeDictationTimerRef.current = null;
@@ -922,6 +1407,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       void window.electron.speech.start({ source: detail.source ?? 'wake' }).then((result) => {
         if (!result.success) {
           setSpeechStatus('idle');
+          activeSpeechProviderRef.current = VoiceProvider.None;
           wakeDictationConfigRef.current = null;
           if (wakeDictationTimerRef.current) {
             window.clearTimeout(wakeDictationTimerRef.current);
@@ -938,7 +1424,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
             detail: resolveSpeechErrorMessage(result.error, result.error),
           }));
+          return;
         }
+
+        activeSpeechProviderRef.current = result.provider ?? manualProvider;
+        setSpeechStatus((previousStatus) => previousStatus === 'requesting_permission' ? 'listening' : previousStatus);
       });
     };
 
@@ -949,7 +1439,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [
     disabled,
     isCloudRecordedSpeechProvider,
-    isMac,
+    isLiveSpeechProvider,
     isStreaming,
     scheduleFollowUpStartRetry,
     shouldBlockFollowUpDictationStart,
@@ -1088,6 +1578,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     if (isSpeechActive) {
       pendingSpeechVoiceCommandRef.current = null;
+      pendingGuideVoiceCommandRef.current = null;
       if (isCloudRecordedSpeechProvider(manualProvider) && cloudSpeechRecordingRef.current) {
         try {
           await finishCloudSpeechRecording(speechSource === 'follow_up' ? 'follow_up' : 'manual');
@@ -1102,15 +1593,17 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         }
       }
 
-      const result = await window.electron.speech.stop();
-      if (!result.success) {
-        window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
-      }
+      requestLiveSpeechStop({
+        reason: SpeechStopReason.ManualToggle,
+        suppressWakeInputResumeMs: MANUAL_STOP_SUPPRESS_WAKE_RESUME_MS,
+      });
       return;
     }
 
     speechBaseValueRef.current = valueRef.current;
+    speechSessionInitialValueRef.current = valueRef.current;
     pendingSpeechVoiceCommandRef.current = null;
+    pendingGuideVoiceCommandRef.current = null;
     if (pendingFollowUpDictationRef.current?.source === 'follow_up') {
       clearPendingFollowUpDictation();
     }
@@ -1118,6 +1611,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if (isCloudRecordedSpeechProvider(manualProvider)) {
       try {
         await startCloudSpeechRecordingForCurrentProvider();
+        activeSpeechProviderRef.current = VoiceProvider.None;
       } catch (error) {
         cloudSpeechRecordingRef.current = null;
         setSpeechStatus('idle');
@@ -1128,7 +1622,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
 
-    if (!isMac || manualProvider !== VoiceProvider.MacosNative) {
+    if (!isLiveSpeechProvider(manualProvider)) {
       setSpeechStatus('idle');
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkSpeechUnavailable') }));
       return;
@@ -1138,14 +1632,19 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const result = await window.electron.speech.start({ source: 'manual' });
     if (!result.success) {
       setSpeechStatus('idle');
+      activeSpeechProviderRef.current = VoiceProvider.None;
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
+      return;
     }
+
+    activeSpeechProviderRef.current = result.provider ?? manualProvider;
+    setSpeechStatus((previousStatus) => previousStatus === 'requesting_permission' ? 'listening' : previousStatus);
   }, [
     clearPendingFollowUpDictation,
     disabled,
     finishCloudSpeechRecording,
     isCloudRecordedSpeechProvider,
-    isMac,
+    isLiveSpeechProvider,
     isSpeechActive,
     isStreaming,
     speechVisible,
@@ -1459,6 +1958,16 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           </button>
         </div>
       )}
+      {autoAttachedPresentationSkill && (
+        <div className="mb-2 flex items-start gap-1.5 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs text-primary">
+          <span className="mt-0.5 inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold">
+            S
+          </span>
+          <span>
+            {i18nService.t('desktopAssistantAutoSkillHint').replace('{skill}', autoAttachedPresentationSkill.name)}
+          </span>
+        </div>
+      )}
       {speechVisible && speechStatus !== 'idle' && (
         <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs text-primary">
           {speechStatus === 'requesting_permission'
@@ -1526,7 +2035,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   </>
                 )}
                 {showModelSelector && !remoteManaged && <ModelSelector dropdownDirection="up" />}
-                {isMac && speechVisible && !remoteManaged && (
+                {speechVisible && !remoteManaged && (
                   <button
                     type="button"
                     onClick={handleSpeechToggle}
@@ -1577,7 +2086,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 ) : (
                   <button
                     type="button"
-                    onClick={handleSubmit}
+                    onClick={() => {
+                      void handleSubmit();
+                    }}
                     disabled={!canSubmit}
                     className="p-2 rounded-xl bg-primary hover:bg-primary-hover text-white transition-all shadow-subtle hover:shadow-card active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label="Send"
@@ -1604,7 +2115,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
             {!remoteManaged && (
               <div className="flex items-center gap-1">
-                {isMac && speechVisible && (
+                {speechVisible && (
                   <button
                     type="button"
                     onClick={handleSpeechToggle}
@@ -1645,7 +2156,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             ) : (
               <button
                 type="button"
-                onClick={handleSubmit}
+                onClick={() => {
+                  void handleSubmit();
+                }}
                 disabled={!canSubmit}
                 className="flex-shrink-0 p-2 rounded-lg bg-primary hover:bg-primary-hover text-white transition-all shadow-subtle hover:shadow-card active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 aria-label="Send"

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import type { Platform } from '../shared/platform';
+import { DesktopAssistantIpcChannel } from '../shared/desktopAssistant/constants';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { WakeInputIpcChannel } from '../shared/wakeInput/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
@@ -175,9 +176,9 @@ contextBridge.exposeInMainWorld('electron', {
   },
   cowork: {
     // Session management
-    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) =>
+    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>; userMessageMetadata?: Record<string, unknown> }) =>
       ipcRenderer.invoke('cowork:session:start', options),
-    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) =>
+    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>; userMessageMetadata?: Record<string, unknown> }) =>
       ipcRenderer.invoke('cowork:session:continue', options),
     stopSession: (sessionId: string) =>
       ipcRenderer.invoke('cowork:session:stop', sessionId),
@@ -301,6 +302,7 @@ contextBridge.exposeInMainWorld('electron', {
   voice: {
     getCapabilityMatrix: () => ipcRenderer.invoke(VoiceIpcChannel.GetCapabilityMatrix),
     getConfig: () => ipcRenderer.invoke(VoiceIpcChannel.GetConfig),
+    getLocalSherpaOnnxStatus: () => ipcRenderer.invoke(VoiceIpcChannel.GetLocalSherpaOnnxStatus),
     getLocalWhisperCppStatus: () => ipcRenderer.invoke(VoiceIpcChannel.GetLocalWhisperCppStatus),
     getLocalQwen3TtsStatus: () => ipcRenderer.invoke(VoiceIpcChannel.GetLocalQwen3TtsStatus),
     ensureLocalWhisperCppDirectories: () => ipcRenderer.invoke(VoiceIpcChannel.EnsureLocalWhisperCppDirectories),
@@ -322,7 +324,7 @@ contextBridge.exposeInMainWorld('electron', {
   speech: {
     getAvailability: () => ipcRenderer.invoke(SpeechIpcChannel.GetAvailability),
     start: (options?: { locale?: string; source?: string }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
-    stop: () => ipcRenderer.invoke(SpeechIpcChannel.Stop),
+    stop: (options?: { reason?: string; suppressWakeInputResumeMs?: number }) => ipcRenderer.invoke(SpeechIpcChannel.Stop, options),
     transcribeAudio: (options: { audioBase64: string; mimeType: string; source?: string }) => ipcRenderer.invoke(SpeechIpcChannel.TranscribeAudio, options),
     onStateChanged: (callback: (data: { type: string; text?: string; code?: string; message?: string }) => void) => {
       const handler = (_event: any, data: { type: string; text?: string; code?: string; message?: string }) => callback(data);
@@ -356,6 +358,24 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = (_event: any, data: Record<string, unknown>) => callback(data);
       ipcRenderer.on(TtsIpcChannel.StateChanged, handler);
       return () => ipcRenderer.removeListener(TtsIpcChannel.StateChanged, handler);
+    },
+  },
+  desktopAssistant: {
+    getConfig: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.GetConfig),
+    updateConfig: (config?: Record<string, unknown>) => ipcRenderer.invoke(DesktopAssistantIpcChannel.UpdateConfig, config),
+    getStatus: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.GetStatus),
+    startGuide: (request: Record<string, unknown>) => ipcRenderer.invoke(DesktopAssistantIpcChannel.StartGuide, request),
+    pauseGuide: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.PauseGuide),
+    resumeGuide: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.ResumeGuide),
+    stopGuide: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.StopGuide),
+    nextScene: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.NextScene),
+    previousScene: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.PreviousScene),
+    goToScene: (sceneIndex: number) => ipcRenderer.invoke(DesktopAssistantIpcChannel.GoToScene, sceneIndex),
+    replayScene: () => ipcRenderer.invoke(DesktopAssistantIpcChannel.ReplayScene),
+    onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
+      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      ipcRenderer.on(DesktopAssistantIpcChannel.StateChanged, handler);
+      return () => ipcRenderer.removeListener(DesktopAssistantIpcChannel.StateChanged, handler);
     },
   },
   shell: {

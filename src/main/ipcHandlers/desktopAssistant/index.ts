@@ -1,0 +1,1 @@
+export { registerDesktopAssistantHandlers } from './handlers';

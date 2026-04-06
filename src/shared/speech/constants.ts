@@ -71,6 +71,10 @@ export interface SpeechAvailability {
   locale?: string;
   listening: boolean;
   error?: string;
+  requestedProvider?: string;
+  actualProvider?: string;
+  fallbackActive?: boolean;
+  fallbackReason?: string;
 }
 
 export const SpeechStartSource = {
@@ -83,6 +87,17 @@ export type SpeechStartSource = typeof SpeechStartSource[keyof typeof SpeechStar
 export interface SpeechStartOptions {
   locale?: string;
   source?: SpeechStartSource;
+}
+
+export const SpeechStopReason = {
+  ManualToggle: 'manual_toggle',
+  VoiceCommandStop: 'voice_command_stop',
+} as const;
+export type SpeechStopReason = typeof SpeechStopReason[keyof typeof SpeechStopReason];
+
+export interface SpeechStopOptions {
+  reason?: SpeechStopReason;
+  suppressWakeInputResumeMs?: number;
 }
 
 export interface SpeechTranscribeAudioOptions {

@@ -30,6 +30,11 @@ export interface CoworkMessageMetadata {
   [key: string]: unknown;
 }
 
+export interface CoworkSubmissionMetadata {
+  userMessageMetadata?: Record<string, unknown>;
+  transientSkillIds?: string[];
+}
+
 // Cowork message
 export interface CoworkMessage {
   id: string;
@@ -167,6 +172,7 @@ export interface CoworkStartOptions {
   activeSkillIds?: string[];
   agentId?: string;
   imageAttachments?: CoworkImageAttachment[];
+  userMessageMetadata?: Record<string, unknown>;
 }
 
 // Continue session options
@@ -176,6 +182,7 @@ export interface CoworkContinueOptions {
   systemPrompt?: string;
   activeSkillIds?: string[];
   imageAttachments?: CoworkImageAttachment[];
+  userMessageMetadata?: Record<string, unknown>;
 }
 
 // IPC result types

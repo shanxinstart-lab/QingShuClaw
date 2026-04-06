@@ -1433,6 +1433,7 @@ export class CoworkRunner extends EventEmitter {
       workspaceRoot?: string;
       confirmationMode?: 'modal' | 'text';
       imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>;
+      userMessageMetadata?: Record<string, unknown>;
     } = {}
   ): Promise<void> {
     this.stoppedSessions.delete(sessionId);
@@ -1452,6 +1453,9 @@ export class CoworkRunner extends EventEmitter {
       }
       if (options.imageAttachments?.length) {
         messageMetadata.imageAttachments = options.imageAttachments;
+      }
+      if (options.userMessageMetadata && typeof options.userMessageMetadata === 'object') {
+        Object.assign(messageMetadata, options.userMessageMetadata);
       }
       const userMessage = this.store.addMessage(sessionId, {
         type: 'user',
@@ -1525,7 +1529,7 @@ export class CoworkRunner extends EventEmitter {
     }
   }
 
-  async continueSession(sessionId: string, prompt: string, options: { systemPrompt?: string; skillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> } = {}): Promise<void> {
+  async continueSession(sessionId: string, prompt: string, options: { systemPrompt?: string; skillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>; userMessageMetadata?: Record<string, unknown> } = {}): Promise<void> {
     this.stoppedSessions.delete(sessionId);
     const activeSession = this.activeSessions.get(sessionId);
     if (!activeSession) {
@@ -1534,6 +1538,7 @@ export class CoworkRunner extends EventEmitter {
         skillIds: options.skillIds,
         systemPrompt: options.systemPrompt,
         imageAttachments: options.imageAttachments,
+        userMessageMetadata: options.userMessageMetadata,
       });
       return;
     }
@@ -1548,6 +1553,9 @@ export class CoworkRunner extends EventEmitter {
     }
     if (options.imageAttachments?.length) {
       messageMetadata.imageAttachments = options.imageAttachments;
+    }
+    if (options.userMessageMetadata && typeof options.userMessageMetadata === 'object') {
+      Object.assign(messageMetadata, options.userMessageMetadata);
     }
     console.log('[CoworkRunner] continueSession: building user message', {
       sessionId,

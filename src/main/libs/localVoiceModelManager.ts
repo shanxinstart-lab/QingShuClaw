@@ -2,7 +2,9 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_pro
 import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
+import * as tar from 'tar';
 import {
+  SherpaOnnxAsrModelVariant,
   VoiceLocalModelInstallBackend,
   VoiceLocalModelInstallState,
   VoiceLocalModelKind,
@@ -13,10 +15,12 @@ import {
 } from '../../shared/voice/constants';
 
 const LOCAL_VOICE_MODELS_DIR = 'voice-models';
+const LOCAL_SHERPA_ONNX_MODELS_DIR = 'local-sherpa-onnx/models';
 const LOCAL_WHISPER_CPP_MODELS_DIR = 'local-whisper-cpp/models';
 const LOCAL_QWEN3_TTS_MODELS_DIR = 'local-qwen3-tts/models';
 const LOCAL_QWEN3_TTS_RUNTIME_DIR = 'local-qwen3-tts/runtime';
 const TOKENIZER_MODEL_ID = 'qwen3_tts_tokenizer_12hz';
+export const SHERPA_ONNX_FIRE_RED_ASR2_CTC_MODEL_ID = 'sherpa_onnx_fire_red_asr2_ctc_zh_en_int8_2026_02_25';
 
 type InstallTask = {
   id: string;
@@ -30,6 +34,23 @@ type InstallTask = {
 };
 
 const LOCAL_MODEL_CATALOG: VoiceLocalModelCatalogEntry[] = [
+  {
+    id: SHERPA_ONNX_FIRE_RED_ASR2_CTC_MODEL_ID,
+    kind: VoiceLocalModelKind.SherpaOnnxAsrModel,
+    label: 'Sherpa FireRedASR2 CTC zh-en int8',
+    description: '更高精度的中英双语 ASR 备选模型，适合对中文识别质量有更高要求的场景。',
+    version: '2026-02-25',
+    recommended: true,
+    defaultInstall: false,
+    approximateSizeMb: 750,
+    installBackend: VoiceLocalModelInstallBackend.DirectArchive,
+    sourceUrl: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2',
+    targetRelativePath: path.join(LOCAL_SHERPA_ONNX_MODELS_DIR, 'sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25'),
+    requirements: ['模型体积较大，建议预留至少 1GB 磁盘空间', '当前以本地离线识别链路运行，更适合中文高质量输入'],
+    warnings: ['首次下载时间较长', '相较默认轻量流式模型，占用更多磁盘和内存资源', '当前实时 partial 体验可能弱于默认流式模型'],
+    provider: VoiceProvider.LocalSherpaOnnx,
+    runtimeVariant: SherpaOnnxAsrModelVariant.OfflineFireRedAsrCtc,
+  },
   {
     id: 'whisper_tiny',
     kind: VoiceLocalModelKind.WhisperCppModel,
@@ -197,6 +218,10 @@ export const resolveDownloadedWhisperCppModelsDirectory = (): string => {
   return path.join(resolveLocalVoiceModelsRoot(), LOCAL_WHISPER_CPP_MODELS_DIR);
 };
 
+export const resolveLocalSherpaOnnxModelsRoot = (): string => {
+  return path.join(resolveLocalVoiceModelsRoot(), LOCAL_SHERPA_ONNX_MODELS_DIR);
+};
+
 export const resolveLocalQwen3TtsModelsRoot = (): string => {
   return path.join(resolveLocalVoiceModelsRoot(), LOCAL_QWEN3_TTS_MODELS_DIR);
 };
@@ -205,12 +230,16 @@ export const resolveLocalQwen3TtsRuntimeRoot = (): string => {
   return path.join(resolveLocalVoiceModelsRoot(), LOCAL_QWEN3_TTS_RUNTIME_DIR);
 };
 
-export const resolveLocalQwen3TtsCatalogEntry = (id: string): VoiceLocalModelCatalogEntry | null => {
+export const resolveLocalVoiceModelCatalogEntry = (id: string): VoiceLocalModelCatalogEntry | null => {
   return LOCAL_MODEL_CATALOG.find((entry) => entry.id === id) ?? null;
 };
 
+export const resolveLocalQwen3TtsCatalogEntry = (id: string): VoiceLocalModelCatalogEntry | null => {
+  return resolveLocalVoiceModelCatalogEntry(id);
+};
+
 export const resolveInstalledLocalModelPath = (id: string): string | null => {
-  const entry = resolveLocalQwen3TtsCatalogEntry(id);
+  const entry = resolveLocalVoiceModelCatalogEntry(id);
   if (!entry) {
     return null;
   }
@@ -245,6 +274,7 @@ export class LocalVoiceModelManager {
   }
 
   async ensureRoots(): Promise<void> {
+    await ensureDir(resolveLocalSherpaOnnxModelsRoot());
     await ensureDir(resolveDownloadedWhisperCppModelsDirectory());
     await ensureDir(resolveLocalQwen3TtsModelsRoot());
     await ensureDir(resolveLocalQwen3TtsRuntimeRoot());
@@ -293,7 +323,7 @@ export class LocalVoiceModelManager {
 
   async installModel(id: string): Promise<VoiceLocalModelLibrary> {
     await this.ensureRoots();
-    const entry = resolveLocalQwen3TtsCatalogEntry(id);
+    const entry = resolveLocalVoiceModelCatalogEntry(id);
     if (!entry) {
       throw new Error(`Unknown local voice model: ${id}`);
     }
@@ -324,6 +354,8 @@ export class LocalVoiceModelManager {
     try {
       if (entry.installBackend === VoiceLocalModelInstallBackend.Direct) {
         await this.installByDirectDownload(entry, task);
+      } else if (entry.installBackend === VoiceLocalModelInstallBackend.DirectArchive) {
+        await this.installByDirectArchive(entry, task);
       } else {
         await this.installByHuggingFaceCli(entry, task);
       }
@@ -412,6 +444,75 @@ export class LocalVoiceModelManager {
     }
 
     await fs.promises.rename(tempPath, targetPath);
+  }
+
+  private async installByDirectArchive(entry: VoiceLocalModelCatalogEntry, task: InstallTask): Promise<void> {
+    if (!entry.sourceUrl) {
+      throw new Error('Missing direct archive URL.');
+    }
+
+    const controller = new AbortController();
+    task.abortController = controller;
+    const targetPath = path.join(resolveLocalVoiceModelsRoot(), entry.targetRelativePath);
+    const archivePath = `${targetPath}.download`;
+    const extractPath = `${targetPath}.extract`;
+
+    await ensureParentDir(targetPath);
+    const response = await fetch(entry.sourceUrl, {
+      signal: controller.signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Download failed: ${response.status} ${response.statusText}`.trim());
+    }
+
+    const totalBytes = Number(response.headers.get('content-length') || 0) || undefined;
+    task.totalBytes = totalBytes;
+    const reader = response.body.getReader();
+    const fileStream = fs.createWriteStream(archivePath);
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (!value) {
+          continue;
+        }
+        await new Promise<void>((resolve, reject) => {
+          fileStream.write(Buffer.from(value), (error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+        task.downloadedBytes = (task.downloadedBytes || 0) + value.byteLength;
+        if (task.totalBytes && task.totalBytes > 0) {
+          task.progressPercent = Math.min(100, Math.round((task.downloadedBytes / task.totalBytes) * 100));
+        }
+        this.emitChanged();
+      }
+    } finally {
+      await new Promise<void>((resolve) => {
+        fileStream.end(() => resolve());
+      });
+    }
+
+    fs.rmSync(extractPath, { recursive: true, force: true });
+    await ensureDir(extractPath);
+    await tar.x({
+      file: archivePath,
+      cwd: extractPath,
+      strip: 1,
+      strict: true,
+    });
+    fs.rmSync(targetPath, { recursive: true, force: true });
+    await fs.promises.rename(extractPath, targetPath);
+    await fs.promises.unlink(archivePath).catch(() => {});
+    task.progressPercent = 100;
+    this.emitChanged();
   }
 
   private async installByHuggingFaceCli(entry: VoiceLocalModelCatalogEntry, task: InstallTask): Promise<void> {

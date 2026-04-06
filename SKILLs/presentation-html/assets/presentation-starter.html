@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-qingshu-presentation="v1">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>演示页模板</title>
+    <style>
+      :root {
+        --bg: linear-gradient(135deg, #fff7ed 0%, #ffffff 52%, #fef3c7 100%);
+        --panel: rgba(255, 255, 255, 0.88);
+        --border: rgba(15, 23, 42, 0.08);
+        --text: #111827;
+        --muted: #4b5563;
+        --accent: #ea580c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "SF Pro Display", "PingFang SC", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      main {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 28px 0 56px;
+        display: grid;
+        gap: 24px;
+      }
+      section {
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        background: var(--panel);
+        padding: 32px;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+        scroll-margin-top: 28px;
+        transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+      }
+      section[data-guide-active="true"] {
+        border-color: rgba(234, 88, 12, 0.42);
+        box-shadow: 0 30px 90px rgba(234, 88, 12, 0.16);
+        transform: translateY(-2px);
+      }
+      h1, h2, h3 { margin: 0; line-height: 1.1; }
+      p {
+        margin: 16px 0 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      .hero h1 {
+        font-size: clamp(40px, 8vw, 72px);
+      }
+      .feature-grid,
+      .metric-grid,
+      .step-grid {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+      .card {
+        border-radius: 22px;
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.74);
+        border: 1px solid var(--border);
+      }
+      .metric {
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .eyebrow {
+        display: inline-flex;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(234, 88, 12, 0.12);
+        color: var(--accent);
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .step-card {
+        position: relative;
+        padding-top: 52px;
+      }
+      .step-index {
+        position: absolute;
+        top: 16px;
+        left: 20px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section id="hero" class="hero" data-guide-scene-id="scene-hero" data-guide-scene-title="首页概览">
+        <span class="eyebrow">Presentation</span>
+        <h1>首页概览</h1>
+        <p>用一句清晰的话说明这个演示页的核心主题和场景价值。</p>
+      </section>
+
+      <section id="overview" data-guide-scene-id="scene-overview" data-guide-scene-title="方案总览">
+        <h2>方案总览</h2>
+        <p>这一幕适合用三张卡片快速解释目标用户、核心价值和主要收益。</p>
+        <div class="feature-grid">
+          <div class="card">
+            <h3>目标用户</h3>
+            <p>说明这套方案服务于谁，以及他们当前最突出的痛点。</p>
+          </div>
+          <div class="card">
+            <h3>核心价值</h3>
+            <p>用一句话概括为什么这套方案值得优先采用。</p>
+          </div>
+          <div class="card">
+            <h3>预期收益</h3>
+            <p>给出上线后最直接的业务、效率或体验收益。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="module-core" data-guide-scene-id="scene-module-core" data-guide-scene-title="核心模块">
+        <h2>核心模块</h2>
+        <p>这一幕说明一个完整模块，适合后续逐幕讲解。</p>
+        <div class="feature-grid">
+          <div class="card">
+            <h3>模块一</h3>
+            <p>一句短说明。</p>
+          </div>
+          <div class="card">
+            <h3>模块二</h3>
+            <p>一句短说明。</p>
+          </div>
+          <div class="card">
+            <h3>模块三</h3>
+            <p>一句短说明。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="steps" data-guide-scene-id="scene-steps" data-guide-scene-title="使用流程">
+        <h2>使用流程</h2>
+        <p>这一幕适合拆成明确步骤，让后续讲解可以一幕一幕地推进。</p>
+        <div class="step-grid">
+          <div class="card step-card">
+            <div class="step-index">STEP 1</div>
+            <h3>进入入口</h3>
+            <p>先说明用户从哪里进入，以及第一眼会看到什么。</p>
+          </div>
+          <div class="card step-card">
+            <div class="step-index">STEP 2</div>
+            <h3>完成关键动作</h3>
+            <p>说明用户在中间步骤完成的关键操作和系统反馈。</p>
+          </div>
+          <div class="card step-card">
+            <div class="step-index">STEP 3</div>
+            <h3>得到结果</h3>
+            <p>收束到最终结果页、输出结果或下一步建议。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="metrics" data-guide-scene-id="scene-metrics" data-guide-scene-title="关键指标">
+        <h2>关键指标</h2>
+        <p>这一幕适合承载数字亮点、对比关系或步骤结果。</p>
+        <div class="metric-grid">
+          <div class="card">
+            <div class="metric">98%</div>
+            <p>指标说明</p>
+          </div>
+          <div class="card">
+            <div class="metric">12 城</div>
+            <p>覆盖范围</p>
+          </div>
+          <div class="card">
+            <div class="metric">2400+</div>
+            <p>日均处理量</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="summary" data-guide-scene-id="scene-summary" data-guide-scene-title="总结结论">
+        <h2>总结结论</h2>
+        <p>最后一幕用来收束信息，并给出下一步建议或行动方向。</p>
+      </section>
+    </main>
+    <script>
+      (() => {
+        const VERSION = 'v1';
+        const SOURCE_HOST = 'qingshu-host';
+        const SOURCE_RUNTIME = 'qingshu-runtime';
+        const SCENE_SELECTOR = '[data-guide-scene-id]';
+        const scenes = Array.from(document.querySelectorAll(SCENE_SELECTOR));
+        let activeSceneId = scenes[0]?.getAttribute('data-guide-scene-id') || null;
+
+        const postToParent = (type, extra = {}) => {
+          if (window.parent === window) {
+            return;
+          }
+          window.parent.postMessage({
+            source: SOURCE_RUNTIME,
+            version: VERSION,
+            type,
+            ...extra,
+          }, '*');
+        };
+
+        const setActiveScene = (sceneId) => {
+          activeSceneId = sceneId;
+          scenes.forEach((scene) => {
+            const isActive = scene.getAttribute('data-guide-scene-id') === sceneId;
+            scene.setAttribute('data-guide-active', isActive ? 'true' : 'false');
+          });
+        };
+
+        const goToScene = (sceneId) => {
+          if (!sceneId) {
+            return;
+          }
+          const target = scenes.find((scene) => scene.getAttribute('data-guide-scene-id') === sceneId);
+          if (!target) {
+            postToParent('error', { error: `Scene not found: ${sceneId}` });
+            return;
+          }
+          setActiveScene(sceneId);
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          postToParent('sceneChanged', { sceneId });
+        };
+
+        window.addEventListener('message', (event) => {
+          const payload = event.data;
+          if (!payload || payload.source !== SOURCE_HOST || payload.version !== VERSION) {
+            return;
+          }
+          if (payload.type === 'handshake') {
+            postToParent('ready', { sceneId: activeSceneId });
+            return;
+          }
+          if (payload.type === 'goToScene' || payload.type === 'highlightScene') {
+            goToScene(payload.sceneId);
+            return;
+          }
+          if (payload.type === 'setPlaybackStatus') {
+            document.documentElement.setAttribute('data-guide-playback-status', payload.playbackStatus || 'idle');
+            postToParent('stateChanged', {
+              sceneId: activeSceneId,
+              playbackStatus: payload.playbackStatus || 'idle',
+            });
+          }
+        });
+
+        if (activeSceneId) {
+          setActiveScene(activeSceneId);
+        }
+        postToParent('ready', { sceneId: activeSceneId });
+      })();
+    </script>
+  </body>
+</html>

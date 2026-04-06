@@ -29,9 +29,13 @@ type VoiceCapabilityStatus = import('../../shared/voice/constants').VoiceCapabil
 type VoiceProviderStatus = import('../../shared/voice/constants').VoiceProviderStatus;
 type VoiceCapabilityMatrix = import('../../shared/voice/constants').VoiceCapabilityMatrix;
 type VoiceConfig = import('../../shared/voice/constants').VoiceConfig;
+type VoiceLocalSherpaOnnxStatus = import('../../shared/voice/constants').VoiceLocalSherpaOnnxStatus;
 type VoiceLocalWhisperCppStatus = import('../../shared/voice/constants').VoiceLocalWhisperCppStatus;
 type VoiceLocalQwen3TtsStatus = import('../../shared/voice/constants').VoiceLocalQwen3TtsStatus;
 type VoiceLocalModelLibrary = import('../../shared/voice/constants').VoiceLocalModelLibrary;
+type DesktopAssistantConfig = import('../../shared/desktopAssistant/constants').DesktopAssistantConfig;
+type DesktopAssistantStatus = import('../../shared/desktopAssistant/constants').DesktopAssistantStatus;
+type StartGuideRequest = import('../../shared/desktopAssistant/constants').StartGuideRequest;
 
 // Cowork types for IPC
 interface CoworkSession {
@@ -349,8 +353,8 @@ interface IElectronAPI {
     onStateChanged: (callback: (state: WindowState) => void) => () => void;
   };
   cowork: {
-    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
-    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
+    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>; userMessageMetadata?: Record<string, unknown> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
+    continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>; userMessageMetadata?: Record<string, unknown> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
     stopSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSessions: (sessionIds: string[]) => Promise<{ success: boolean; error?: string }>;
@@ -407,6 +411,7 @@ interface IElectronAPI {
   voice: {
     getCapabilityMatrix: () => Promise<VoiceCapabilityMatrix>;
     getConfig: () => Promise<VoiceConfig>;
+    getLocalSherpaOnnxStatus: () => Promise<VoiceLocalSherpaOnnxStatus>;
     getLocalWhisperCppStatus: () => Promise<VoiceLocalWhisperCppStatus>;
     getLocalQwen3TtsStatus: () => Promise<VoiceLocalQwen3TtsStatus>;
     ensureLocalWhisperCppDirectories: () => Promise<{ success: boolean; status?: VoiceLocalWhisperCppStatus; error?: string }>;
@@ -419,8 +424,8 @@ interface IElectronAPI {
   };
   speech: {
     getAvailability: () => Promise<SpeechAvailability>;
-    start: (options?: { locale?: string; source?: 'manual' | 'wake' | 'follow_up' }) => Promise<{ success: boolean; error?: string }>;
-    stop: () => Promise<{ success: boolean; error?: string }>;
+    start: (options?: { locale?: string; source?: 'manual' | 'wake' | 'follow_up' }) => Promise<{ success: boolean; error?: string; provider?: string }>;
+    stop: (options?: { reason?: import('../../shared/speech/constants').SpeechStopReason; suppressWakeInputResumeMs?: number }) => Promise<{ success: boolean; error?: string }>;
     transcribeAudio: (options: { audioBase64: string; mimeType: string; source?: 'manual' | 'wake' | 'follow_up' }) => Promise<SpeechTranscribeAudioResult>;
     onStateChanged: (callback: (data: SpeechStateEvent) => void) => () => void;
   };
@@ -441,6 +446,20 @@ interface IElectronAPI {
       state: import('../../shared/tts/constants').TtsAssistantReplyPlaybackState;
     }) => Promise<{ success: boolean }>;
     onStateChanged: (callback: (data: TtsStateEvent) => void) => () => void;
+  };
+  desktopAssistant: {
+    getConfig: () => Promise<DesktopAssistantConfig>;
+    updateConfig: (config?: Partial<DesktopAssistantConfig>) => Promise<{ success: boolean; config?: DesktopAssistantConfig; error?: string }>;
+    getStatus: () => Promise<DesktopAssistantStatus>;
+    startGuide: (request: StartGuideRequest) => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    pauseGuide: () => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    resumeGuide: () => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    stopGuide: () => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    nextScene: () => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    previousScene: () => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    goToScene: (sceneIndex: number) => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    replayScene: () => Promise<{ success: boolean; guideSession?: import('../../shared/desktopAssistant/constants').GuideSession | null; error?: string }>;
+    onStateChanged: (callback: (data: DesktopAssistantStatus) => void) => () => void;
   };
   shell: {
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;

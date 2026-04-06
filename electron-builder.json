@@ -93,6 +93,29 @@
         "from": "build/generated/macos-speech",
         "to": "macos-speech",
         "filter": [
+          "**/*",
+          "!module-cache/**",
+          "!module-cache-tts/**"
+        ]
+      },
+      {
+        "from": "build/generated/porcupine-keywords",
+        "to": "porcupine-keywords",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/generated/sherpa-kws",
+        "to": "sherpa-kws",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/generated/sherpa-asr",
+        "to": "sherpa-asr",
+        "filter": [
           "**/*"
         ]
       },
@@ -108,10 +131,22 @@
         "to": "SKILLs",
         "filter": [
           "**/*",
+          "!**/.server.log",
+          "!**/.server.pid",
           "!**/.env",
           "!**/.env.*",
           "!**/.venv",
           "!**/.venv/**",
+          "!**/.github/**",
+          "!**/coverage/**",
+          "!**/example/**",
+          "!**/examples/**",
+          "!**/__mocks__/**",
+          "!**/.npmignore",
+          "!**/.gitignore",
+          "!**/.gitattributes",
+          "!**/package-lock.json",
+          "!**/.package-lock.json",
           "!**/*.map",
           "!**/*.d.ts",
           "!**/*.d.cts",
@@ -133,7 +168,10 @@
           "!**/*.spec.*",
           "!**/tests/**",
           "!**/test/**",
-          "!**/__tests__/**"
+          "!**/__tests__/**",
+          "!web-search/DEPLOYMENT.md",
+          "!web-search/IMPLEMENTATION.md",
+          "!web-search/TEST.md"
         ]
       },
       {
@@ -141,6 +179,18 @@
         "to": "cfmind",
         "filter": [
           "**/*",
+          "!docs/**",
+          "!**/.github/**",
+          "!**/coverage/**",
+          "!**/example/**",
+          "!**/examples/**",
+          "!**/__mocks__/**",
+          "!**/.npmignore",
+          "!**/.gitignore",
+          "!**/.gitattributes",
+          "!package-lock.json",
+          "!**/package-lock.json",
+          "!**/.package-lock.json",
           "!**/*.map",
           "!**/*.d.ts",
           "!**/*.d.cts",
@@ -178,6 +228,13 @@
     "icon": "build/icons/win/icon.ico",
     "requestedExecutionLevel": "asInvoker",
     "extraResources": [
+      {
+        "from": "build/generated/sherpa-asr",
+        "to": "sherpa-asr",
+        "filter": [
+          "**/*"
+        ]
+      },
       {
         "from": "build-tar/win-resources.tar",
         "to": "win-resources.tar"
@@ -257,6 +314,20 @@
           "!**/test/**",
           "!**/__tests__/**"
         ]
+      },
+      {
+        "from": "vendor/openclaw-runtime/current/docs/reference/templates",
+        "to": "cfmind/docs/reference/templates",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/openclaw-runtime/current/docs/zh-CN/reference/templates",
+        "to": "cfmind/docs/zh-CN/reference/templates",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "desktop": {
@@ -274,6 +345,14 @@
   },
   "electronVersion": "40.2.1",
   "asarUnpack": [
+    "node_modules/@picovoice/**/*",
+    "node_modules/sherpa-onnx-node/**/*",
+    "node_modules/sherpa-onnx-darwin-arm64/**/*",
+    "node_modules/sherpa-onnx-darwin-x64/**/*",
+    "node_modules/sherpa-onnx-linux-x64/**/*",
+    "node_modules/sherpa-onnx-linux-arm64/**/*",
+    "node_modules/sherpa-onnx-win-x64/**/*",
+    "node_modules/sherpa-onnx-win-ia32/**/*",
     "node_modules/@anthropic-ai/claude-agent-sdk/**",
     "node_modules/@img/**",
     "node_modules/sql.js/dist/**",

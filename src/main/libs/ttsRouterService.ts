@@ -67,7 +67,10 @@ export class TtsRouterService extends EventEmitter {
   }
 
   private resolveEngine(engine?: typeof TtsEngine[keyof typeof TtsEngine]): typeof TtsEngine[keyof typeof TtsEngine] {
-    return engine ?? this.options.getVoiceConfig().capabilities.tts.engine;
+    const selectedEngine = engine ?? this.options.getVoiceConfig().capabilities.tts.engine;
+    return selectedEngine === TtsEngine.SherpaOnnx
+      ? TtsEngine.MacosNative
+      : selectedEngine;
   }
 
   private buildMacOptions(options: TtsSpeakOptions): TtsSpeakOptions {

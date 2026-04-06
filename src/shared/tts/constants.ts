@@ -11,6 +11,7 @@ export const TtsIpcChannel = {
 export const TtsEngine = {
   MacosNative: 'macos_native',
   EdgeTts: 'edge_tts',
+  SherpaOnnx: 'sherpa_onnx',
 } as const;
 export type TtsEngine = typeof TtsEngine[keyof typeof TtsEngine];
 
@@ -65,6 +66,9 @@ export interface TtsAvailability {
   prepareStatus: TtsPrepareStatus;
   workerStatus?: TtsWorkerStatus;
   recentError?: string;
+  requestedProvider?: string;
+  actualProvider?: string;
+  fallbackActive?: boolean;
   lastRequestedEngine?: TtsEngine;
   lastResolvedEngine?: TtsEngine;
   lastFallbackReason?: string;

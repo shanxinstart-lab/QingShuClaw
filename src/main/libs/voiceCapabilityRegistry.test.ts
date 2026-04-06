@@ -36,6 +36,7 @@ vi.mock('electron', () => ({
 }));
 
 import { VoiceCapabilityRegistry } from './voiceCapabilityRegistry';
+import { SHERPA_ONNX_FIRE_RED_ASR2_CTC_MODEL_ID } from './localVoiceModelManager';
 
 const GRANTED_SPEECH_AVAILABILITY: SpeechAvailability = {
   supported: true,
@@ -169,5 +170,145 @@ describe('VoiceCapabilityRegistry', () => {
     expect(matrix.providers[VoiceProvider.LocalWhisperCpp].packaged).toBe(true);
     expect(matrix.providers[VoiceProvider.LocalWhisperCpp].reason).toBe(VoiceCapabilityReason.MissingLocalModel);
     expect(matrix.capabilities[VoiceCapability.ManualStt].reason).toBe(VoiceCapabilityReason.MissingLocalModel);
+  });
+
+  test('evaluates Sherpa runtime per capability instead of sharing provider readiness', async () => {
+    writeManifest({
+      schemaVersion: VoiceManifestSchemaVersion,
+      platform: 'darwin',
+      arch: 'arm64',
+      providers: {
+        [VoiceProvider.MacosNative]: {
+          packaged: true,
+          capabilities: {
+            [VoiceCapability.ManualStt]: true,
+            [VoiceCapability.FollowUpDictation]: true,
+            [VoiceCapability.Tts]: true,
+          },
+        },
+        [VoiceProvider.LocalSherpaOnnx]: {
+          packaged: true,
+          capabilities: {
+            [VoiceCapability.ManualStt]: true,
+            [VoiceCapability.FollowUpDictation]: true,
+            [VoiceCapability.Tts]: true,
+          },
+        },
+        [VoiceProvider.LocalWhisperCpp]: { packaged: false, capabilities: {} },
+        [VoiceProvider.LocalQwen3Tts]: { packaged: false, capabilities: {} },
+        [VoiceProvider.CloudOpenAi]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudAliyun]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudVolcengine]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudAzure]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudCustom]: { packaged: false, capabilities: {} },
+      },
+      capabilities: {},
+    });
+
+    const sherpaAsrRoot = path.join(tempRoot, 'build', 'generated', 'sherpa-asr');
+    fs.mkdirSync(sherpaAsrRoot, { recursive: true });
+    fs.writeFileSync(path.join(sherpaAsrRoot, 'model.int8.onnx'), '');
+    fs.writeFileSync(path.join(sherpaAsrRoot, 'tokens.txt'), '');
+    fs.writeFileSync(path.join(sherpaAsrRoot, 'bbpe.model'), '');
+    fs.writeFileSync(path.join(sherpaAsrRoot, 'sherpa-asr-config.json'), JSON.stringify({
+      modelId: 'test-asr',
+      sampleRate: 16000,
+      featureDim: 80,
+      modelFileName: 'model.int8.onnx',
+      tokensFileName: 'tokens.txt',
+      bpeVocabFileName: 'bbpe.model',
+    }));
+
+    const voiceConfig = mergeVoiceConfig({
+      strategy: VoiceStrategy.Manual,
+      capabilities: {
+        manualStt: {
+          enabled: true,
+          provider: VoiceProvider.LocalSherpaOnnx,
+        },
+        followUpDictation: {
+          enabled: true,
+          provider: VoiceProvider.LocalSherpaOnnx,
+        },
+        tts: {
+          enabled: true,
+          provider: VoiceProvider.LocalSherpaOnnx,
+        },
+      },
+      providers: {
+        sherpaOnnx: {
+          enabled: true,
+        },
+      },
+    });
+
+    const matrix = await createRegistry(voiceConfig).getCapabilityMatrix();
+
+    expect(matrix.capabilities[VoiceCapability.ManualStt].selectedProvider).toBe(VoiceProvider.LocalSherpaOnnx);
+    expect(matrix.capabilities[VoiceCapability.ManualStt].runtimeAvailable).toBe(true);
+    expect(matrix.capabilities[VoiceCapability.ManualStt].reason).toBe(VoiceCapabilityReason.Available);
+    expect(matrix.capabilities[VoiceCapability.Tts].selectedProvider).toBe(VoiceProvider.LocalSherpaOnnx);
+    expect(matrix.capabilities[VoiceCapability.Tts].runtimeAvailable).toBe(false);
+    expect(matrix.capabilities[VoiceCapability.Tts].reason).toBe(VoiceCapabilityReason.MissingLocalModel);
+  });
+
+  test('accepts downloaded Sherpa FireRed CTC model as manual STT runtime', async () => {
+    writeManifest({
+      schemaVersion: VoiceManifestSchemaVersion,
+      platform: 'darwin',
+      arch: 'arm64',
+      providers: {
+        [VoiceProvider.MacosNative]: { packaged: true, capabilities: {} },
+        [VoiceProvider.LocalSherpaOnnx]: {
+          packaged: true,
+          capabilities: {
+            [VoiceCapability.ManualStt]: true,
+            [VoiceCapability.FollowUpDictation]: true,
+            [VoiceCapability.Tts]: true,
+          },
+        },
+        [VoiceProvider.LocalWhisperCpp]: { packaged: false, capabilities: {} },
+        [VoiceProvider.LocalQwen3Tts]: { packaged: false, capabilities: {} },
+        [VoiceProvider.CloudOpenAi]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudAliyun]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudVolcengine]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudAzure]: { packaged: true, capabilities: {} },
+        [VoiceProvider.CloudCustom]: { packaged: false, capabilities: {} },
+      },
+      capabilities: {},
+    });
+
+    const fireRedRoot = path.join(
+      tempRoot,
+      'voice-models',
+      'local-sherpa-onnx',
+      'models',
+      'sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25',
+    );
+    fs.mkdirSync(fireRedRoot, { recursive: true });
+    fs.writeFileSync(path.join(fireRedRoot, 'model.int8.onnx'), '');
+    fs.writeFileSync(path.join(fireRedRoot, 'tokens.txt'), '');
+
+    const voiceConfig = mergeVoiceConfig({
+      strategy: VoiceStrategy.Manual,
+      capabilities: {
+        manualStt: {
+          enabled: true,
+          provider: VoiceProvider.LocalSherpaOnnx,
+        },
+      },
+      providers: {
+        sherpaOnnx: {
+          enabled: true,
+          asrModelId: SHERPA_ONNX_FIRE_RED_ASR2_CTC_MODEL_ID,
+        },
+      },
+    });
+
+    const matrix = await createRegistry(voiceConfig).getCapabilityMatrix();
+
+    expect(matrix.capabilities[VoiceCapability.ManualStt].selectedProvider).toBe(VoiceProvider.LocalSherpaOnnx);
+    expect(matrix.capabilities[VoiceCapability.ManualStt].runtimeAvailable).toBe(true);
+    expect(matrix.capabilities[VoiceCapability.ManualStt].reason).toBe(VoiceCapabilityReason.Available);
   });
 });

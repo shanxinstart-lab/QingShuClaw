@@ -1,6 +1,8 @@
 import type { AuthConfig } from '../common/auth';
 import { DEFAULT_AUTH_CONFIG } from '../common/auth';
 import { ProviderRegistry } from '@shared/providers';
+import type { DesktopAssistantConfig } from '../shared/desktopAssistant/constants';
+import { DEFAULT_DESKTOP_ASSISTANT_CONFIG } from '../shared/desktopAssistant/constants';
 import type { WakeInputConfig } from '../shared/wakeInput/constants';
 import {
   DEFAULT_VOICE_CONFIG,
@@ -254,6 +256,7 @@ export interface AppConfig {
     rate: number;
     volume: number;
   };
+  desktopAssistant?: DesktopAssistantConfig;
 }
 
 export const DEFAULT_VOICE_SETTINGS: VoiceConfig = DEFAULT_VOICE_CONFIG;
@@ -327,6 +330,7 @@ export const defaultConfig: AppConfig = {
   speechInput: DEFAULT_SPEECH_INPUT_CONFIG,
   wakeInput: DEFAULT_WAKE_INPUT_CONFIG,
   tts: DEFAULT_TTS_CONFIG,
+  desktopAssistant: DEFAULT_DESKTOP_ASSISTANT_CONFIG,
 };
 
 // 配置存储键

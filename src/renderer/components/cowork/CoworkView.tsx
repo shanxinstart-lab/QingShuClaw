@@ -17,7 +17,12 @@ import { ShieldCheckIcon } from '@heroicons/react/24/outline';
 import WindowTitleBar from '../window/WindowTitleBar';
 import { QuickActionBar, PromptPanel } from '../quick-actions';
 import type { SettingsOpenOptions } from '../Settings';
-import type { CoworkSession, CoworkImageAttachment, OpenClawEngineStatus } from '../../types/cowork';
+import type {
+  CoworkSession,
+  CoworkImageAttachment,
+  CoworkSubmissionMetadata,
+  OpenClawEngineStatus,
+} from '../../types/cowork';
 
 export interface CoworkViewProps {
   onRequestAppSettings?: (options?: SettingsOpenOptions) => void;
@@ -155,7 +160,12 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     };
   }, [dispatch]);
 
-  const handleStartSession = async (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]): Promise<boolean | void> => {
+  const handleStartSession = async (
+    prompt: string,
+    skillPrompt?: string,
+    imageAttachments?: CoworkImageAttachment[],
+    submissionMetadata?: CoworkSubmissionMetadata,
+  ): Promise<boolean | void> => {
     if (isOpenClawEngine && openClawStatus && !isOpenClawReadyForSession(openClawStatus)) {
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkErrorEngineNotReady') }));
       return false;
@@ -191,7 +201,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       const now = Date.now();
 
       // Capture active skill IDs before clearing them
-      const sessionSkillIds = [...activeSkillIds];
+      const transientSkillIds = submissionMetadata?.transientSkillIds ?? [];
+      const sessionSkillIds = Array.from(new Set([...activeSkillIds, ...transientSkillIds]));
 
       const tempSession: CoworkSession = {
         id: tempSessionId,
@@ -216,8 +227,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
               ? {
                 ...(sessionSkillIds.length > 0 ? { skillIds: sessionSkillIds } : {}),
                 ...(imageAttachments && imageAttachments.length > 0 ? { imageAttachments } : {}),
+                ...(submissionMetadata?.userMessageMetadata ?? {}),
               }
-              : undefined,
+              : submissionMetadata?.userMessageMetadata,
           },
         ],
       };
@@ -253,6 +265,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         activeSkillIds: sessionSkillIds,
         agentId: currentAgentId,
         imageAttachments,
+        userMessageMetadata: submissionMetadata?.userMessageMetadata,
       });
 
       if (!startedSession && startError) {
@@ -294,7 +307,12 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     }
   };
 
-  const handleContinueSession = async (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => {
+  const handleContinueSession = async (
+    prompt: string,
+    skillPrompt?: string,
+    imageAttachments?: CoworkImageAttachment[],
+    submissionMetadata?: CoworkSubmissionMetadata,
+  ) => {
     if (!currentSession) return;
     if (isOpenClawEngine && openClawStatus && !isOpenClawReadyForSession(openClawStatus)) {
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkErrorEngineNotReady') }));
@@ -309,7 +327,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     });
 
     // Capture active skill IDs before clearing
-    const sessionSkillIds = [...activeSkillIds];
+    const transientSkillIds = submissionMetadata?.transientSkillIds ?? [];
+    const sessionSkillIds = Array.from(new Set([...activeSkillIds, ...transientSkillIds]));
 
     // Clear active skills after capturing so they don't persist to next message
     if (sessionSkillIds.length > 0) {
@@ -332,6 +351,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       systemPrompt: combinedSystemPrompt,
       activeSkillIds: sessionSkillIds.length > 0 ? sessionSkillIds : undefined,
       imageAttachments,
+      userMessageMetadata: submissionMetadata?.userMessageMetadata,
     });
   };
 

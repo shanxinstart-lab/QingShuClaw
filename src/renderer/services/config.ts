@@ -14,7 +14,10 @@ import {
   deriveLegacyTtsConfig,
   deriveLegacyWakeInputConfig,
   mergeVoiceConfig,
+  normalizeWakeWords,
 } from '../../shared/voice/constants';
+import { mergeDesktopAssistantConfig } from '../../shared/desktopAssistant/constants';
+import { normalizeWakeInputProviderMode } from '../../shared/wakeInput/constants';
 
 const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | 'gemini' | null => {
   if (providerKey === 'openai' || providerKey === 'stepfun' || providerKey === 'youdaozhiyun') {
@@ -100,6 +103,8 @@ const mergeWakeInputConfig = (
 ): NonNullable<AppConfig['wakeInput']> => ({
   ...DEFAULT_WAKE_INPUT_CONFIG,
   ...(wakeInput ?? {}),
+  provider: normalizeWakeInputProviderMode(wakeInput?.provider),
+  wakeWords: normalizeWakeWords(wakeInput?.wakeWords, wakeInput?.wakeWord),
 });
 
 const mergeTtsConfig = (
@@ -124,9 +129,87 @@ const hydrateLegacyVoiceFields = (config: AppConfig): AppConfig => {
     ...config,
     voice,
     speechInput: mergeSpeechInputConfig(deriveLegacySpeechInputConfig(voice)),
-    wakeInput: mergeWakeInputConfig(deriveLegacyWakeInputConfig(voice)),
+    wakeInput: mergeWakeInputConfig({
+      ...deriveLegacyWakeInputConfig(voice),
+      provider: config.wakeInput?.provider,
+    }),
     tts: mergeTtsConfig(deriveLegacyTtsConfig(voice)),
+    desktopAssistant: mergeDesktopAssistantConfig(config.desktopAssistant),
   };
+};
+
+export const mergeStoredAppConfig = (storedConfig: AppConfig): AppConfig => {
+  const mergedProviders = storedConfig.providers
+    ? Object.fromEntries(
+        Object.entries({
+          ...(defaultConfig.providers ?? {}),
+          ...storedConfig.providers,
+        }).map(([providerKey, providerConfig]) => [
+          providerKey,
+          (() => {
+            const mergedProvider = {
+              ...(defaultConfig.providers as Record<string, any>)?.[providerKey],
+              ...providerConfig,
+            };
+            const removedIds = REMOVED_PROVIDER_MODELS[providerKey];
+            if (removedIds && mergedProvider.models) {
+              mergedProvider.models = mergedProvider.models.filter(
+                (m: { id: string }) => !removedIds.includes(m.id)
+              );
+            }
+            const addedConfig = ADDED_PROVIDER_MODELS[providerKey];
+            if (addedConfig && mergedProvider.models) {
+              const existingIds = new Set(mergedProvider.models.map((m: { id: string }) => m.id));
+              const newModels = addedConfig.models.filter(m => !existingIds.has(m.id));
+              if (newModels.length > 0) {
+                mergedProvider.models = addedConfig.position === 'start'
+                  ? [...newModels, ...mergedProvider.models]
+                  : [...mergedProvider.models, ...newModels];
+              }
+            }
+            return {
+              ...mergedProvider,
+              baseUrl: normalizeProviderBaseUrl(providerKey, mergedProvider.baseUrl),
+              apiFormat: normalizeProviderApiFormat(providerKey, mergedProvider.apiFormat),
+            };
+          })(),
+        ])
+      )
+    : defaultConfig.providers;
+
+  const allRemovedIds = Object.values(REMOVED_PROVIDER_MODELS).flat();
+  const migratedModel = { ...defaultConfig.model, ...storedConfig.model };
+  if (allRemovedIds.includes(migratedModel.defaultModel)) {
+    migratedModel.defaultModel = defaultConfig.model.defaultModel;
+  }
+  if (migratedModel.availableModels) {
+    migratedModel.availableModels = migratedModel.availableModels.filter(
+      (m: { id: string }) => !allRemovedIds.includes(m.id)
+    );
+  }
+
+  return hydrateLegacyVoiceFields(migrateCustomProviders({
+    ...defaultConfig,
+    ...storedConfig,
+    api: {
+      ...defaultConfig.api,
+      ...storedConfig.api,
+    },
+    model: migratedModel,
+    app: {
+      ...defaultConfig.app,
+      ...storedConfig.app,
+    },
+    shortcuts: {
+      ...defaultConfig.shortcuts!,
+      ...(storedConfig.shortcuts ?? {}),
+    } as AppConfig['shortcuts'],
+    speechInput: mergeSpeechInputConfig(storedConfig.speechInput),
+    wakeInput: mergeWakeInputConfig(storedConfig.wakeInput),
+    tts: mergeTtsConfig(storedConfig.tts),
+    desktopAssistant: mergeDesktopAssistantConfig(storedConfig.desktopAssistant),
+    providers: mergedProviders as AppConfig['providers'],
+  }));
 };
 
 /**
@@ -190,79 +273,7 @@ class ConfigService {
     try {
       const storedConfig = await localStore.getItem<AppConfig>(CONFIG_KEYS.APP_CONFIG);
       if (storedConfig) {
-        const mergedProviders = storedConfig.providers
-          ? Object.fromEntries(
-              Object.entries({
-                ...(defaultConfig.providers ?? {}),
-                ...storedConfig.providers,
-              }).map(([providerKey, providerConfig]) => [
-                providerKey,
-                (() => {
-                  const mergedProvider = {
-                    ...(defaultConfig.providers as Record<string, any>)?.[providerKey],
-                    ...providerConfig,
-                  };
-                  // Filter out removed models
-                  const removedIds = REMOVED_PROVIDER_MODELS[providerKey];
-                  if (removedIds && mergedProvider.models) {
-                    mergedProvider.models = mergedProvider.models.filter(
-                      (m: { id: string }) => !removedIds.includes(m.id)
-                    );
-                  }
-                  // Inject added models (for existing users who already have saved config)
-                  const addedConfig = ADDED_PROVIDER_MODELS[providerKey];
-                  if (addedConfig && mergedProvider.models) {
-                    const existingIds = new Set(mergedProvider.models.map((m: { id: string }) => m.id));
-                    const newModels = addedConfig.models.filter(m => !existingIds.has(m.id));
-                    if (newModels.length > 0) {
-                      mergedProvider.models = addedConfig.position === 'start'
-                        ? [...newModels, ...mergedProvider.models]
-                        : [...mergedProvider.models, ...newModels];
-                    }
-                  }
-                  return {
-                    ...mergedProvider,
-                    baseUrl: normalizeProviderBaseUrl(providerKey, mergedProvider.baseUrl),
-                    apiFormat: normalizeProviderApiFormat(providerKey, mergedProvider.apiFormat),
-                  };
-                })(),
-              ])
-            )
-          : defaultConfig.providers;
-
-        // Migrate model.defaultModel if it was removed
-        const allRemovedIds = Object.values(REMOVED_PROVIDER_MODELS).flat();
-        const migratedModel = { ...defaultConfig.model, ...storedConfig.model };
-        if (allRemovedIds.includes(migratedModel.defaultModel)) {
-          migratedModel.defaultModel = defaultConfig.model.defaultModel;
-        }
-        if (migratedModel.availableModels) {
-          migratedModel.availableModels = migratedModel.availableModels.filter(
-            (m: { id: string }) => !allRemovedIds.includes(m.id)
-          );
-        }
-
-        this.config = hydrateLegacyVoiceFields(migrateCustomProviders({
-          ...defaultConfig,
-          ...storedConfig,
-          api: {
-            ...defaultConfig.api,
-            ...storedConfig.api,
-          },
-          model: migratedModel,
-          app: {
-            ...defaultConfig.app,
-            ...storedConfig.app,
-          },
-          shortcuts: {
-            ...defaultConfig.shortcuts!,
-            ...(storedConfig.shortcuts ?? {}),
-          } as AppConfig['shortcuts'],
-          speechInput: mergeSpeechInputConfig(storedConfig.speechInput),
-          wakeInput: mergeWakeInputConfig(storedConfig.wakeInput),
-          tts: mergeTtsConfig(storedConfig.tts),
-          providers: mergedProviders as AppConfig['providers'],
-        }));
+        this.config = mergeStoredAppConfig(storedConfig);
       }
     } catch (error) {
       console.error('Failed to load config:', error);

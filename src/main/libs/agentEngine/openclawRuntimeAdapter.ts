@@ -995,6 +995,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       confirmationMode: options.confirmationMode,
       imageAttachments: options.imageAttachments,
       agentId: options.agentId,
+      userMessageMetadata: options.userMessageMetadata,
     });
   }
 
@@ -1004,6 +1005,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       systemPrompt: options.systemPrompt,
       skillIds: options.skillIds,
       imageAttachments: options.imageAttachments,
+      userMessageMetadata: options.userMessageMetadata,
     });
   }
 
@@ -1109,6 +1111,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       confirmationMode?: 'modal' | 'text';
       imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>;
       agentId?: string;
+      userMessageMetadata?: Record<string, unknown>;
     },
   ): Promise<void> {
     if (!prompt.trim() && (!options.imageAttachments || options.imageAttachments.length === 0)) {
@@ -1129,10 +1132,17 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.confirmationModeBySession.set(sessionId, confirmationMode);
 
     if (!options.skipInitialUserMessage) {
-      const metadata = (options.skillIds?.length || options.imageAttachments?.length)
+      const metadata = (
+        options.skillIds?.length
+        || options.imageAttachments?.length
+        || (options.userMessageMetadata && typeof options.userMessageMetadata === 'object')
+      )
         ? {
           ...(options.skillIds?.length ? { skillIds: options.skillIds } : {}),
           ...(options.imageAttachments?.length ? { imageAttachments: options.imageAttachments } : {}),
+          ...(options.userMessageMetadata && typeof options.userMessageMetadata === 'object'
+            ? options.userMessageMetadata
+            : {}),
         }
         : undefined;
       const userMessage = this.store.addMessage(sessionId, {

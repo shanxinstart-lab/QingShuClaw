@@ -72,4 +72,24 @@ describe('resolveSpeechVoiceCommand', () => {
       cleanedSpeechText: '继续记录下一条 停止输入',
     });
   });
+
+  test('accepts a one-character sherpa tail mismatch for stop commands', () => {
+    expect(resolveSpeechVoiceCommand('介绍一下你自己停子', {
+      stopCommand: '停止',
+      submitCommand: '发送',
+    })).toEqual({
+      action: SpeechVoiceCommandAction.Stop,
+      cleanedSpeechText: '介绍一下你自己',
+    });
+  });
+
+  test('accepts a one-character sherpa tail mismatch for submit commands', () => {
+    expect(resolveSpeechVoiceCommand('把这段话发给产品经理发宋', {
+      stopCommand: '取消',
+      submitCommand: '发送',
+    })).toEqual({
+      action: SpeechVoiceCommandAction.Submit,
+      cleanedSpeechText: '把这段话发给产品经理',
+    });
+  });
 });

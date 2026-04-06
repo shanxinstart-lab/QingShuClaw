@@ -35,12 +35,14 @@ export type CoworkStartOptions = {
   confirmationMode?: 'modal' | 'text';
   imageAttachments?: CoworkImageAttachment[];
   agentId?: string;
+  userMessageMetadata?: Record<string, unknown>;
 };
 
 export type CoworkContinueOptions = {
   systemPrompt?: string;
   skillIds?: string[];
   imageAttachments?: CoworkImageAttachment[];
+  userMessageMetadata?: Record<string, unknown>;
 };
 
 export interface CoworkRuntime {

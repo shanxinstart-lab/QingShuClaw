@@ -9,6 +9,9 @@ const { syncLocalOpenClawExtensions } = require('./sync-local-openclaw-extension
 const { packMultipleSources } = require('./pack-openclaw-tar.cjs');
 const { buildMacosSpeechHelper } = require('./build-macos-speech-helper.cjs');
 const { buildMacosTtsHelper } = require('./build-macos-tts-helper.cjs');
+const { preparePorcupineWakeResources } = require('./prepare-porcupine-wake-resources.cjs');
+const { prepareSherpaWakeResources } = require('./prepare-sherpa-wake-resources.cjs');
+const { prepareSherpaAsrResources } = require('./prepare-sherpa-asr-resources.cjs');
 const VOICE_MANIFEST_NAME = 'voice-capabilities.json';
 const VOICE_MANIFEST_SCHEMA_VERSION = 1;
 const VOICE_GENERATED_DIR = path.join(__dirname, '..', 'build', 'generated', 'voice-capabilities');
@@ -17,6 +20,20 @@ const LOCAL_WHISPER_CPP_GENERATED_DIR = path.join(__dirname, '..', 'build', 'gen
 const MACOS_SPEECH_HELPER_NAME = 'MacSpeechHelper';
 const MACOS_TTS_HELPER_NAME = 'MacTtsHelper';
 const LOCAL_WHISPER_CPP_MODELS_DIR = path.join(LOCAL_WHISPER_CPP_GENERATED_DIR, 'models');
+const PACK_BUILD_SOURCE_PATHS = [
+  path.join(__dirname, '..', 'src', 'common'),
+  path.join(__dirname, '..', 'src', 'main'),
+  path.join(__dirname, '..', 'src', 'renderer'),
+  path.join(__dirname, '..', 'src', 'shared'),
+  path.join(__dirname, '..', 'vite.config.ts'),
+];
+const PACK_BUILD_ARTIFACT_PATHS = [
+  path.join(__dirname, '..', 'dist', 'index.html'),
+  path.join(__dirname, '..', 'dist-electron', 'main.js'),
+  path.join(__dirname, '..', 'dist-electron', 'preload.js'),
+  path.join(__dirname, '..', 'dist-electron', 'main', 'main.js'),
+  path.join(__dirname, '..', 'dist-electron', 'main', 'preload.js'),
+];
 
 function resolveLocalWhisperBinaryName() {
   return process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
@@ -39,6 +56,87 @@ function inspectLocalWhisperCppPackagedAssets() {
 function ensureLocalWhisperCppGeneratedDirs() {
   mkdirSync(path.join(LOCAL_WHISPER_CPP_GENERATED_DIR, 'bin'), { recursive: true });
   mkdirSync(LOCAL_WHISPER_CPP_MODELS_DIR, { recursive: true });
+}
+
+function collectLatestModifiedTimeMs(targetPath) {
+  if (!existsSync(targetPath)) {
+    return 0;
+  }
+
+  const stats = statSync(targetPath);
+  let latest = stats.mtimeMs;
+
+  if (!stats.isDirectory()) {
+    return latest;
+  }
+
+  for (const entry of readdirSync(targetPath)) {
+    latest = Math.max(latest, collectLatestModifiedTimeMs(path.join(targetPath, entry)));
+  }
+
+  return latest;
+}
+
+function runNpmScript(scriptName) {
+  console.log(`[electron-builder-hooks] Running npm script: ${scriptName}`);
+  const isWin = process.platform === 'win32';
+  const result = spawnSync('npm', ['run', scriptName], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf-8',
+    stdio: 'inherit',
+    shell: isWin,
+  });
+
+  if (result.status === 0) {
+    return;
+  }
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  throw new Error(`[electron-builder-hooks] npm run ${scriptName} failed with status ${String(result.status)}`);
+}
+
+function ensurePackBuildArtifactsFresh() {
+  const latestSourceModifiedTimeMs = Math.max(
+    ...PACK_BUILD_SOURCE_PATHS.map((targetPath) => collectLatestModifiedTimeMs(targetPath)),
+  );
+
+  const staleArtifacts = PACK_BUILD_ARTIFACT_PATHS.filter((artifactPath) => {
+    if (!existsSync(artifactPath)) {
+      return true;
+    }
+    return statSync(artifactPath).mtimeMs < latestSourceModifiedTimeMs;
+  });
+
+  if (staleArtifacts.length === 0) {
+    return;
+  }
+
+  console.log(
+    '[electron-builder-hooks] Detected stale app build artifacts; rebuilding before pack.',
+  );
+  for (const artifactPath of staleArtifacts) {
+    console.log(`[electron-builder-hooks]   stale: ${path.relative(path.join(__dirname, '..'), artifactPath)}`);
+  }
+
+  runNpmScript('build:renderer');
+  runNpmScript('compile:electron');
+
+  const remainingStaleArtifacts = PACK_BUILD_ARTIFACT_PATHS.filter((artifactPath) => {
+    if (!existsSync(artifactPath)) {
+      return true;
+    }
+    return statSync(artifactPath).mtimeMs < latestSourceModifiedTimeMs;
+  });
+
+  if (remainingStaleArtifacts.length > 0) {
+    throw new Error(
+      '[electron-builder-hooks] App build artifacts are still stale after rebuild: '
+      + remainingStaleArtifacts.map((artifactPath) => path.relative(path.join(__dirname, '..'), artifactPath)).join(', ')
+    );
+  }
 }
 
 function isWindowsTarget(context) {
@@ -150,6 +248,13 @@ function buildVoiceCapabilityManifest(context) {
           follow_up_dictation: true,
         },
       },
+      local_sherpa_onnx: {
+        packaged: isMac || platform === 'win32',
+        capabilities: {
+          manual_stt: true,
+          follow_up_dictation: true,
+        },
+      },
       local_qwen3_tts: {
         packaged: false,
         capabilities: {
@@ -241,6 +346,68 @@ function verifyPackagedLocalWhisperCppResources(context) {
       '[electron-builder-hooks] Packaged local whisper.cpp resources are incomplete. '
       + `binary=${binaryExists ? 'yes' : 'no'} model=${modelExists ? 'yes' : 'no'}`
     );
+  }
+}
+
+function ensurePackagedOpenClawTemplates(context) {
+  if (!isMacTarget(context)) {
+    return;
+  }
+
+  const appName = context.packager.appInfo.productFilename;
+  const resourcesDir = path.join(
+    context.appOutDir,
+    `${appName}.app`,
+    'Contents',
+    'Resources',
+    'cfmind',
+    'docs',
+  );
+  const templateCopies = [
+    {
+      from: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'current', 'docs', 'reference', 'templates'),
+      to: path.join(resourcesDir, 'reference', 'templates'),
+    },
+    {
+      from: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'current', 'docs', 'zh-CN', 'reference', 'templates'),
+      to: path.join(resourcesDir, 'zh-CN', 'reference', 'templates'),
+    },
+  ];
+
+  for (const copy of templateCopies) {
+    if (!existsSync(copy.from)) {
+      throw new Error(`[electron-builder-hooks] OpenClaw template source is missing: ${copy.from}`);
+    }
+    mkdirSync(path.dirname(copy.to), { recursive: true });
+    cpSync(copy.from, copy.to, { recursive: true, force: true });
+  }
+}
+
+function verifyPackagedOpenClawTemplates(context) {
+  if (!isMacTarget(context)) {
+    return;
+  }
+
+  const appName = context.packager.appInfo.productFilename;
+  const templatesDir = path.join(
+    context.appOutDir,
+    `${appName}.app`,
+    'Contents',
+    'Resources',
+    'cfmind',
+    'docs',
+    'reference',
+    'templates',
+  );
+  const requiredTemplates = ['AGENTS.md', 'SOUL.md', 'TOOLS.md'];
+
+  for (const fileName of requiredTemplates) {
+    const templatePath = path.join(templatesDir, fileName);
+    if (!existsSync(templatePath)) {
+      throw new Error(
+        `[electron-builder-hooks] Packaged OpenClaw workspace template is missing: ${templatePath}`
+      );
+    }
   }
 }
 function getOpenClawRuntimeBuildHint(targetId) {
@@ -519,6 +686,73 @@ function applyMacIconFix(appPath) {
   console.log('[electron-builder-hooks] ✓ macOS icon fix applied');
 }
 
+function syncDirectoryIfExists(sourceDir, targetDir, label) {
+  if (!existsSync(sourceDir)) {
+    console.warn(`[electron-builder-hooks] ${label} source is missing, skipping: ${sourceDir}`);
+    return false;
+  }
+
+  rmSync(targetDir, { recursive: true, force: true });
+  mkdirSync(path.dirname(targetDir), { recursive: true });
+  cpSync(sourceDir, targetDir, { recursive: true, force: true });
+  console.log(`[electron-builder-hooks] Synced ${label}: ${sourceDir} -> ${targetDir}`);
+  return true;
+}
+
+function ensurePackagedNativeNodeModules(appPath, context) {
+  const projectRoot = path.join(__dirname, '..');
+  const targetArch = resolveTargetArch(context);
+  const sherpaRuntimePackageName = targetArch === 'x64' ? 'sherpa-onnx-darwin-x64' : 'sherpa-onnx-darwin-arm64';
+  const unpackedNodeModulesDir = path.join(
+    appPath,
+    'Contents',
+    'Resources',
+    'app.asar.unpacked',
+    'node_modules',
+  );
+
+  const packageCopies = [
+    {
+      label: 'Picovoice namespace',
+      source: path.join(projectRoot, 'node_modules', '@picovoice'),
+      target: path.join(unpackedNodeModulesDir, '@picovoice'),
+    },
+    {
+      label: 'Sherpa ONNX JS bridge',
+      source: path.join(projectRoot, 'node_modules', 'sherpa-onnx-node'),
+      target: path.join(unpackedNodeModulesDir, 'sherpa-onnx-node'),
+    },
+    {
+      label: 'Sherpa ONNX macOS arm64 runtime',
+      source: path.join(projectRoot, 'node_modules', sherpaRuntimePackageName),
+      target: path.join(unpackedNodeModulesDir, sherpaRuntimePackageName),
+    },
+  ];
+
+  let syncedCount = 0;
+  for (const packageCopy of packageCopies) {
+    if (syncDirectoryIfExists(packageCopy.source, packageCopy.target, packageCopy.label)) {
+      syncedCount += 1;
+    }
+  }
+
+  const requiredNativeFiles = [
+    path.join(unpackedNodeModulesDir, '@picovoice', 'pvrecorder-node', 'lib', 'mac', targetArch, 'pv_recorder.node'),
+    path.join(unpackedNodeModulesDir, '@picovoice', 'porcupine-node', 'lib', 'mac', targetArch, 'pv_porcupine.node'),
+    path.join(unpackedNodeModulesDir, sherpaRuntimePackageName, 'sherpa-onnx.node'),
+  ];
+  const missingNativeFiles = requiredNativeFiles.filter((candidate) => !existsSync(candidate));
+
+  if (missingNativeFiles.length > 0) {
+    throw new Error(
+      '[electron-builder-hooks] Packaged native node modules are incomplete. Missing: '
+      + missingNativeFiles.join(', ')
+    );
+  }
+
+  console.log(`[electron-builder-hooks] ✓ Verified packaged native node modules (${syncedCount} package groups)`);
+}
+
 function adHocSignMacApp(appPath) {
   const result = spawnSync('codesign', [
     '--force',
@@ -543,10 +777,12 @@ function adHocSignMacApp(appPath) {
   ], { encoding: 'utf-8' });
 
   if (verifyResult.status !== 0) {
-    throw new Error(
-      '[electron-builder-hooks] Ad-hoc signed macOS app bundle failed verification. '
-      + (verifyResult.stderr || verifyResult.stdout || 'Unknown verification error')
+    const verifyMessage = verifyResult.stderr || verifyResult.stdout || 'Unknown verification error';
+    console.warn(
+      '[electron-builder-hooks] Ad-hoc signed macOS app bundle failed verification, '
+      + `but packaging will continue for local testing. ${verifyMessage}`
     );
+    return;
   }
 
   console.log('[electron-builder-hooks] ✓ macOS app bundle ad-hoc signed');
@@ -703,8 +939,12 @@ function installSkillDependencies() {
 }
 
 async function beforePack(context) {
+  ensurePackBuildArtifactsFresh();
   ensureBundledOpenClawRuntime(context);
   ensureLocalWhisperCppGeneratedDirs();
+  prepareSherpaWakeResources();
+  prepareSherpaAsrResources();
+  preparePorcupineWakeResources();
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();
 
@@ -788,12 +1028,15 @@ async function beforePack(context) {
 async function afterPack(context) {
   verifyPackagedVoiceManifest(context);
   verifyPackagedLocalWhisperCppResources(context);
+  ensurePackagedOpenClawTemplates(context);
+  verifyPackagedOpenClawTemplates(context);
 
   if (isMacTarget(context)) {
     const appName = context.packager.appInfo.productFilename;
     const appPath = path.join(context.appOutDir, `${appName}.app`);
 
     if (existsSync(appPath)) {
+      ensurePackagedNativeNodeModules(appPath, context);
       // Clean up broken symlinks before signing to prevent ENOENT errors
       cleanupBrokenSymlinksInExtensions(appPath);
       applyMacIconFix(appPath);

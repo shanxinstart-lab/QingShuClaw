@@ -3,7 +3,12 @@ import { createPortal } from 'react-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import { i18nService } from '../../services/i18n';
-import type { CoworkMessage, CoworkMessageMetadata, CoworkImageAttachment } from '../../types/cowork';
+import type {
+  CoworkMessage,
+  CoworkMessageMetadata,
+  CoworkImageAttachment,
+  CoworkSubmissionMetadata,
+} from '../../types/cowork';
 import type { Skill } from '../../types/skill';
 import CoworkPromptInput from './CoworkPromptInput';
 import MarkdownContent from '../MarkdownContent';
@@ -40,10 +45,52 @@ import {
 } from '../../../shared/tts/constants';
 import { buildSpeakableAssistantText } from './coworkTtsText';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
+import { desktopAssistantService } from '../../services/desktopAssistant';
+import {
+  DesktopAssistantState,
+  DesktopAssistantReplySpeakMode,
+  GuideStatus,
+  GuideSource,
+  type DesktopAssistantConfig,
+  type DesktopAssistantStatus,
+  type GuideScene,
+} from '../../../shared/desktopAssistant/constants';
+import { parseGuideContent, resolveGuideContentFromConversation, shouldShowGuideButton } from './guideContent';
+import {
+  buildGuideNarrationText,
+  getGuideAutoAdvanceDelayMs,
+  shouldSuppressAssistantReplyAutoPlay,
+} from './guideNarration';
+import {
+  GuidePreviewEvent,
+  openGuideScenePreview,
+  prepareGuideStartContext,
+} from './guidePreview';
+import {
+  GuidePreviewMode,
+  type GuidePreviewDescriptor,
+  isLocalGuidePreviewTarget,
+  loadGuidePreviewDescriptor,
+  toLocalGuidePreviewPath,
+} from './guidePresentationBridge';
+import { DesktopAssistantStatusBar } from './desktopAssistant/DesktopAssistantStatusBar';
+import { GuidePanel } from './desktopAssistant/GuidePanel';
+import { GuideFloatingDock } from './desktopAssistant/GuideFloatingDock';
+import {
+  buildPresentationDeck,
+  buildPresentationDeckFromHtmlContent,
+} from './presentationDeckBuilder';
+import type { PresentationDeck } from '../../../shared/desktopAssistant/presentation';
+import { getDesktopAssistantAutoAttachedSkillIds } from './desktopAssistantSkillRouting';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
-  onContinue: (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => boolean | void | Promise<boolean | void>;
+  onContinue: (
+    prompt: string,
+    skillPrompt?: string,
+    imageAttachments?: CoworkImageAttachment[],
+    submissionMetadata?: CoworkSubmissionMetadata,
+  ) => boolean | void | Promise<boolean | void>;
   onStop: () => void;
   onNavigateHome?: () => void;
   isSidebarCollapsed?: boolean;
@@ -68,6 +115,7 @@ const formatExportTimestamp = (value: Date): string => {
 };
 
 type CaptureRect = { x: number; y: number; width: number; height: number };
+type TtsPlaybackOwner = 'none' | 'assistant_manual' | 'assistant_auto' | 'guide';
 
 const MAX_EXPORT_CANVAS_HEIGHT = 32760;
 const MAX_EXPORT_SEGMENTS = 240;
@@ -505,6 +553,12 @@ const toAbsolutePathFromCwd = (filePath: string, cwd: string): string => {
     return filePath;
   }
   return `${cwd.replace(/\/$/, '')}/${filePath.replace(/^\.\//, '')}`;
+};
+
+const getPathBaseName = (filePath: string): string => {
+  const normalized = filePath.replace(/\\/gu, '/');
+  const parts = normalized.split('/');
+  return parts[parts.length - 1] || filePath;
 };
 
 export type ToolGroupItem = {
@@ -986,6 +1040,11 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
   const messageSkills = messageSkillIds
     .map(id => skills.find(s => s.id === id))
     .filter((s): s is NonNullable<typeof s> => s !== undefined);
+  const autoAttachedSkillIds = getDesktopAssistantAutoAttachedSkillIds(message.metadata);
+  const autoAttachedSkills = autoAttachedSkillIds
+    .filter((id) => !messageSkillIds.includes(id))
+    .map((id) => skills.find((skill) => skill.id === id))
+    .filter((skill): skill is NonNullable<typeof skill> => skill !== undefined);
 
   // Get image attachments from metadata
   const imageAttachments = ((message.metadata as CoworkMessageMetadata)?.imageAttachments ?? []) as CoworkImageAttachment[];
@@ -1040,6 +1099,21 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
                     </span>
                   </div>
                 ))}
+                {autoAttachedSkills.map((skill) => (
+                  <div
+                    key={`auto-${skill.id}`}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-primary/20 bg-primary/10"
+                    title={i18nService.t('desktopAssistantAutoSkillHint').replace('{skill}', skill.name)}
+                  >
+                    <PuzzleIcon className="h-2.5 w-2.5 text-primary" />
+                    <span className="text-[10px] font-medium text-primary max-w-[80px] truncate">
+                      {skill.name}
+                    </span>
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary/80">
+                      {i18nService.t('desktopAssistantAutoSkillBadge')}
+                    </span>
+                  </div>
+                ))}
                 <CopyButton
                   content={message.content}
                   visible={isHovered}
@@ -1069,31 +1143,66 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
 
 const AssistantMessageItem: React.FC<{
   message: CoworkMessage;
+  messages?: CoworkMessage[];
+  guideCwd?: string;
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
+  desktopAssistantEnabled?: boolean;
   showCopyButton?: boolean;
   showTtsButton?: boolean;
+  showGuideButton?: boolean;
   isTtsPlaying?: boolean;
   onPlayTts?: (message: CoworkMessage) => void;
   onStopTts?: () => void;
+  onStartGuide?: (message: CoworkMessage) => void;
 }> = ({
   message,
+  messages = [],
+  guideCwd,
   resolveLocalFilePath,
   mapDisplayText,
+  desktopAssistantEnabled = false,
   showCopyButton = false,
   showTtsButton = false,
+  showGuideButton = false,
   isTtsPlaying = false,
   onPlayTts,
   onStopTts,
+  onStartGuide,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
   const speakableText = buildSpeakableAssistantText(displayContent);
   const hasSpeakableText = speakableText.length > 0;
+  const guideContent = messages.length > 0
+    ? resolveGuideContentFromConversation(message, messages, { cwd: guideCwd })
+    : parseGuideContent(message, { cwd: guideCwd });
+  const guideAnchor = guideContent.eligible && guideContent.previewTarget?.startsWith('#artifact-')
+    ? guideContent.previewTarget
+    : undefined;
+  const localPreviewPath = guideContent.eligible && guideContent.previewTarget && isLocalGuidePreviewTarget(guideContent.previewTarget)
+    ? toLocalGuidePreviewPath(guideContent.previewTarget)
+    : null;
+  const localPreviewFileName = localPreviewPath ? getPathBaseName(localPreviewPath) : null;
+  const showGuideCallout = desktopAssistantEnabled && guideContent.eligible;
+  const isInlineHtmlGuide = guideContent.eligible && guideContent.previewTarget?.startsWith('#artifact-');
+
+  const handleOpenLocalPreviewPath = async () => {
+    if (!localPreviewPath) {
+      return;
+    }
+    const result = await window.electron.shell.openPath(localPreviewPath);
+    if (!result.success) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: result.error || i18nService.t('desktopAssistantState_error'),
+      }));
+    }
+  };
 
   return (
     <div
       className="relative"
+      {...(guideAnchor ? { 'data-guide-anchor': guideAnchor } : undefined)}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -1105,8 +1214,83 @@ const AssistantMessageItem: React.FC<{
           showRevealInFolderAction
         />
       </div>
-      {(showCopyButton || showTtsButton) && (
+      {showGuideCallout && !localPreviewPath && (
+        <div className="mt-3 rounded-xl border border-primary/15 bg-primary/5 px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-primary">
+                {i18nService.t('desktopAssistantGuideReadyLabel')}
+              </div>
+              <div className="mt-1 text-sm text-foreground">
+                {isInlineHtmlGuide
+                  ? i18nService.t('desktopAssistantInlineGuideHint')
+                  : i18nService.t('desktopAssistantPreviewGuideHint')}
+              </div>
+            </div>
+            {showGuideButton && (
+              <button
+                type="button"
+                onClick={() => onStartGuide?.(message)}
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-surface-raised transition-colors"
+                title={i18nService.t('desktopAssistantStartGuide')}
+              >
+                {i18nService.t('desktopAssistantStartGuide')}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {localPreviewPath && (
+        <div className="mt-3 rounded-xl border border-primary/15 bg-primary/5 px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-primary">
+                {i18nService.t('desktopAssistantLocalPreviewLabel')}
+              </div>
+              <div className="mt-1 truncate text-sm font-medium text-foreground" title={localPreviewPath}>
+                {localPreviewFileName}
+              </div>
+              <div className="mt-1 truncate font-mono text-[11px] text-secondary" title={localPreviewPath}>
+                {localPreviewPath}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {showGuideButton && (
+                <button
+                  type="button"
+                  onClick={() => onStartGuide?.(message)}
+                  className="rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-surface-raised transition-colors"
+                  title={i18nService.t('desktopAssistantStartGuide')}
+                >
+                  {i18nService.t('desktopAssistantStartGuide')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => { void handleOpenLocalPreviewPath(); }}
+                className="rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-surface-raised transition-colors"
+                title={i18nService.t('desktopAssistantOpenLocalPreview')}
+              >
+                {i18nService.t('artifactOpen')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {(showCopyButton || showTtsButton || showGuideButton) && (
         <div className="flex items-center gap-1.5 mt-1">
+          {showGuideButton && (
+            <button
+              type="button"
+              onClick={() => onStartGuide?.(message)}
+              className={`rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-surface-raised transition-all duration-200 ${
+                isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
+              title={i18nService.t('desktopAssistantStartGuide')}
+            >
+              {i18nService.t('desktopAssistantStartGuide')}
+            </button>
+          )}
           {showTtsButton && (
             <button
               type="button"
@@ -1244,24 +1428,34 @@ const ThinkingBlock: React.FC<{
 
 export const AssistantTurnBlock: React.FC<{
   turn: ConversationTurn;
+  messages?: CoworkMessage[];
+  guideCwd?: string;
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
   showTypingIndicator?: boolean;
+  desktopAssistantEnabled?: boolean;
   showCopyButtons?: boolean;
   showTtsButtons?: boolean;
+  showGuideButtons?: boolean;
   ttsPlayingMessageId?: string | null;
   onPlayTts?: (message: CoworkMessage) => void;
   onStopTts?: () => void;
+  onStartGuide?: (message: CoworkMessage) => void;
 }> = ({
   turn,
+  messages = [],
+  guideCwd,
   resolveLocalFilePath,
   mapDisplayText,
   showTypingIndicator = false,
+  desktopAssistantEnabled = false,
   showCopyButtons = true,
   showTtsButtons = false,
+  showGuideButtons = false,
   ttsPlayingMessageId = null,
   onPlayTts,
   onStopTts,
+  onStartGuide,
 }) => {
   const visibleAssistantItems = getVisibleAssistantItems(turn.assistantItems);
 
@@ -1366,13 +1560,20 @@ export const AssistantTurnBlock: React.FC<{
                   <AssistantMessageItem
                     key={item.message.id}
                     message={item.message}
+                    messages={messages}
+                    guideCwd={guideCwd}
                     resolveLocalFilePath={resolveLocalFilePath}
                     mapDisplayText={mapDisplayText}
+                    desktopAssistantEnabled={desktopAssistantEnabled}
                     showCopyButton={showCopyButtons && !hasToolGroupAfter}
                     showTtsButton={showTtsButtons}
+                    showGuideButton={showGuideButtons && shouldShowGuideButton(item.message, true, messages, {
+                      cwd: guideCwd,
+                    })}
                     isTtsPlaying={ttsPlayingMessageId === item.message.id}
                     onPlayTts={onPlayTts}
                     onStopTts={onStopTts}
+                    onStartGuide={onStartGuide}
                   />
                 );
               }
@@ -1464,12 +1665,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [isExportingImage, setIsExportingImage] = useState(false);
   const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
   const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
+  const [desktopAssistantConfig, setDesktopAssistantConfig] = useState<DesktopAssistantConfig>({
+    masterEnabled: false,
+    launchAtLogin: true,
+    autoOpenPreviewGuide: true,
+    autoEnterSceneGuide: true,
+    guideVoiceCommandsEnabled: true,
+    assistantReplySpeakMode: DesktopAssistantReplySpeakMode.Summary,
+  });
+  const [desktopAssistantStatus, setDesktopAssistantStatus] = useState<DesktopAssistantStatus>({
+    masterEnabled: false,
+    state: DesktopAssistantState.Idle,
+    guideSession: null,
+  });
+  const [currentPresentationDeck, setCurrentPresentationDeck] = useState<PresentationDeck | null>(null);
+  const [currentGuidePreviewDescriptor, setCurrentGuidePreviewDescriptor] = useState<GuidePreviewDescriptor | null>(null);
+  const [linkedPreviewFallbackGuideId, setLinkedPreviewFallbackGuideId] = useState<string | null>(null);
+  const [guideNarrationBlockedSessionId, setGuideNarrationBlockedSessionId] = useState<string | null>(null);
+  const [guideNarrationFinishedKey, setGuideNarrationFinishedKey] = useState<string | null>(null);
+  const autoGuidedMessageIdsRef = useRef<Set<string>>(new Set());
   const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsAudioObjectUrlRef = useRef<string | null>(null);
   const autoReplyPlaybackSessionIdRef = useRef<string | null>(null);
   const autoReplyPlaybackUsesBrowserAudioRef = useRef(false);
   const ttsPlaybackModeRef = useRef<'idle' | 'preparing_browser' | 'browser_audio' | 'system'>('idle');
+  const ttsPlaybackOwnerRef = useRef<TtsPlaybackOwner>('none');
+  const lastGuideNarrationKeyRef = useRef('');
+  const lastGuidePreviewKeyRef = useRef('');
+  const activeGuideNarrationKeyRef = useRef<string | null>(null);
+  const guideAutoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousDesktopAssistantAutoGuideEnabledRef = useRef(false);
 
   const dispatchAssistantReplyPlaybackState = useCallback((
     sessionId: string,
@@ -1484,6 +1710,15 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         state,
       },
     }));
+  }, []);
+
+  const markGuideNarrationFinished = useCallback(() => {
+    const guideKey = activeGuideNarrationKeyRef.current;
+    if (!guideKey) {
+      return;
+    }
+    setGuideNarrationFinishedKey(guideKey);
+    activeGuideNarrationKeyRef.current = null;
   }, []);
 
   // Rename states
@@ -1502,7 +1737,115 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   useEffect(() => {
     setShouldAutoScroll(true);
+    autoGuidedMessageIdsRef.current.clear();
+    setGuideNarrationBlockedSessionId(null);
+    setGuideNarrationFinishedKey(null);
+    activeGuideNarrationKeyRef.current = null;
+    lastGuidePreviewKeyRef.current = '';
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+      guideAutoAdvanceTimerRef.current = null;
+    }
   }, [currentSession?.id]);
+
+  const activeGuideSession = desktopAssistantStatus.masterEnabled
+    ? desktopAssistantStatus.guideSession
+    : null;
+  const currentGuideSession = useMemo(() => {
+    if (!activeGuideSession || !currentSession || activeGuideSession.sessionId !== currentSession.id) {
+      return null;
+    }
+    return activeGuideSession;
+  }, [activeGuideSession, currentSession]);
+
+  const getGuideContentForMessage = useCallback((message: CoworkMessage) => {
+    return resolveGuideContentFromConversation(message, currentSession?.messages ?? [], {
+      cwd: currentSession?.cwd,
+    });
+  }, [currentSession?.cwd, currentSession?.messages]);
+
+  const currentGuideSourceMessage = useMemo(() => {
+    if (!currentGuideSession) {
+      return null;
+    }
+    return currentSession?.messages.find((message) => message.id === currentGuideSession.messageId) ?? null;
+  }, [currentGuideSession, currentSession]);
+
+  const isCurrentGuideLinkedPreviewActive = Boolean(
+    currentGuideSession
+    && currentGuidePreviewDescriptor?.mode === GuidePreviewMode.Linked
+    && currentGuidePreviewDescriptor.previewUrl
+    && currentGuidePreviewDescriptor.linkedManifest
+    && linkedPreviewFallbackGuideId !== currentGuideSession.id,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentGuideSession) {
+      setCurrentPresentationDeck(null);
+      setCurrentGuidePreviewDescriptor(null);
+      setLinkedPreviewFallbackGuideId(null);
+      return;
+    }
+
+    const baseDeck = buildPresentationDeck({
+      guideSession: currentGuideSession,
+      sourceMessage: currentGuideSourceMessage,
+    });
+    setCurrentPresentationDeck(baseDeck);
+    setCurrentGuidePreviewDescriptor(null);
+    setLinkedPreviewFallbackGuideId(null);
+
+    if (!isLocalGuidePreviewTarget(currentGuideSession.previewTarget)) {
+      return;
+    }
+
+    void loadGuidePreviewDescriptor({
+      previewTarget: currentGuideSession.previewTarget,
+    })
+      .then((descriptor) => {
+        if (cancelled) {
+          return;
+        }
+
+        setCurrentGuidePreviewDescriptor(descriptor);
+        if (!descriptor.htmlContent?.trim()) {
+          return;
+        }
+        const nextDeck = buildPresentationDeckFromHtmlContent({
+          guideSession: currentGuideSession,
+          sourceMessage: currentGuideSourceMessage,
+          htmlContent: descriptor.htmlContent,
+        });
+        setCurrentPresentationDeck(nextDeck);
+      })
+      .catch((error) => {
+        console.warn('Failed to build presentation deck from local html content:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentGuideSession, currentGuideSourceMessage]);
+
+  useEffect(() => {
+    const handleOpenArtifactAnchor = (event: Event) => {
+      const customEvent = event as CustomEvent<{ anchor?: string }>;
+      const anchor = customEvent.detail?.anchor;
+      if (!anchor || !detailRootRef.current) {
+        return;
+      }
+      const target = detailRootRef.current.querySelector<HTMLElement>(`[data-guide-anchor="${anchor}"]`);
+      if (!target) {
+        return;
+      }
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+    window.addEventListener(GuidePreviewEvent.OpenArtifactAnchor, handleOpenArtifactAnchor as EventListener);
+    return () => {
+      window.removeEventListener(GuidePreviewEvent.OpenArtifactAnchor, handleOpenArtifactAnchor as EventListener);
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1536,6 +1879,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           ttsPlaybackModeRef.current = 'idle';
           dispatchAssistantReplyPlaybackState(autoReplyPlaybackSessionId, TtsAssistantReplyPlaybackState.Settled);
         }
+        if (event.type === 'stopped' && ttsPlaybackOwnerRef.current === 'guide') {
+          markGuideNarrationFinished();
+        }
+        ttsPlaybackOwnerRef.current = 'none';
         setTtsPlayingMessageId(null);
       }
     });
@@ -1556,10 +1903,50 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       autoReplyPlaybackSessionIdRef.current = null;
       autoReplyPlaybackUsesBrowserAudioRef.current = false;
       ttsPlaybackModeRef.current = 'idle';
+      ttsPlaybackOwnerRef.current = 'none';
       unsubscribe();
       unsubscribeVoice();
     };
-  }, [dispatchAssistantReplyPlaybackState]);
+  }, [dispatchAssistantReplyPlaybackState, markGuideNarrationFinished]);
+
+  useEffect(() => {
+    let active = true;
+    const syncDesktopAssistantState = async () => {
+      try {
+        const [config, status] = await Promise.all([
+          desktopAssistantService.getConfig(),
+          desktopAssistantService.getStatus(),
+        ]);
+        if (!active) {
+          return;
+        }
+        setDesktopAssistantConfig(config);
+        setDesktopAssistantStatus(status);
+      } catch (error) {
+        console.error('Failed to load desktop assistant state:', error);
+      }
+    };
+
+    void syncDesktopAssistantState();
+    const unsubscribe = desktopAssistantService.onStateChanged((status) => {
+      if (!active) {
+        return;
+      }
+      setDesktopAssistantStatus(status);
+      void desktopAssistantService.getConfig().then((config) => {
+        if (active) {
+          setDesktopAssistantConfig(config);
+        }
+      }).catch((error) => {
+        console.error('Failed to refresh desktop assistant config:', error);
+      });
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -1574,6 +1961,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   useEffect(() => {
     return () => {
       if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
+      if (guideAutoAdvanceTimerRef.current) clearTimeout(guideAutoAdvanceTimerRef.current);
     };
   }, []);
 
@@ -1665,6 +2053,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     autoReplyPlaybackSessionIdRef.current = null;
     autoReplyPlaybackUsesBrowserAudioRef.current = false;
     ttsPlaybackModeRef.current = 'idle';
+    ttsPlaybackOwnerRef.current = 'none';
+    activeGuideNarrationKeyRef.current = null;
     if (autoReplyPlaybackSessionId) {
       dispatchAssistantReplyPlaybackState(autoReplyPlaybackSessionId, TtsAssistantReplyPlaybackState.Settled);
     }
@@ -1679,31 +2069,42 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     };
   }, []);
 
+  const rewriteTtsTextIfNeeded = useCallback(async (cleanedText: string): Promise<string> => {
+    if (!cleanedText.trim()) {
+      return '';
+    }
+    const postProcessConfig = getTtsPostProcessConfig();
+    if (!postProcessConfig.ttsLlmRewriteEnabled) {
+      return cleanedText.trim();
+    }
+    try {
+      const rewritten = await voiceTextPostProcessService.rewriteTtsScript(cleanedText);
+      return rewritten.trim() || cleanedText.trim();
+    } catch (error) {
+      console.warn('Failed to rewrite TTS script with the current model:', error);
+      return cleanedText.trim();
+    }
+  }, [getTtsPostProcessConfig]);
+
   const buildTtsPlaybackText = useCallback(async (content: string): Promise<string> => {
     const postProcessConfig = getTtsPostProcessConfig();
     const cleanedText = buildSpeakableAssistantText(content, {
       skipKeywords: postProcessConfig.ttsSkipKeywords,
     });
-    if (!cleanedText) {
-      return '';
-    }
-    if (!postProcessConfig.ttsLlmRewriteEnabled) {
-      return cleanedText;
-    }
-    try {
-      const rewritten = await voiceTextPostProcessService.rewriteTtsScript(cleanedText);
-      return rewritten.trim() || cleanedText;
-    } catch (error) {
-      console.warn('Failed to rewrite TTS script with the current model:', error);
-      return cleanedText;
-    }
-  }, [getTtsPostProcessConfig]);
+    return rewriteTtsTextIfNeeded(cleanedText);
+  }, [getTtsPostProcessConfig, rewriteTtsTextIfNeeded]);
 
-  const playAssistantMessage = useCallback(async (
-    message: CoworkMessage,
-    options?: { origin?: 'manual' | 'auto'; sessionId?: string }
+  const playTtsText = useCallback(async (
+    text: string,
+    options?: {
+      owner?: TtsPlaybackOwner;
+      sessionId?: string;
+      messageId?: string | null;
+      showEmptyToast?: boolean;
+    },
   ) => {
-    const autoReplySessionId = options?.origin === 'auto' && options.sessionId
+    const owner = options?.owner ?? 'assistant_manual';
+    const autoReplySessionId = owner === 'assistant_auto' && options?.sessionId
       ? options.sessionId
       : null;
     if (autoReplySessionId) {
@@ -1711,16 +2112,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Pending);
     }
 
-    const text = await buildTtsPlaybackText(message.content);
-    if (!text) {
+    const speakableText = await rewriteTtsTextIfNeeded(text);
+    if (!speakableText) {
       if (autoReplySessionId) {
         autoReplyPlaybackSessionIdRef.current = null;
         autoReplyPlaybackUsesBrowserAudioRef.current = false;
         dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
       }
-      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
-        detail: i18nService.t('ttsNoSpeakableContent'),
-      }));
+      ttsPlaybackOwnerRef.current = 'none';
+      setTtsPlayingMessageId(null);
+      if (options?.showEmptyToast !== false) {
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: i18nService.t('ttsNoSpeakableContent'),
+        }));
+      }
       return;
     }
 
@@ -1734,47 +2139,50 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         return fallbackPromise;
       }
       fallbackPromise = (async () => {
-      if (ttsAudioRef.current) {
-        ttsAudioRef.current.pause();
-        ttsAudioRef.current.src = '';
-        ttsAudioRef.current = null;
-      }
-      if (ttsAudioObjectUrlRef.current) {
-        URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
-        ttsAudioObjectUrlRef.current = null;
-      }
+        if (ttsAudioRef.current) {
+          ttsAudioRef.current.pause();
+          ttsAudioRef.current.src = '';
+          ttsAudioRef.current = null;
+        }
+        if (ttsAudioObjectUrlRef.current) {
+          URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
+          ttsAudioObjectUrlRef.current = null;
+        }
 
-      autoReplyPlaybackUsesBrowserAudioRef.current = false;
-      ttsPlaybackModeRef.current = 'system';
-      console.warn('Falling back to system TTS playback after browser audio playback failed:', error);
-      const fallbackResult = await window.electron.tts.speak({
-        text,
-        voiceId: ttsConfig.voiceId,
-        rate: ttsConfig.rate,
-        volume: ttsConfig.volume,
-        playbackMode: TtsPlaybackMode.System,
-      });
-      if (fallbackResult.success) {
-        return true;
-      }
+        autoReplyPlaybackUsesBrowserAudioRef.current = false;
+        ttsPlaybackModeRef.current = 'system';
+        console.warn('Falling back to system TTS playback after browser audio playback failed:', error);
+        const fallbackResult = await window.electron.tts.speak({
+          text: speakableText,
+          voiceId: ttsConfig.voiceId,
+          rate: ttsConfig.rate,
+          volume: ttsConfig.volume,
+          playbackMode: TtsPlaybackMode.System,
+        });
+        if (fallbackResult.success) {
+          return true;
+        }
 
-      if (autoReplySessionId) {
-        autoReplyPlaybackSessionIdRef.current = null;
-        dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
-      }
-      ttsPlaybackModeRef.current = 'idle';
-      setTtsPlayingMessageId(null);
-      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
-        detail: fallbackResult.error || i18nService.t('coworkTtsUnavailable'),
-      }));
-      return false;
+        if (autoReplySessionId) {
+          autoReplyPlaybackSessionIdRef.current = null;
+          dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
+        }
+        ttsPlaybackOwnerRef.current = 'none';
+        ttsPlaybackModeRef.current = 'idle';
+        setTtsPlayingMessageId(null);
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: fallbackResult.error || i18nService.t('coworkTtsUnavailable'),
+        }));
+        return false;
       })();
       return fallbackPromise;
     };
-    setTtsPlayingMessageId(message.id);
+
+    ttsPlaybackOwnerRef.current = owner;
+    setTtsPlayingMessageId(options?.messageId ?? null);
     ttsPlaybackModeRef.current = 'preparing_browser';
     const result = await window.electron.tts.speak({
-      text,
+      text: speakableText,
       voiceId: ttsConfig.voiceId,
       rate: ttsConfig.rate,
       volume: ttsConfig.volume,
@@ -1786,6 +2194,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         autoReplyPlaybackUsesBrowserAudioRef.current = false;
         dispatchAssistantReplyPlaybackState(autoReplySessionId, TtsAssistantReplyPlaybackState.Settled);
       }
+      ttsPlaybackOwnerRef.current = 'none';
       ttsPlaybackModeRef.current = 'idle';
       setTtsPlayingMessageId(null);
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
@@ -1849,6 +2258,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             URL.revokeObjectURL(ttsAudioObjectUrlRef.current);
             ttsAudioObjectUrlRef.current = null;
           }
+          ttsPlaybackOwnerRef.current = 'none';
           ttsPlaybackModeRef.current = 'idle';
           if (autoReplySessionId) {
             autoReplyPlaybackSessionIdRef.current = null;
@@ -1878,6 +2288,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           if (autoReplySessionId) {
             autoReplyPlaybackUsesBrowserAudioRef.current = false;
           }
+          if (ttsPlaybackOwnerRef.current === 'guide') {
+            markGuideNarrationFinished();
+          }
+          ttsPlaybackOwnerRef.current = 'none';
           ttsPlaybackModeRef.current = 'idle';
           console.error('Failed to load TTS audio source:', audio.error);
           void fallbackToSystemPlayback(audio.error);
@@ -1896,7 +2310,26 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
     autoReplyPlaybackUsesBrowserAudioRef.current = false;
     ttsPlaybackModeRef.current = 'system';
-  }, [buildTtsPlaybackText, dispatchAssistantReplyPlaybackState]);
+  }, [dispatchAssistantReplyPlaybackState, markGuideNarrationFinished, rewriteTtsTextIfNeeded]);
+
+  const playAssistantMessage = useCallback(async (
+    message: CoworkMessage,
+    options?: { origin?: 'manual' | 'auto'; sessionId?: string }
+  ) => {
+    const text = await buildTtsPlaybackText(message.content);
+    await playTtsText(text, {
+      owner: options?.origin === 'auto' ? 'assistant_auto' : 'assistant_manual',
+      sessionId: options?.sessionId,
+      messageId: message.id,
+    });
+  }, [buildTtsPlaybackText, playTtsText]);
+
+  const stopGuideNarration = useCallback(async () => {
+    if (ttsPlaybackOwnerRef.current !== 'guide') {
+      return;
+    }
+    await stopTtsPlayback();
+  }, [stopTtsPlayback]);
 
   useEffect(() => {
     if (!ttsAvailability?.supported || isStreaming || !currentSession) {
@@ -1918,6 +2351,23 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         skipKeywords: ttsPostProcessConfig.ttsSkipKeywords,
       }).length > 0
     ));
+    const latestGuideCandidate = [...currentSession.messages].reverse().find((message) => (
+      message.type === 'assistant' && !message.metadata?.isStreaming
+    ));
+    const latestGuideCandidateEligible = Boolean(
+      latestGuideCandidate && getGuideContentForMessage(latestGuideCandidate).eligible,
+    );
+    if (shouldSuppressAssistantReplyAutoPlay({
+      desktopAssistantEnabled: desktopAssistantConfig.masterEnabled,
+      autoOpenPreviewGuide: desktopAssistantConfig.autoOpenPreviewGuide,
+      autoEnterSceneGuide: desktopAssistantConfig.autoEnterSceneGuide,
+      latestMessageEligible: latestGuideCandidateEligible,
+      guideSessionStatus: desktopAssistantStatus.masterEnabled
+        ? (desktopAssistantStatus.guideSession?.status ?? null)
+        : null,
+    })) {
+      return;
+    }
     if (!lastAssistantMessage) {
       if (autoReplyPlaybackSessionIdRef.current === currentSession.id) {
         return;
@@ -1933,7 +2383,461 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       origin: 'auto',
       sessionId: currentSession.id,
     });
-  }, [currentSession, dispatchAssistantReplyPlaybackState, getTtsPostProcessConfig, isStreaming, playAssistantMessage, ttsAvailability]);
+  }, [
+    currentSession,
+    desktopAssistantConfig.autoEnterSceneGuide,
+    desktopAssistantConfig.autoOpenPreviewGuide,
+    desktopAssistantConfig.masterEnabled,
+    desktopAssistantStatus.guideSession,
+    desktopAssistantStatus.masterEnabled,
+    dispatchAssistantReplyPlaybackState,
+    getTtsPostProcessConfig,
+    getGuideContentForMessage,
+    isStreaming,
+    playAssistantMessage,
+    ttsAvailability,
+  ]);
+
+  useEffect(() => {
+    const autoGuideEnabled = desktopAssistantConfig.masterEnabled && desktopAssistantConfig.autoOpenPreviewGuide;
+    const latestAssistantMessage = currentSession
+      ? [...currentSession.messages].reverse().find((message) => (
+        message.type === 'assistant' && !message.metadata?.isStreaming
+      ))
+      : null;
+    if (
+      autoGuideEnabled
+      && !previousDesktopAssistantAutoGuideEnabledRef.current
+      && latestAssistantMessage
+    ) {
+      autoGuidedMessageIdsRef.current.add(latestAssistantMessage.id);
+    }
+    previousDesktopAssistantAutoGuideEnabledRef.current = autoGuideEnabled;
+  }, [currentSession, desktopAssistantConfig.autoOpenPreviewGuide, desktopAssistantConfig.masterEnabled]);
+
+  const resolveGuideStartContext = useCallback(async (
+    message: CoworkMessage,
+    previewTarget: string,
+    scenes: GuideScene[],
+  ) => {
+    const preparedContext = await prepareGuideStartContext({
+      message,
+      previewTarget,
+      scenes,
+      cwd: currentSession?.cwd,
+    });
+    if (!preparedContext.success || !preparedContext.previewTarget) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: preparedContext.error || i18nService.t('desktopAssistantState_error'),
+      }));
+      return null;
+    }
+    return preparedContext;
+  }, [currentSession?.cwd]);
+
+  const handleStartGuide = useCallback(async (
+    message: CoworkMessage,
+    source: typeof GuideSource[keyof typeof GuideSource],
+  ) => {
+    if (!currentSession) {
+      return;
+    }
+    const guideContent = getGuideContentForMessage(message);
+    if (!guideContent.eligible || !guideContent.previewTarget) {
+      return;
+    }
+
+    const preparedGuideContext = await resolveGuideStartContext(
+      message,
+      guideContent.previewTarget,
+      guideContent.scenes,
+    );
+    if (!preparedGuideContext?.previewTarget) {
+      return;
+    }
+
+    const startResult = await desktopAssistantService.startGuide({
+      sessionId: currentSession.id,
+      messageId: message.id,
+      source,
+      previewTarget: preparedGuideContext.previewTarget,
+      scenes: preparedGuideContext.scenes,
+    });
+    if (!startResult.success) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: startResult.error || i18nService.t('desktopAssistantState_error'),
+      }));
+      return;
+    }
+
+    if (startResult.guideSession) {
+      setGuideNarrationBlockedSessionId(startResult.guideSession.id);
+      setCurrentGuidePreviewDescriptor(preparedGuideContext.previewDescriptor);
+      setLinkedPreviewFallbackGuideId(null);
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: startResult.guideSession ?? null,
+      }));
+    }
+
+    const shouldOpenExternalPreview = preparedGuideContext.previewDescriptor?.mode !== GuidePreviewMode.Linked;
+    if (shouldOpenExternalPreview) {
+      const previewResult = await openGuideScenePreview(
+        preparedGuideContext.previewTarget,
+        preparedGuideContext.scenes[0]?.anchor,
+      );
+      if (!previewResult.success) {
+        if (startResult.guideSession) {
+          void desktopAssistantService.stopGuide();
+          setGuideNarrationBlockedSessionId(null);
+          setDesktopAssistantStatus((previous) => ({
+            ...previous,
+            guideSession: null,
+          }));
+        }
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: previewResult.error || i18nService.t('desktopAssistantState_error'),
+        }));
+        return;
+      }
+    }
+
+    if (startResult.guideSession) {
+      lastGuidePreviewKeyRef.current = `${startResult.guideSession.id}:0`;
+    }
+    setGuideNarrationBlockedSessionId(null);
+  }, [currentSession, getGuideContentForMessage, resolveGuideStartContext]);
+
+  useEffect(() => {
+    if (!currentSession || isStreaming || !desktopAssistantConfig.masterEnabled || !desktopAssistantConfig.autoOpenPreviewGuide) {
+      return;
+    }
+
+    const latestAssistantMessage = [...currentSession.messages].reverse().find((message) => (
+      message.type === 'assistant' && !message.metadata?.isStreaming
+    ));
+    if (!latestAssistantMessage) {
+      return;
+    }
+    if (autoGuidedMessageIdsRef.current.has(latestAssistantMessage.id)) {
+      return;
+    }
+    if (desktopAssistantStatus.guideSession && desktopAssistantStatus.guideSession.status !== GuideStatus.Stopped) {
+      return;
+    }
+
+    const guideContent = getGuideContentForMessage(latestAssistantMessage);
+    if (!guideContent.eligible || !guideContent.previewTarget) {
+      return;
+    }
+
+    autoGuidedMessageIdsRef.current.add(latestAssistantMessage.id);
+    if (desktopAssistantConfig.autoEnterSceneGuide) {
+      void handleStartGuide(latestAssistantMessage, GuideSource.Auto);
+      return;
+    }
+
+    void resolveGuideStartContext(
+      latestAssistantMessage,
+      guideContent.previewTarget,
+      guideContent.scenes,
+    ).then((preparedGuideContext) => {
+      if (!preparedGuideContext?.previewTarget) {
+        return;
+      }
+      if (preparedGuideContext.previewDescriptor?.mode === GuidePreviewMode.Linked) {
+        return;
+      }
+      void openGuideScenePreview(
+        preparedGuideContext.previewTarget,
+        preparedGuideContext.scenes[0]?.anchor,
+      ).then((result) => {
+        if (!result.success) {
+          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+            detail: result.error || i18nService.t('desktopAssistantState_error'),
+          }));
+        }
+      });
+    });
+  }, [
+    currentSession,
+    desktopAssistantConfig.autoEnterSceneGuide,
+    desktopAssistantConfig.autoOpenPreviewGuide,
+    desktopAssistantConfig.masterEnabled,
+    desktopAssistantStatus.guideSession,
+    getGuideContentForMessage,
+    handleStartGuide,
+    isStreaming,
+    resolveGuideStartContext,
+  ]);
+
+  const handlePauseGuide = useCallback(() => {
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+      guideAutoAdvanceTimerRef.current = null;
+    }
+    void stopGuideNarration();
+    void desktopAssistantService.pauseGuide().then((result) => {
+      if (!result.success) {
+        return;
+      }
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: result.guideSession ?? previous.guideSession,
+      }));
+    });
+  }, [stopGuideNarration]);
+
+  const handleResumeGuide = useCallback(() => {
+    void desktopAssistantService.resumeGuide().then((result) => {
+      if (!result.success) {
+        return;
+      }
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: result.guideSession ?? previous.guideSession,
+      }));
+    });
+  }, []);
+
+  const handleStopGuide = useCallback(() => {
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+      guideAutoAdvanceTimerRef.current = null;
+    }
+    void stopGuideNarration();
+    lastGuideNarrationKeyRef.current = '';
+    lastGuidePreviewKeyRef.current = '';
+    activeGuideNarrationKeyRef.current = null;
+    setGuideNarrationFinishedKey(null);
+    void desktopAssistantService.stopGuide().then((result) => {
+      if (!result.success) {
+        return;
+      }
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: null,
+      }));
+    });
+  }, [stopGuideNarration]);
+
+  const handleNextGuideScene = useCallback(() => {
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+      guideAutoAdvanceTimerRef.current = null;
+    }
+    void desktopAssistantService.nextScene().then((result) => {
+      if (!result.success) {
+        return;
+      }
+      setGuideNarrationFinishedKey(null);
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: result.guideSession ?? previous.guideSession,
+      }));
+    });
+  }, []);
+
+  const handlePreviousGuideScene = useCallback(() => {
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+      guideAutoAdvanceTimerRef.current = null;
+    }
+    void desktopAssistantService.previousScene().then((result) => {
+      if (!result.success) {
+        return;
+      }
+      setGuideNarrationFinishedKey(null);
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: result.guideSession ?? previous.guideSession,
+      }));
+    });
+  }, []);
+
+  const handleReplayGuideScene = useCallback(() => {
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+      guideAutoAdvanceTimerRef.current = null;
+    }
+    void desktopAssistantService.replayScene().then((result) => {
+      if (!result.success) {
+        return;
+      }
+      setGuideNarrationFinishedKey(null);
+      setDesktopAssistantStatus((previous) => ({
+        ...previous,
+        guideSession: result.guideSession ?? previous.guideSession,
+      }));
+    });
+  }, []);
+
+  const handleLinkedPreviewUnavailable = useCallback(() => {
+    if (!currentGuideSession) {
+      return;
+    }
+    setLinkedPreviewFallbackGuideId(currentGuideSession.id);
+    const currentScene = currentGuideSession.scenes[currentGuideSession.currentSceneIndex];
+    void openGuideScenePreview(currentGuideSession.previewTarget, currentScene?.anchor).then((result) => {
+      if (!result.success) {
+        console.warn('[DesktopAssistant] Failed to downgrade linked preview:', result.error);
+      }
+    });
+  }, [currentGuideSession]);
+
+  useEffect(() => {
+    if (!currentGuideSession || guideNarrationBlockedSessionId === currentGuideSession.id) {
+      return;
+    }
+    if (currentGuideSession.status !== GuideStatus.Active) {
+      return;
+    }
+
+    const guidePreviewKey = `${currentGuideSession.id}:${currentGuideSession.currentSceneIndex}`;
+    if (lastGuidePreviewKeyRef.current === guidePreviewKey) {
+      return;
+    }
+
+    const currentScene = currentGuideSession.scenes[currentGuideSession.currentSceneIndex];
+    const shouldSyncSourcePreview = !isCurrentGuideLinkedPreviewActive && Boolean(
+      currentScene?.anchor
+      || currentGuideSession.previewTarget.startsWith('#artifact-')
+      || currentGuidePreviewDescriptor?.mode === GuidePreviewMode.External
+      || currentGuidePreviewDescriptor?.mode === GuidePreviewMode.Artifact,
+    );
+    if (!shouldSyncSourcePreview) {
+      lastGuidePreviewKeyRef.current = guidePreviewKey;
+      return;
+    }
+    lastGuidePreviewKeyRef.current = guidePreviewKey;
+    void openGuideScenePreview(currentGuideSession.previewTarget, currentScene?.anchor).then((result) => {
+      if (!result.success) {
+        console.warn('[DesktopAssistant] Failed to open guide scene preview:', result.error);
+      }
+    });
+  }, [
+    currentGuidePreviewDescriptor?.mode,
+    currentGuideSession,
+    guideNarrationBlockedSessionId,
+    isCurrentGuideLinkedPreviewActive,
+  ]);
+
+  useEffect(() => {
+    if (!activeGuideSession) {
+      lastGuideNarrationKeyRef.current = '';
+      void stopGuideNarration();
+      return;
+    }
+    if (!currentGuideSession) {
+      return;
+    }
+    if (guideNarrationBlockedSessionId === currentGuideSession.id) {
+      return;
+    }
+    if (currentGuideSession.status === GuideStatus.Paused) {
+      lastGuideNarrationKeyRef.current = '';
+      void stopGuideNarration();
+      return;
+    }
+    if (currentGuideSession.status !== GuideStatus.Active) {
+      return;
+    }
+
+    const guideKey = `${currentGuideSession.id}:${currentGuideSession.currentSceneIndex}:${currentGuideSession.sceneReplayNonce ?? 0}`;
+    if (lastGuideNarrationKeyRef.current === guideKey) {
+      return;
+    }
+
+    const currentScene = currentGuideSession.scenes[currentGuideSession.currentSceneIndex];
+    const narrationText = buildGuideNarrationText(
+      currentScene,
+      desktopAssistantConfig.assistantReplySpeakMode,
+    );
+    if (!narrationText) {
+      lastGuideNarrationKeyRef.current = guideKey;
+      return;
+    }
+
+    const ttsConfig = {
+      ...DEFAULT_TTS_CONFIG,
+      ...(configService.getConfig().tts ?? {}),
+    };
+    if (!ttsConfig.enabled) {
+      lastGuideNarrationKeyRef.current = guideKey;
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      if (ttsPlaybackOwnerRef.current === 'assistant_auto' || ttsPlaybackOwnerRef.current === 'guide') {
+        await stopTtsPlayback();
+      } else if (ttsPlaybackOwnerRef.current === 'assistant_manual') {
+        return;
+      }
+      if (cancelled) {
+        return;
+      }
+      setGuideNarrationFinishedKey(null);
+      lastGuideNarrationKeyRef.current = guideKey;
+      activeGuideNarrationKeyRef.current = guideKey;
+      await playTtsText(narrationText, {
+        owner: 'guide',
+        messageId: null,
+        showEmptyToast: false,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeGuideSession,
+    currentGuideSession,
+    desktopAssistantConfig.assistantReplySpeakMode,
+    guideNarrationBlockedSessionId,
+    playTtsText,
+    stopGuideNarration,
+    stopTtsPlayback,
+    ttsPlayingMessageId,
+  ]);
+
+  useEffect(() => {
+    if (!currentGuideSession) {
+      return;
+    }
+    if (currentGuideSession.status !== GuideStatus.Active) {
+      return;
+    }
+
+    const guideKey = `${currentGuideSession.id}:${currentGuideSession.currentSceneIndex}:${currentGuideSession.sceneReplayNonce ?? 0}`;
+    if (guideNarrationFinishedKey !== guideKey) {
+      return;
+    }
+    if (currentGuideSession.currentSceneIndex >= currentGuideSession.scenes.length - 1) {
+      return;
+    }
+
+    const delayMs = getGuideAutoAdvanceDelayMs(
+      currentGuideSession.scenes[currentGuideSession.currentSceneIndex],
+      desktopAssistantConfig.assistantReplySpeakMode,
+    );
+    if (guideAutoAdvanceTimerRef.current) {
+      clearTimeout(guideAutoAdvanceTimerRef.current);
+    }
+    guideAutoAdvanceTimerRef.current = setTimeout(() => {
+      guideAutoAdvanceTimerRef.current = null;
+      if (currentGuideSession.status === GuideStatus.Active) {
+        void desktopAssistantService.nextScene();
+      }
+    }, delayMs);
+
+    return () => {
+      if (guideAutoAdvanceTimerRef.current) {
+        clearTimeout(guideAutoAdvanceTimerRef.current);
+        guideAutoAdvanceTimerRef.current = null;
+      }
+    };
+  }, [currentGuideSession, desktopAssistantConfig.assistantReplySpeakMode, guideNarrationFinishedKey]);
 
   const closeMenu = () => {
     setMenuPosition(null);
@@ -2400,8 +3304,11 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               userMessage: null,
               assistantItems: [],
             }}
+            messages={currentSession.messages}
+            guideCwd={currentSession.cwd}
             resolveLocalFilePath={resolveLocalFilePath}
             showTypingIndicator
+            desktopAssistantEnabled={desktopAssistantConfig.masterEnabled}
             showCopyButtons={!isStreaming}
             showTtsButtons={!!ttsAvailability?.supported}
             ttsPlayingMessageId={ttsPlayingMessageId}
@@ -2440,14 +3347,21 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             <div data-export-role="assistant-block" {...(asstRailIdx >= 0 ? { 'data-rail-index': asstRailIdx } : undefined)}>
               <AssistantTurnBlock
                 turn={turn}
+                messages={currentSession.messages}
+                guideCwd={currentSession.cwd}
                 resolveLocalFilePath={resolveLocalFilePath}
                 mapDisplayText={mapDisplayText}
                 showTypingIndicator={showTypingIndicator}
+                desktopAssistantEnabled={desktopAssistantConfig.masterEnabled}
                 showCopyButtons={!isStreaming}
                 showTtsButtons={!!ttsAvailability?.supported}
+                showGuideButtons={desktopAssistantConfig.masterEnabled && !isStreaming}
                 ttsPlayingMessageId={ttsPlayingMessageId}
                 onPlayTts={playAssistantMessage}
                 onStopTts={stopTtsPlayback}
+                onStartGuide={(message) => {
+                  void handleStartGuide(message, GuideSource.Manual);
+                }}
               />
             </div>
           )}
@@ -2628,15 +3542,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       )}
 
       {/* Messages */}
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <DesktopAssistantStatusBar status={desktopAssistantStatus} />
+        <GuidePanel
+          guideSession={currentGuideSession}
+          presentationDeck={currentPresentationDeck}
+          linkedPreviewUrl={isCurrentGuideLinkedPreviewActive ? currentGuidePreviewDescriptor?.previewUrl ?? null : null}
+          linkedPresentationManifest={isCurrentGuideLinkedPreviewActive ? currentGuidePreviewDescriptor?.linkedManifest ?? null : null}
+          onLinkedPreviewUnavailable={handleLinkedPreviewUnavailable}
+          onPause={handlePauseGuide}
+          onResume={handleResumeGuide}
+          onPrevious={handlePreviousGuideScene}
+          onNext={handleNextGuideScene}
+          onStop={handleStopGuide}
+        />
         <div
           ref={scrollContainerRef}
           onScroll={handleMessagesScroll}
-          className={`h-full min-h-0 overflow-y-auto pt-3 ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'}`}
+          className={`min-h-0 flex-1 overflow-y-auto pt-3 ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'} ${currentGuideSession ? 'pb-36' : ''}`}
         >
           {renderConversationTurns()}
           <div className="h-20" />
         </div>
+        <GuideFloatingDock
+          guideSession={currentGuideSession}
+          onPause={handlePauseGuide}
+          onResume={handleResumeGuide}
+          onPrevious={handlePreviousGuideScene}
+          onNext={handleNextGuideScene}
+          onReplay={handleReplayGuideScene}
+          onStop={handleStopGuide}
+        />
 
         {/* Turn Navigation Rail — to the left of scrollbar */}
         {turns.length > 1 && isScrollable && (

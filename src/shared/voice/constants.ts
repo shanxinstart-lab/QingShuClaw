@@ -1,4 +1,8 @@
-import type { WakeInputConfig } from '../wakeInput/constants';
+import {
+  WakeInputProviderMode,
+  normalizeWakeInputProviderMode,
+  type WakeInputConfig,
+} from '../wakeInput/constants';
 import { TtsEngine } from '../tts/constants';
 
 export const VoiceCapability = {
@@ -12,6 +16,7 @@ export type VoiceCapability = typeof VoiceCapability[keyof typeof VoiceCapabilit
 export const VoiceProvider = {
   None: 'none',
   MacosNative: 'macos_native',
+  LocalSherpaOnnx: 'local_sherpa_onnx',
   LocalWhisperCpp: 'local_whisper_cpp',
   LocalQwen3Tts: 'local_qwen3_tts',
   CloudOpenAi: 'cloud_openai',
@@ -47,6 +52,7 @@ export type VoiceCapabilityReason = typeof VoiceCapabilityReason[keyof typeof Vo
 export const VoiceIpcChannel = {
   GetCapabilityMatrix: 'voice:getCapabilityMatrix',
   GetConfig: 'voice:getConfig',
+  GetLocalSherpaOnnxStatus: 'voice:getLocalSherpaOnnxStatus',
   GetLocalWhisperCppStatus: 'voice:getLocalWhisperCppStatus',
   GetLocalQwen3TtsStatus: 'voice:getLocalQwen3TtsStatus',
   EnsureLocalWhisperCppDirectories: 'voice:ensureLocalWhisperCppDirectories',
@@ -108,6 +114,21 @@ export interface VoiceLocalWhisperCppProviderConfig {
   threads: number;
   useGpu: boolean;
   autoDownloadModel: boolean;
+}
+
+export interface VoiceSherpaOnnxProviderConfig {
+  enabled: boolean;
+  packaged: boolean;
+  asrModelId: string;
+  asrModelPath: string;
+  ttsModelId: string;
+  ttsModelPath: string;
+  ttsVoiceId: string;
+  ttsRate: number;
+  ttsVolume: number;
+  threads: number;
+  provider: string;
+  sampleRate: number;
 }
 
 export const VoiceLocalQwen3TtsTask = {
@@ -208,6 +229,7 @@ export interface VoiceConfig {
   providers: {
     macosNative: VoiceMacosNativeProviderConfig;
     edgeTts: VoiceEdgeTtsProviderConfig;
+    sherpaOnnx: VoiceSherpaOnnxProviderConfig;
     localWhisperCpp: VoiceLocalWhisperCppProviderConfig;
     localQwen3Tts: VoiceLocalQwen3TtsProviderConfig;
     openai: VoiceOpenAiProviderConfig;
@@ -253,6 +275,20 @@ export interface VoiceLocalWhisperCppStatus {
   ready: boolean;
 }
 
+export interface VoiceLocalSherpaOnnxStatus {
+  resourceRoot: string;
+  enabled: boolean;
+  provider: string;
+  threads: number;
+  sampleRate: number;
+  asrModelId: string;
+  asrModelPath: string | null;
+  asrTokensPath: string | null;
+  asrBpeVocabPath: string | null;
+  asrReady: boolean;
+  ready: boolean;
+}
+
 export interface VoiceLocalQwen3TtsStatus {
   resourceRoot: string;
   modelsRoot: string;
@@ -278,7 +314,15 @@ export interface VoiceLocalQwen3TtsStatus {
   ready: boolean;
 }
 
+export const SherpaOnnxAsrModelVariant = {
+  StreamingZipformerCtc: 'streaming_zipformer_ctc',
+  OfflineFireRedAsrCtc: 'offline_fire_red_asr_ctc',
+} as const;
+export type SherpaOnnxAsrModelVariant =
+  typeof SherpaOnnxAsrModelVariant[keyof typeof SherpaOnnxAsrModelVariant];
+
 export const VoiceLocalModelKind = {
+  SherpaOnnxAsrModel: 'sherpa_onnx_asr_model',
   WhisperCppModel: 'whisper_cpp_model',
   Qwen3TtsModel: 'qwen3_tts_model',
   Qwen3TtsTokenizer: 'qwen3_tts_tokenizer',
@@ -287,6 +331,7 @@ export type VoiceLocalModelKind = typeof VoiceLocalModelKind[keyof typeof VoiceL
 
 export const VoiceLocalModelInstallBackend = {
   Direct: 'direct',
+  DirectArchive: 'direct_archive',
   HuggingFaceCli: 'huggingface_cli',
   ModelscopeCli: 'modelscope_cli',
 } as const;
@@ -316,6 +361,7 @@ export interface VoiceLocalModelCatalogEntry {
   requirements: string[];
   warnings: string[];
   provider: VoiceProvider;
+  runtimeVariant?: SherpaOnnxAsrModelVariant;
 }
 
 export interface VoiceLocalModelInstallStatus {
@@ -358,19 +404,35 @@ export interface VoiceCapabilityManifest {
 
 const DEFAULT_WAKE_WORDS = ['打开青书爪'];
 
+export const DEFAULT_SHERPA_ONNX_ASR_MODEL_ID = 'sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01';
+export const DEFAULT_SHERPA_ONNX_TTS_MODEL_ID = 'vits-icefall-zh-aishell3';
+export const DEFAULT_SHERPA_ONNX_SAMPLE_RATE = 16_000;
+
+const normalizeTtsProvider = (provider?: VoiceProvider | null): VoiceProvider => {
+  return provider === VoiceProvider.LocalSherpaOnnx
+    ? VoiceProvider.MacosNative
+    : (provider ?? VoiceProvider.MacosNative);
+};
+
+const normalizeTtsEngine = (engine?: TtsEngine | null): TtsEngine => {
+  return engine === TtsEngine.SherpaOnnx
+    ? TtsEngine.MacosNative
+    : (engine ?? TtsEngine.MacosNative);
+};
+
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   capabilities: {
     manualStt: {
       enabled: true,
-      provider: VoiceProvider.MacosNative,
+      provider: VoiceProvider.LocalSherpaOnnx,
     },
     wakeInput: {
       enabled: false,
-      provider: VoiceProvider.MacosNative,
+      provider: WakeInputProviderMode.TextMatch as unknown as VoiceProvider,
     },
     followUpDictation: {
       enabled: false,
-      provider: VoiceProvider.MacosNative,
+      provider: VoiceProvider.LocalSherpaOnnx,
     },
     tts: {
       enabled: true,
@@ -401,6 +463,20 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
       ttsVoiceId: '',
       ttsRate: 0.5,
       ttsVolume: 1,
+    },
+    sherpaOnnx: {
+      enabled: true,
+      packaged: true,
+      asrModelId: DEFAULT_SHERPA_ONNX_ASR_MODEL_ID,
+      asrModelPath: '',
+      ttsModelId: DEFAULT_SHERPA_ONNX_TTS_MODEL_ID,
+      ttsModelPath: '',
+      ttsVoiceId: '0',
+      ttsRate: 0.5,
+      ttsVolume: 1,
+      threads: 2,
+      provider: 'cpu',
+      sampleRate: DEFAULT_SHERPA_ONNX_SAMPLE_RATE,
     },
     localWhisperCpp: {
       enabled: false,
@@ -548,6 +624,8 @@ export const mergeVoiceConfig = (config?: Partial<VoiceConfig> | null): VoiceCon
       tts: {
         ...DEFAULT_VOICE_CONFIG.capabilities.tts,
         ...(config?.capabilities?.tts ?? {}),
+        provider: normalizeTtsProvider(config?.capabilities?.tts?.provider),
+        engine: normalizeTtsEngine(config?.capabilities?.tts?.engine),
       },
     },
     commands: {
@@ -566,6 +644,10 @@ export const mergeVoiceConfig = (config?: Partial<VoiceConfig> | null): VoiceCon
       edgeTts: {
         ...DEFAULT_VOICE_CONFIG.providers.edgeTts,
         ...(config?.providers?.edgeTts ?? {}),
+      },
+      sherpaOnnx: {
+        ...DEFAULT_VOICE_CONFIG.providers.sherpaOnnx,
+        ...(config?.providers?.sherpaOnnx ?? {}),
       },
       localWhisperCpp: {
         ...DEFAULT_VOICE_CONFIG.providers.localWhisperCpp,
@@ -615,6 +697,7 @@ export const createVoiceConfigFromLegacy = (options?: {
   const speechInput = options?.speechInput ?? null;
   const wakeInput = options?.wakeInput ?? null;
   const tts = options?.tts ?? null;
+  const normalizedLegacyTtsEngine = normalizeTtsEngine(tts?.engine);
 
   return mergeVoiceConfig({
     ...voice,
@@ -637,8 +720,8 @@ export const createVoiceConfigFromLegacy = (options?: {
         autoPlayAssistantReply: voice?.capabilities?.tts?.autoPlayAssistantReply
           ?? tts?.autoPlayAssistantReply
           ?? DEFAULT_VOICE_CONFIG.capabilities.tts.autoPlayAssistantReply,
-        provider: voice?.capabilities?.tts?.provider ?? DEFAULT_VOICE_CONFIG.capabilities.tts.provider,
-        engine: voice?.capabilities?.tts?.engine ?? tts?.engine ?? DEFAULT_VOICE_CONFIG.capabilities.tts.engine,
+        provider: normalizeTtsProvider(voice?.capabilities?.tts?.provider ?? DEFAULT_VOICE_CONFIG.capabilities.tts.provider),
+        engine: normalizeTtsEngine(voice?.capabilities?.tts?.engine ?? normalizedLegacyTtsEngine ?? DEFAULT_VOICE_CONFIG.capabilities.tts.engine),
       },
     },
     commands: {
@@ -662,18 +745,18 @@ export const createVoiceConfigFromLegacy = (options?: {
         ...(voice?.providers?.macosNative ?? {}),
         enabled: voice?.providers?.macosNative?.enabled ?? DEFAULT_VOICE_CONFIG.providers.macosNative.enabled,
         ttsVoiceId: voice?.providers?.macosNative?.ttsVoiceId ?? (
-          tts?.engine === TtsEngine.MacosNative
-            ? (tts.voiceId ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVoiceId)
+          normalizedLegacyTtsEngine === TtsEngine.MacosNative
+            ? (tts?.voiceId ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVoiceId)
             : DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVoiceId
         ),
         ttsRate: voice?.providers?.macosNative?.ttsRate ?? (
-          tts?.engine === TtsEngine.MacosNative
-            ? (tts.rate ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsRate)
+          normalizedLegacyTtsEngine === TtsEngine.MacosNative
+            ? (tts?.rate ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsRate)
             : DEFAULT_VOICE_CONFIG.providers.macosNative.ttsRate
         ),
         ttsVolume: voice?.providers?.macosNative?.ttsVolume ?? (
-          tts?.engine === TtsEngine.MacosNative
-            ? (tts.volume ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVolume)
+          normalizedLegacyTtsEngine === TtsEngine.MacosNative
+            ? (tts?.volume ?? DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVolume)
             : DEFAULT_VOICE_CONFIG.providers.macosNative.ttsVolume
         ),
       },
@@ -682,19 +765,39 @@ export const createVoiceConfigFromLegacy = (options?: {
         ...(voice?.providers?.edgeTts ?? {}),
         enabled: voice?.providers?.edgeTts?.enabled ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.enabled,
         ttsVoiceId: voice?.providers?.edgeTts?.ttsVoiceId ?? (
-          tts?.engine === TtsEngine.EdgeTts
-            ? (tts.voiceId ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVoiceId)
+          normalizedLegacyTtsEngine === TtsEngine.EdgeTts
+            ? (tts?.voiceId ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVoiceId)
             : DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVoiceId
         ),
         ttsRate: voice?.providers?.edgeTts?.ttsRate ?? (
-          tts?.engine === TtsEngine.EdgeTts
-            ? (tts.rate ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsRate)
+          normalizedLegacyTtsEngine === TtsEngine.EdgeTts
+            ? (tts?.rate ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsRate)
             : DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsRate
         ),
         ttsVolume: voice?.providers?.edgeTts?.ttsVolume ?? (
-          tts?.engine === TtsEngine.EdgeTts
-            ? (tts.volume ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVolume)
+          normalizedLegacyTtsEngine === TtsEngine.EdgeTts
+            ? (tts?.volume ?? DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVolume)
             : DEFAULT_VOICE_CONFIG.providers.edgeTts.ttsVolume
+        ),
+      },
+      sherpaOnnx: {
+        ...DEFAULT_VOICE_CONFIG.providers.sherpaOnnx,
+        ...(voice?.providers?.sherpaOnnx ?? {}),
+        enabled: voice?.providers?.sherpaOnnx?.enabled ?? DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.enabled,
+        ttsVoiceId: voice?.providers?.sherpaOnnx?.ttsVoiceId ?? (
+          normalizedLegacyTtsEngine === TtsEngine.SherpaOnnx
+            ? (tts?.voiceId ?? DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsVoiceId)
+            : DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsVoiceId
+        ),
+        ttsRate: voice?.providers?.sherpaOnnx?.ttsRate ?? (
+          normalizedLegacyTtsEngine === TtsEngine.SherpaOnnx
+            ? (tts?.rate ?? DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsRate)
+            : DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsRate
+        ),
+        ttsVolume: voice?.providers?.sherpaOnnx?.ttsVolume ?? (
+          normalizedLegacyTtsEngine === TtsEngine.SherpaOnnx
+            ? (tts?.volume ?? DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsVolume)
+            : DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsVolume
         ),
       },
       localWhisperCpp: {
@@ -741,6 +844,12 @@ export const deriveLegacySpeechInputConfig = (voiceConfig: VoiceConfig): LegacyS
 
 export const deriveLegacyWakeInputConfig = (voiceConfig: VoiceConfig): WakeInputConfig => ({
   enabled: voiceConfig.capabilities.wakeInput.enabled,
+  provider: (() => {
+    const normalizedProvider = normalizeWakeInputProviderMode(voiceConfig.capabilities.wakeInput.provider);
+    return normalizedProvider === WakeInputProviderMode.Auto
+      ? WakeInputProviderMode.TextMatch
+      : normalizedProvider;
+  })(),
   wakeWords: [...voiceConfig.commands.wakeWords],
   wakeWord: voiceConfig.commands.wakeWords[0] ?? DEFAULT_VOICE_CONFIG.commands.wakeWords[0],
   submitCommand: voiceConfig.commands.wakeSubmitCommand,
@@ -753,14 +862,14 @@ export const deriveLegacyWakeInputConfig = (voiceConfig: VoiceConfig): WakeInput
 export const deriveLegacyTtsConfig = (voiceConfig: VoiceConfig): LegacyTtsConfig => ({
   enabled: voiceConfig.capabilities.tts.enabled,
   autoPlayAssistantReply: voiceConfig.capabilities.tts.autoPlayAssistantReply,
-  engine: voiceConfig.capabilities.tts.engine,
-  voiceId: voiceConfig.capabilities.tts.engine === TtsEngine.MacosNative
+  engine: normalizeTtsEngine(voiceConfig.capabilities.tts.engine),
+  voiceId: normalizeTtsEngine(voiceConfig.capabilities.tts.engine) === TtsEngine.MacosNative
     ? voiceConfig.providers.macosNative.ttsVoiceId
     : voiceConfig.providers.edgeTts.ttsVoiceId,
-  rate: voiceConfig.capabilities.tts.engine === TtsEngine.MacosNative
+  rate: normalizeTtsEngine(voiceConfig.capabilities.tts.engine) === TtsEngine.MacosNative
     ? voiceConfig.providers.macosNative.ttsRate
     : voiceConfig.providers.edgeTts.ttsRate,
-  volume: voiceConfig.capabilities.tts.engine === TtsEngine.MacosNative
+  volume: normalizeTtsEngine(voiceConfig.capabilities.tts.engine) === TtsEngine.MacosNative
     ? voiceConfig.providers.macosNative.ttsVolume
     : voiceConfig.providers.edgeTts.ttsVolume,
 });
