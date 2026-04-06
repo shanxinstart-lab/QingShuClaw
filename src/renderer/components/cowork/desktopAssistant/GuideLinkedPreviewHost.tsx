@@ -28,7 +28,7 @@ export const GuideLinkedPreviewHost: React.FC<GuideLinkedPreviewHostProps> = ({
   onBridgeUnavailable,
 }) => {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const bridgeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bridgeTimeoutRef = useRef<number | null>(null);
   const bridgeUnavailableRef = useRef(false);
   const [bridgeReady, setBridgeReady] = useState(false);
 
@@ -37,6 +37,9 @@ export const GuideLinkedPreviewHost: React.FC<GuideLinkedPreviewHostProps> = ({
       || guideSession.scenes[guideSession.currentSceneIndex]?.id
       || null;
   }, [guideSession.currentSceneIndex, guideSession.scenes, linkedManifest.scenes]);
+  const progressLabel = i18nService.t('desktopAssistantGuideProgress')
+    .replace('{current}', String(guideSession.currentSceneIndex + 1))
+    .replace('{total}', String(linkedManifest.scenes.length));
 
   const postBridgeCommand = (command: Omit<PresentationBridgeCommand, 'source' | 'version'>) => {
     const targetWindow = iframeRef.current?.contentWindow;
@@ -161,10 +164,7 @@ export const GuideLinkedPreviewHost: React.FC<GuideLinkedPreviewHostProps> = ({
           </div>
         </div>
         <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-secondary/80">
-          {i18nService.t('desktopAssistantGuideProgress', {
-            current: String(guideSession.currentSceneIndex + 1),
-            total: String(linkedManifest.scenes.length),
-          })}
+          {progressLabel}
         </div>
       </div>
       <div className="bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.08),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.98),rgba(250,250,249,0.98))] p-3">
