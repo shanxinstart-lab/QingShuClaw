@@ -11,6 +11,7 @@ import {
   type VoiceSherpaOnnxProviderConfig,
 } from '../../shared/voice/constants';
 import { resolveInstalledLocalModelPath, resolveLocalVoiceModelCatalogEntry } from './localVoiceModelManager';
+import { inspectSherpaOnnxWakeRuntime } from './sherpaOnnxWakeResourceService';
 
 const SHERPA_ASR_RESOURCE_DIR = 'sherpa-asr';
 const SHERPA_ASR_CONFIG_FILE_NAME = 'sherpa-asr-config.json';
@@ -166,6 +167,7 @@ export const inspectLocalSherpaOnnxStatus = (
   config: VoiceSherpaOnnxProviderConfig,
 ): VoiceLocalSherpaOnnxStatus => {
   const asrRuntime = inspectSherpaOnnxAsrRuntime(config);
+  const wakeRuntime = inspectSherpaOnnxWakeRuntime(config.wakeModelId);
   return {
     resourceRoot: asrRuntime.resourceRoot,
     enabled: config.enabled,
@@ -177,6 +179,9 @@ export const inspectLocalSherpaOnnxStatus = (
     asrTokensPath: asrRuntime.resolvedTokensPath,
     asrBpeVocabPath: asrRuntime.resolvedBpeVocabPath,
     asrReady: asrRuntime.ready,
+    wakeModelId: wakeRuntime.modelId,
+    wakeResourceRoot: wakeRuntime.modelRoot || wakeRuntime.resourceRoot,
+    wakeReady: wakeRuntime.ready,
     ready: asrRuntime.ready,
   };
 };

@@ -43,6 +43,7 @@ import {
 } from '../../shared/wakeInput/constants';
 import type { VoiceCapabilityMatrix, VoiceConfig, VoiceLocalSherpaOnnxStatus } from '../../shared/voice/constants';
 import {
+  SherpaOnnxWakeModelId,
   VoiceCapability,
   VoiceLocalQwen3TtsTask,
   VoiceProvider,
@@ -694,6 +695,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     return i18nService.t(`wakeInputProvider_${normalizedProvider}`);
   }, []);
 
+  const getSherpaWakeModelLabel = useCallback((modelId?: string | null) => {
+    if (modelId === SherpaOnnxWakeModelId.ZipformerWenetSpeech33M20240101) {
+      return i18nService.t('sherpaWakeModel_wenetspeech');
+    }
+    return i18nService.t('sherpaWakeModel_zh_en');
+  }, []);
+
   const getWakeInputRuntimeProviderLabel = useCallback((provider?: string | null) => {
     if (provider === WakeInputRuntimeProvider.SherpaOnnx) {
       return getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx);
@@ -852,6 +860,17 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const wakeInputProviderOptions = [
     { value: WakeInputProviderMode.TextMatch, label: i18nService.t('wakeInputProvider_text_match') },
     { value: WakeInputProviderMode.SherpaOnnx, label: i18nService.t('wakeInputProvider_sherpa_onnx') },
+  ];
+
+  const sherpaWakeModelOptions = [
+    {
+      value: SherpaOnnxWakeModelId.ZipformerZhEn3M20251220,
+      label: getSherpaWakeModelLabel(SherpaOnnxWakeModelId.ZipformerZhEn3M20251220),
+    },
+    {
+      value: SherpaOnnxWakeModelId.ZipformerWenetSpeech33M20240101,
+      label: getSherpaWakeModelLabel(SherpaOnnxWakeModelId.ZipformerWenetSpeech33M20240101),
+    },
   ];
 
   const getLocalModelStatus = useCallback((modelId: string): VoiceLocalModelInstallStatus | null => {
@@ -3575,6 +3594,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 <div className="rounded-xl border border-border px-3 py-3 text-xs text-secondary">
                   <div>{i18nService.t('voiceOverviewRequestedProvider')}: {speechAvailability?.requestedProvider ? getVoiceProviderLabel(speechAvailability.requestedProvider) : getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx)}</div>
                   <div>{i18nService.t('voiceOverviewActualProvider')}: {speechAvailability?.actualProvider ? getVoiceProviderLabel(speechAvailability.actualProvider) : getVoiceProviderLabel(VoiceProvider.LocalSherpaOnnx)}</div>
+                  <div>{i18nService.t('voiceSherpaWakeModelLabel')}: {getSherpaWakeModelLabel(voiceSherpaOnnxConfig.wakeModelId)}</div>
                   <div>{i18nService.t('voiceOverviewFallbackStatus')}: {speechAvailability?.fallbackActive ? i18nService.t('voiceFallbackActive') : i18nService.t('voiceFallbackInactive')}</div>
                   {speechAvailability?.fallbackReason && (
                     <div>{i18nService.t('voiceOverviewFallbackReason')}: {speechAvailability.fallbackReason}</div>
@@ -3586,6 +3606,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     <div>{i18nService.t('voiceSherpaResourceRootLabel')}: {voiceSherpaOnnxStatus.resourceRoot || '-'}</div>
                     <div>{i18nService.t('voiceSherpaAsrReadyLabel')}: {voiceSherpaOnnxStatus.asrReady ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
                     <div>{i18nService.t('voiceSherpaResolvedAsrModelLabel')}: {voiceSherpaOnnxStatus.asrModelPath || '-'}</div>
+                    <div>{i18nService.t('voiceSherpaWakeModelLabel')}: {getSherpaWakeModelLabel(voiceSherpaOnnxStatus.wakeModelId)}</div>
+                    <div>{i18nService.t('voiceSherpaWakeReadyLabel')}: {voiceSherpaOnnxStatus.wakeReady ? i18nService.t('voiceAvailabilityYes') : i18nService.t('voiceAvailabilityNo')}</div>
+                    <div>{i18nService.t('voiceSherpaWakeResourceRootLabel')}: {voiceSherpaOnnxStatus.wakeResourceRoot || '-'}</div>
                   </div>
                 )}
               </div>,
@@ -4042,6 +4065,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                       />
                       <p className="mt-2 text-xs text-secondary">{i18nService.t('wakeInputProviderHint')}</p>
                     </label>
+                    {wakeInputProviderMode === WakeInputProviderMode.SherpaOnnx && (
+                      <label className="block">
+                        <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputSherpaModelLabel')}</div>
+                        <ThemedSelect
+                          id="wake-input-sherpa-model-panel"
+                          value={voiceSherpaOnnxConfig.wakeModelId}
+                          onChange={(value) => updateVoiceSherpaOnnxConfig({ wakeModelId: value as VoiceSherpaOnnxConfig['wakeModelId'] })}
+                          options={sherpaWakeModelOptions}
+                        />
+                        <p className="mt-2 text-xs text-secondary">{i18nService.t('wakeInputSherpaModelHint')}</p>
+                      </label>
+                    )}
                     <label className="block">
                       <div className="mb-1 text-xs text-secondary">{i18nService.t('wakeInputWakeWordsLabel')}</div>
                       <textarea value={wakeInputWakeWordsText} onChange={(event) => setWakeInputWakeWordsText(event.target.value)} placeholder={i18nService.t('wakeInputWakeWordsPlaceholder')} rows={4} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground" />

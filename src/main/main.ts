@@ -1745,6 +1745,10 @@ const wakeInputService = new WakeInputService({
     return macSpeechService.stop();
   },
   sherpaOnnxWakeService,
+  getSherpaWakeModelId: () => {
+    const appConfig = getStore().get<AppConfigSettings>('app_config');
+    return getVoiceConfigFromAppConfig(appConfig).providers.sherpaOnnx.wakeModelId;
+  },
 });
 const macTtsService = new MacTtsService();
 const edgeTtsService = new EdgeTtsService();

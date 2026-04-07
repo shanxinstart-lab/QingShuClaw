@@ -15,6 +15,7 @@ import {
   type WakeInputRuntimeProvider as WakeInputRuntimeProviderValue,
   type WakeInputStatus,
 } from '../../shared/wakeInput/constants';
+import type { SherpaOnnxWakeModelId as SherpaOnnxWakeModelIdValue } from '../../shared/voice/constants';
 import type { SherpaOnnxWakeService } from './sherpaOnnxWakeService';
 
 type ForegroundSpeechOrigin = SpeechStartSourceValue;
@@ -110,6 +111,8 @@ export class WakeInputService extends EventEmitter {
 
   private sherpaOnnxWakeService: SherpaOnnxWakeService;
 
+  private getSherpaWakeModelId: () => SherpaOnnxWakeModelIdValue;
+
   private speechListening = false;
 
   private foregroundTransitionPending = false;
@@ -136,12 +139,14 @@ export class WakeInputService extends EventEmitter {
     startTextMatchListening: () => Promise<{ success: boolean; error?: string }>;
     stopTextMatchListening: () => Promise<{ success: boolean; error?: string }>;
     sherpaOnnxWakeService: SherpaOnnxWakeService;
+    getSherpaWakeModelId: () => SherpaOnnxWakeModelIdValue;
   }) {
     super();
     this.config = { ...options.config, wakeWords: [...options.config.wakeWords] };
     this.startTextMatchListening = options.startTextMatchListening;
     this.stopTextMatchListening = options.stopTextMatchListening;
     this.sherpaOnnxWakeService = options.sherpaOnnxWakeService;
+    this.getSherpaWakeModelId = options.getSherpaWakeModelId;
     this.status = {
       enabled: this.config.enabled,
       supported: false,
@@ -300,7 +305,10 @@ export class WakeInputService extends EventEmitter {
   }
 
   private async startSherpaProvider(): Promise<{ success: boolean; error?: string }> {
-    const result = await this.sherpaOnnxWakeService.start(this.config.wakeWords);
+    const result = await this.sherpaOnnxWakeService.start({
+      wakeWords: this.config.wakeWords,
+      modelId: this.getSherpaWakeModelId(),
+    });
     if (!result.success) {
       this.speechListening = false;
       this.activeProvider = WakeInputRuntimeProvider.None;
@@ -313,7 +321,10 @@ export class WakeInputService extends EventEmitter {
     this.setStatus(WakeInputStatusType.Listening);
     console.log(
       '[WakeInput] Started Sherpa wake listener.',
-      JSON.stringify({ wakeWords: result.configuredWakeWords ?? [] }),
+      JSON.stringify({
+        wakeWords: result.configuredWakeWords ?? [],
+        modelId: this.getSherpaWakeModelId(),
+      }),
     );
     return result;
   }

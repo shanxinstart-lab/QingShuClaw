@@ -1,13 +1,19 @@
 'use strict';
 
 const path = require('path');
-const { existsSync, mkdirSync, rmSync, cpSync, writeFileSync } = require('fs');
+const { existsSync, mkdirSync, rmSync, cpSync, writeFileSync, readFileSync } = require('fs');
 const { pinyin } = require('pinyin-pro');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'build', 'generated', 'sherpa-kws');
-const SOURCE_DIR = path.join(__dirname, '..', 'resources', 'sherpa-kws');
+const SOURCE_ROOT_DIR = path.join(__dirname, '..', 'resources', 'sherpa-kws');
 const CONFIG_FILE_NAME = 'sherpa-kws-config.json';
+const MANIFEST_FILE_NAME = 'sherpa-kws-manifest.json';
 const DEFAULT_KEYWORDS_FILE_NAME = 'keywords.default.txt';
+
+const SHERPA_ONNX_WAKE_MODEL_ID = {
+  ZhEn: 'sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20',
+  WenetSpeech: 'sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01',
+};
 
 const INITIALS = [
   'zh',
@@ -85,7 +91,24 @@ const DEFAULT_WAKE_WORDS = ['打开青书爪', '初一'];
 const SHORT_WAKE_WORD_MAX_SYLLABLES = 2;
 const SHORT_WAKE_WORD_VARIANT_TONES = [1, 2, 4, 5];
 
-const MODEL_BINDINGS = [
+const MODEL_SOURCE_BINDINGS = [
+  {
+    id: SHERPA_ONNX_WAKE_MODEL_ID.ZhEn,
+    label: 'Zipformer zh-en 3M',
+    directory: SHERPA_ONNX_WAKE_MODEL_ID.ZhEn,
+    envDirKey: 'SHERPA_KWS_ZH_EN_DIR',
+    sourceStrategy: 'directory',
+  },
+  {
+    id: SHERPA_ONNX_WAKE_MODEL_ID.WenetSpeech,
+    label: 'Zipformer WenetSpeech 3.3M',
+    directory: SHERPA_ONNX_WAKE_MODEL_ID.WenetSpeech,
+    envDirKey: 'SHERPA_KWS_WENETSPEECH_DIR',
+    sourceStrategy: 'directory_or_legacy_flat',
+  },
+];
+
+const LEGACY_MODEL_BINDINGS = [
   {
     key: 'encoder',
     sourceFileName: 'encoder.onnx',
@@ -233,14 +256,11 @@ function tokenizeParsedWakeWord(parsedSyllables) {
 }
 
 function buildWakeWordVariantSyllables(parsedSyllables) {
-  if (!Array.isArray(parsedSyllables) || parsedSyllables.length === 0) {
+  if (parsedSyllables.length === 0) {
     return [];
   }
 
-  const variants = [
-    parsedSyllables.map((item) => ({ ...item })),
-  ];
-
+  const variants = [parsedSyllables.map((item) => ({ ...item }))];
   if (parsedSyllables.length > SHORT_WAKE_WORD_MAX_SYLLABLES) {
     return variants;
   }
@@ -259,9 +279,10 @@ function buildWakeWordVariantSyllables(parsedSyllables) {
       continue;
     }
 
-    variants.push(parsedSyllables.map((item, index) => (
+    const nextVariant = parsedSyllables.map((item, index) => (
       index === parsedSyllables.length - 1 ? { ...item, tone } : { ...item }
-    )));
+    ));
+    variants.push(nextVariant);
   }
 
   return variants;
@@ -285,15 +306,62 @@ function buildWakeWordKeywordLines(wakeWord) {
   return lines.size > 0 ? Array.from(lines) : null;
 }
 
-function prepareKeywords(wakeWords) {
-  const dedupedWakeWords = Array.from(new Set((wakeWords || [])
-    .map((item) => normalizeWakeWordText(item))
-    .filter((item) => item.length > 0)));
+function loadSupportedTokens(tokensPath) {
+  try {
+    const content = readFileSync(tokensPath, 'utf8');
+    const supportedTokens = new Set();
+    for (const line of content.split(/\r?\n/)) {
+      const normalized = line.trim();
+      if (!normalized) {
+        continue;
+      }
+      const [token] = normalized.split(/\s+/, 1);
+      if (token) {
+        supportedTokens.add(token);
+      }
+    }
+    return supportedTokens;
+  } catch (error) {
+    console.warn('[prepare-sherpa-wake-resources] Failed to read supported tokens:', error);
+    return new Set();
+  }
+}
 
-  const acceptedWakeWords = [];
+function filterKeywordLinesBySupportedTokens(keywordLines, supportedTokens) {
+  if (!supportedTokens || supportedTokens.size === 0) {
+    return keywordLines;
+  }
+
+  return keywordLines.filter((line) => {
+    const [tokensPart] = line.split('@', 1);
+    const tokens = tokensPart.trim().split(/\s+/).filter(Boolean);
+    return tokens.length > 0 && tokens.every((token) => supportedTokens.has(token));
+  });
+}
+
+function prepareKeywords(wakeWords, supportedTokens) {
+  const dedupedWakeWords = Array.from(
+    new Set(
+      wakeWords
+        .map((item) => normalizeWakeWordText(item))
+        .filter((item) => item.length > 0),
+    ),
+  );
+
+  if (dedupedWakeWords.length === 0) {
+    return {
+      acceptedWakeWords: [],
+      keywordsContent: '',
+    };
+  }
+
   const lines = [];
+  const acceptedWakeWords = [];
   for (const wakeWord of dedupedWakeWords) {
-    const keywordLines = buildWakeWordKeywordLines(wakeWord);
+    const keywordLines = filterKeywordLinesBySupportedTokens(
+      buildWakeWordKeywordLines(wakeWord) || [],
+      supportedTokens,
+    );
     if (!keywordLines || keywordLines.length === 0) {
       console.warn('[prepare-sherpa-wake-resources] Skipped unsupported wake word:', wakeWord);
       continue;
@@ -307,14 +375,6 @@ function prepareKeywords(wakeWords) {
     acceptedWakeWords,
     keywordsContent: lines.length > 0 ? `${lines.join('\n')}\n` : '',
   };
-}
-
-function resolveSourcePath(binding) {
-  const envOverride = process.env[binding.envKey] && process.env[binding.envKey].trim();
-  if (envOverride) {
-    return path.resolve(envOverride);
-  }
-  return path.join(SOURCE_DIR, binding.sourceFileName);
 }
 
 function ensureGeneratedDir() {
@@ -336,25 +396,62 @@ function resolveWakeWords() {
   return wakeWords.length > 0 ? wakeWords : [...DEFAULT_WAKE_WORDS];
 }
 
-function prepareSherpaWakeResources() {
-  ensureGeneratedDir();
+function resolveLegacyFlatFile(binding) {
+  const envOverride = process.env[binding.envKey] && process.env[binding.envKey].trim();
+  if (envOverride) {
+    return path.resolve(envOverride);
+  }
+  return path.join(SOURCE_ROOT_DIR, binding.sourceFileName);
+}
 
-  const copiedModelFiles = {};
-  for (const binding of MODEL_BINDINGS) {
-    const sourcePath = resolveSourcePath(binding);
+function resolveModelSourceRoot(model) {
+  const envDir = process.env[model.envDirKey] && process.env[model.envDirKey].trim();
+  if (envDir) {
+    return path.resolve(envDir);
+  }
+
+  const structuredDir = path.join(SOURCE_ROOT_DIR, model.directory);
+  if (existsSync(structuredDir)) {
+    return structuredDir;
+  }
+
+  if (model.sourceStrategy === 'directory_or_legacy_flat') {
+    return SOURCE_ROOT_DIR;
+  }
+
+  return structuredDir;
+}
+
+function copyModelFiles(model) {
+  const modelSourceRoot = resolveModelSourceRoot(model);
+  const modelOutputRoot = path.join(GENERATED_DIR, model.directory);
+  mkdirSync(modelOutputRoot, { recursive: true });
+
+  const copiedFiles = {};
+  for (const binding of LEGACY_MODEL_BINDINGS) {
+    const sourcePath = modelSourceRoot === SOURCE_ROOT_DIR && model.sourceStrategy === 'directory_or_legacy_flat'
+      ? resolveLegacyFlatFile(binding)
+      : path.join(modelSourceRoot, binding.sourceFileName);
+
     if (!existsSync(sourcePath)) {
       continue;
     }
 
-    cpSync(sourcePath, path.join(GENERATED_DIR, binding.outputFileName), { force: true });
-    copiedModelFiles[binding.key] = binding.outputFileName;
+    cpSync(sourcePath, path.join(modelOutputRoot, binding.outputFileName), { force: true });
+    copiedFiles[binding.key] = binding.outputFileName;
   }
 
-  const wakeWords = resolveWakeWords();
-  const preparedKeywords = prepareKeywords(wakeWords);
+  const tokensPath = copiedFiles.tokens
+    ? path.join(modelOutputRoot, copiedFiles.tokens)
+    : '';
+  const supportedTokens = tokensPath && existsSync(tokensPath)
+    ? loadSupportedTokens(tokensPath)
+    : new Set();
+  const preparedKeywords = prepareKeywords(resolveWakeWords(), supportedTokens);
+
   if (preparedKeywords.keywordsContent) {
     writeFileSync(
-      path.join(GENERATED_DIR, DEFAULT_KEYWORDS_FILE_NAME),
+      path.join(modelOutputRoot, DEFAULT_KEYWORDS_FILE_NAME),
       preparedKeywords.keywordsContent,
       'utf8',
     );
@@ -370,10 +467,10 @@ function prepareSherpaWakeResources() {
     keywordsThreshold: 0.25,
     recorderFrameLength: 512,
     model: {
-      encoderFileName: copiedModelFiles.encoder || '',
-      decoderFileName: copiedModelFiles.decoder || '',
-      joinerFileName: copiedModelFiles.joiner || '',
-      tokensFileName: copiedModelFiles.tokens || '',
+      encoderFileName: copiedFiles.encoder || '',
+      decoderFileName: copiedFiles.decoder || '',
+      joinerFileName: copiedFiles.joiner || '',
+      tokensFileName: copiedFiles.tokens || '',
       provider: 'cpu',
       numThreads: 1,
       debug: false,
@@ -382,16 +479,63 @@ function prepareSherpaWakeResources() {
   };
 
   writeFileSync(
-    path.join(GENERATED_DIR, CONFIG_FILE_NAME),
+    path.join(modelOutputRoot, CONFIG_FILE_NAME),
     JSON.stringify(payload, null, 2) + '\n',
     'utf8',
   );
 
-  const result = {
-    outputDir: GENERATED_DIR,
-    modelFiles: copiedModelFiles,
+  const ready = Boolean(copiedFiles.encoder && copiedFiles.decoder && copiedFiles.joiner && copiedFiles.tokens);
+  return {
+    id: model.id,
+    label: model.label,
+    directory: model.directory,
+    ready,
+    modelRoot: modelOutputRoot,
+    modelFiles: copiedFiles,
     keywordCount: preparedKeywords.acceptedWakeWords.length,
     keywords: preparedKeywords.acceptedWakeWords,
+  };
+}
+
+function writeManifest(preparedModels) {
+  const payload = {
+    schemaVersion: 1,
+    defaultModelId: SHERPA_ONNX_WAKE_MODEL_ID.ZhEn,
+    models: preparedModels.map((model) => ({
+      id: model.id,
+      label: model.label,
+      directory: model.directory,
+      configFileName: CONFIG_FILE_NAME,
+    })),
+  };
+
+  writeFileSync(
+    path.join(GENERATED_DIR, MANIFEST_FILE_NAME),
+    JSON.stringify(payload, null, 2) + '\n',
+    'utf8',
+  );
+}
+
+function prepareSherpaWakeResources() {
+  ensureGeneratedDir();
+
+  const preparedModels = MODEL_SOURCE_BINDINGS
+    .map((model) => copyModelFiles(model))
+    .filter((model) => model.ready);
+
+  writeManifest(preparedModels);
+
+  const result = {
+    outputDir: GENERATED_DIR,
+    defaultModelId: SHERPA_ONNX_WAKE_MODEL_ID.ZhEn,
+    models: preparedModels.map((model) => ({
+      id: model.id,
+      label: model.label,
+      directory: model.directory,
+      keywordCount: model.keywordCount,
+      keywords: model.keywords,
+      modelFiles: model.modelFiles,
+    })),
   };
 
   console.log(
@@ -407,6 +551,7 @@ module.exports = {
   GENERATED_DIR,
   CONFIG_FILE_NAME,
   DEFAULT_KEYWORDS_FILE_NAME,
+  MANIFEST_FILE_NAME,
 };
 
 if (require.main === module) {

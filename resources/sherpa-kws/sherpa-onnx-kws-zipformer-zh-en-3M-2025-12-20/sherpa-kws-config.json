@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "sampleRate": 16000,
+  "featureDim": 80,
+  "maxActivePaths": 4,
+  "numTrailingBlanks": 1,
+  "keywordsScore": 1,
+  "keywordsThreshold": 0.25,
+  "recorderFrameLength": 512,
+  "model": {
+    "encoderFileName": "encoder.onnx",
+    "decoderFileName": "decoder.onnx",
+    "joinerFileName": "joiner.onnx",
+    "tokensFileName": "tokens.txt",
+    "provider": "cpu",
+    "numThreads": 1,
+    "debug": false
+  },
+  "defaultWakeWords": [
+    "打开青书爪",
+    "初一"
+  ]
+}

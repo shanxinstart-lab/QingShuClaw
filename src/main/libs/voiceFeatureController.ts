@@ -1028,7 +1028,10 @@ export class VoiceFeatureController {
       console.log('[WakeInput] Requesting speech permissions because wake input is enabled and authorization is not determined.');
       speechAvailability = await this.deps.macSpeechService.requestPermissionsIfNeeded();
     }
-    const sherpaAvailability = this.deps.sherpaOnnxWakeService.getAvailability(wakeInputConfig.wakeWords);
+    const sherpaAvailability = this.deps.sherpaOnnxWakeService.getAvailability({
+      wakeWords: wakeInputConfig.wakeWords,
+      modelId: voiceConfig.providers.sherpaOnnx.wakeModelId,
+    });
     const textMatchSupported = speechAvailability.supported
       && speechAvailability.permission === SpeechPermissionStatus.Granted;
     const wakeSupported = voiceConfig.capabilities.wakeInput.enabled && (() => {
@@ -1047,6 +1050,7 @@ export class VoiceFeatureController {
         reason: options?.reason ?? 'unknown',
         enabled: voiceConfig.capabilities.wakeInput.enabled,
         requestedProvider,
+        sherpaWakeModelId: voiceConfig.providers.sherpaOnnx.wakeModelId,
         sherpaSupported: sherpaAvailability.supported,
         sherpaWakeWords: sherpaAvailability.configuredWakeWords,
         sherpaError: sherpaAvailability.error,

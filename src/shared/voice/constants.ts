@@ -121,6 +121,7 @@ export interface VoiceSherpaOnnxProviderConfig {
   packaged: boolean;
   asrModelId: string;
   asrModelPath: string;
+  wakeModelId: SherpaOnnxWakeModelId;
   ttsModelId: string;
   ttsModelPath: string;
   ttsVoiceId: string;
@@ -286,6 +287,9 @@ export interface VoiceLocalSherpaOnnxStatus {
   asrTokensPath: string | null;
   asrBpeVocabPath: string | null;
   asrReady: boolean;
+  wakeModelId: SherpaOnnxWakeModelId;
+  wakeResourceRoot: string;
+  wakeReady: boolean;
   ready: boolean;
 }
 
@@ -320,6 +324,21 @@ export const SherpaOnnxAsrModelVariant = {
 } as const;
 export type SherpaOnnxAsrModelVariant =
   typeof SherpaOnnxAsrModelVariant[keyof typeof SherpaOnnxAsrModelVariant];
+
+export const SherpaOnnxWakeModelId = {
+  ZipformerZhEn3M20251220: 'sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20',
+  ZipformerWenetSpeech33M20240101: 'sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01',
+} as const;
+export type SherpaOnnxWakeModelId =
+  typeof SherpaOnnxWakeModelId[keyof typeof SherpaOnnxWakeModelId];
+
+export const DEFAULT_SHERPA_ONNX_WAKE_MODEL_ID = SherpaOnnxWakeModelId.ZipformerZhEn3M20251220;
+
+export const normalizeSherpaOnnxWakeModelId = (value?: string | null): SherpaOnnxWakeModelId => {
+  return value === SherpaOnnxWakeModelId.ZipformerWenetSpeech33M20240101
+    ? SherpaOnnxWakeModelId.ZipformerWenetSpeech33M20240101
+    : SherpaOnnxWakeModelId.ZipformerZhEn3M20251220;
+};
 
 export const VoiceLocalModelKind = {
   SherpaOnnxAsrModel: 'sherpa_onnx_asr_model',
@@ -469,6 +488,7 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
       packaged: true,
       asrModelId: DEFAULT_SHERPA_ONNX_ASR_MODEL_ID,
       asrModelPath: '',
+      wakeModelId: DEFAULT_SHERPA_ONNX_WAKE_MODEL_ID,
       ttsModelId: DEFAULT_SHERPA_ONNX_TTS_MODEL_ID,
       ttsModelPath: '',
       ttsVoiceId: '0',
@@ -648,6 +668,7 @@ export const mergeVoiceConfig = (config?: Partial<VoiceConfig> | null): VoiceCon
       sherpaOnnx: {
         ...DEFAULT_VOICE_CONFIG.providers.sherpaOnnx,
         ...(config?.providers?.sherpaOnnx ?? {}),
+        wakeModelId: normalizeSherpaOnnxWakeModelId(config?.providers?.sherpaOnnx?.wakeModelId),
       },
       localWhisperCpp: {
         ...DEFAULT_VOICE_CONFIG.providers.localWhisperCpp,
@@ -784,6 +805,7 @@ export const createVoiceConfigFromLegacy = (options?: {
         ...DEFAULT_VOICE_CONFIG.providers.sherpaOnnx,
         ...(voice?.providers?.sherpaOnnx ?? {}),
         enabled: voice?.providers?.sherpaOnnx?.enabled ?? DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.enabled,
+        wakeModelId: normalizeSherpaOnnxWakeModelId(voice?.providers?.sherpaOnnx?.wakeModelId),
         ttsVoiceId: voice?.providers?.sherpaOnnx?.ttsVoiceId ?? (
           normalizedLegacyTtsEngine === TtsEngine.SherpaOnnx
             ? (tts?.voiceId ?? DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.ttsVoiceId)

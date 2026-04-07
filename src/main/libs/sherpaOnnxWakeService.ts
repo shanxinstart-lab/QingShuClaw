@@ -6,6 +6,8 @@ import path from 'path';
 import { pinyin } from 'pinyin-pro';
 import { PvRecorder } from '@picovoice/pvrecorder-node';
 import { WakeInputRuntimeProvider } from '../../shared/wakeInput/constants';
+import type { SherpaOnnxWakeModelId as SherpaOnnxWakeModelIdValue } from '../../shared/voice/constants';
+import { inspectSherpaOnnxWakeRuntime } from './sherpaOnnxWakeResourceService';
 
 type SherpaKeywordSpotterInstance = {
   createStream: () => any;
@@ -19,23 +21,15 @@ const { KeywordSpotter } = require('sherpa-onnx-node') as {
   KeywordSpotter: new (config: unknown) => SherpaKeywordSpotterInstance;
 };
 
-const SHERPA_KWS_RESOURCE_DIR = 'sherpa-kws';
-const SHERPA_KWS_CONFIG_FILE_NAME = 'sherpa-kws-config.json';
 const SHERPA_KWS_RUNTIME_DIR = path.join('voice', 'wake-input');
 const SHERPA_KWS_RUNTIME_KEYWORDS_FILE_NAME = 'keywords.runtime.txt';
-const SHERPA_KWS_DEFAULT_SAMPLE_RATE = 16_000;
-const SHERPA_KWS_DEFAULT_FEATURE_DIM = 80;
-const SHERPA_KWS_DEFAULT_MAX_ACTIVE_PATHS = 4;
-const SHERPA_KWS_DEFAULT_NUM_TRAILING_BLANKS = 1;
-const SHERPA_KWS_DEFAULT_KEYWORDS_SCORE = 1.0;
-const SHERPA_KWS_DEFAULT_KEYWORDS_THRESHOLD = 0.25;
-const SHERPA_KWS_DEFAULT_RECORDER_FRAME_LENGTH = 512;
 const SHERPA_KWS_BUFFERED_FRAMES_COUNT = 32;
 const STOP_WAIT_TIMEOUT_MS = 300;
 
 const SherpaWakeErrorCode = {
   ConfigMissing: 'sherpa_kws_config_missing',
   ModelMissing: 'sherpa_kws_model_missing',
+  SelectedModelMissing: 'sherpa_kws_selected_model_missing',
   InvalidKeyword: 'sherpa_kws_invalid_keyword',
   RuntimeUnavailable: 'sherpa_kws_runtime_unavailable',
   RecorderStartFailed: 'sherpa_kws_recorder_start_failed',
@@ -46,48 +40,6 @@ const SherpaWakeErrorCode = {
 
 type SherpaWakeErrorCode = typeof SherpaWakeErrorCode[keyof typeof SherpaWakeErrorCode];
 
-type SherpaResourceConfig = {
-  schemaVersion?: number;
-  sampleRate?: number;
-  featureDim?: number;
-  maxActivePaths?: number;
-  numTrailingBlanks?: number;
-  keywordsScore?: number;
-  keywordsThreshold?: number;
-  recorderFrameLength?: number;
-  model?: {
-    encoderFileName?: string;
-    decoderFileName?: string;
-    joinerFileName?: string;
-    tokensFileName?: string;
-    provider?: string;
-    numThreads?: number;
-    debug?: boolean;
-  };
-  defaultWakeWords?: string[];
-};
-
-type ResolvedSherpaResources = {
-  root: string;
-  sampleRate: number;
-  featureDim: number;
-  maxActivePaths: number;
-  numTrailingBlanks: number;
-  keywordsScore: number;
-  keywordsThreshold: number;
-  recorderFrameLength: number;
-  model: {
-    encoder: string;
-    decoder: string;
-    joiner: string;
-    tokens: string;
-    provider: string;
-    numThreads: number;
-    debug: boolean;
-  };
-  defaultWakeWords: string[];
-};
-
 type SherpaWakeServiceEvents = {
   wake: (event: { wakeWord: string; provider: typeof WakeInputRuntimeProvider.SherpaOnnx }) => void;
   error: (event: { code: SherpaWakeErrorCode; message: string }) => void;
@@ -96,6 +48,11 @@ type SherpaWakeServiceEvents = {
 type PreparedWakeKeywords = {
   wakeWords: string[];
   keywordsContent: string;
+};
+
+type SherpaWakeStartOptions = {
+  wakeWords?: string[];
+  modelId?: SherpaOnnxWakeModelIdValue;
 };
 
 type SherpaSupportedTokens = Set<string>;
@@ -180,17 +137,6 @@ const VOWEL_TONE_MAP: Record<string, [string, string, string, string, string]> =
 const SHORT_WAKE_WORD_MAX_SYLLABLES = 2;
 const SHORT_WAKE_WORD_VARIANT_TONES = [1, 2, 4, 5] as const;
 
-const resolveKeywordResourceRoots = (): string[] => {
-  if (app.isPackaged) {
-    return [path.join(process.resourcesPath, SHERPA_KWS_RESOURCE_DIR)];
-  }
-
-  return [
-    path.join(process.cwd(), 'build', 'generated', SHERPA_KWS_RESOURCE_DIR),
-    path.join(process.cwd(), 'resources', SHERPA_KWS_RESOURCE_DIR),
-  ];
-};
-
 const formatErrorMessage = (error: unknown, fallbackMessage: string): string => {
   if (error instanceof Error && error.message.trim()) {
     return error.message.trim();
@@ -199,85 +145,6 @@ const formatErrorMessage = (error: unknown, fallbackMessage: string): string => 
     return error.trim();
   }
   return fallbackMessage;
-};
-
-const readBundledResourceConfig = (): { root: string; config: SherpaResourceConfig } | null => {
-  for (const resourceRoot of resolveKeywordResourceRoots()) {
-    const configPath = path.join(resourceRoot, SHERPA_KWS_CONFIG_FILE_NAME);
-    if (!fs.existsSync(configPath)) {
-      continue;
-    }
-
-    try {
-      const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (!parsed || typeof parsed !== 'object') {
-        continue;
-      }
-      return {
-        root: resourceRoot,
-        config: parsed,
-      };
-    } catch (error) {
-      console.warn('[SherpaWake] Failed to parse bundled config file.', error);
-    }
-  }
-
-  return null;
-};
-
-const resolveRequiredFile = (root: string, fileName: string | undefined): string | null => {
-  const normalized = typeof fileName === 'string' ? fileName.trim() : '';
-  if (!normalized) {
-    return null;
-  }
-
-  const candidate = path.join(root, normalized);
-  if (!fs.existsSync(candidate)) {
-    return null;
-  }
-
-  return candidate;
-};
-
-const resolveBundledResources = (): { resources?: ResolvedSherpaResources; error?: SherpaWakeErrorCode } => {
-  const bundledConfig = readBundledResourceConfig();
-  if (!bundledConfig) {
-    return { error: SherpaWakeErrorCode.ConfigMissing };
-  }
-
-  const encoder = resolveRequiredFile(bundledConfig.root, bundledConfig.config.model?.encoderFileName);
-  const decoder = resolveRequiredFile(bundledConfig.root, bundledConfig.config.model?.decoderFileName);
-  const joiner = resolveRequiredFile(bundledConfig.root, bundledConfig.config.model?.joinerFileName);
-  const tokens = resolveRequiredFile(bundledConfig.root, bundledConfig.config.model?.tokensFileName);
-
-  if (!encoder || !decoder || !joiner || !tokens) {
-    return { error: SherpaWakeErrorCode.ModelMissing };
-  }
-
-  return {
-    resources: {
-      root: bundledConfig.root,
-      sampleRate: bundledConfig.config.sampleRate ?? SHERPA_KWS_DEFAULT_SAMPLE_RATE,
-      featureDim: bundledConfig.config.featureDim ?? SHERPA_KWS_DEFAULT_FEATURE_DIM,
-      maxActivePaths: bundledConfig.config.maxActivePaths ?? SHERPA_KWS_DEFAULT_MAX_ACTIVE_PATHS,
-      numTrailingBlanks: bundledConfig.config.numTrailingBlanks ?? SHERPA_KWS_DEFAULT_NUM_TRAILING_BLANKS,
-      keywordsScore: bundledConfig.config.keywordsScore ?? SHERPA_KWS_DEFAULT_KEYWORDS_SCORE,
-      keywordsThreshold: bundledConfig.config.keywordsThreshold ?? SHERPA_KWS_DEFAULT_KEYWORDS_THRESHOLD,
-      recorderFrameLength: bundledConfig.config.recorderFrameLength ?? SHERPA_KWS_DEFAULT_RECORDER_FRAME_LENGTH,
-      model: {
-        encoder,
-        decoder,
-        joiner,
-        tokens,
-        provider: bundledConfig.config.model?.provider?.trim() || 'cpu',
-        numThreads: bundledConfig.config.model?.numThreads ?? 1,
-        debug: bundledConfig.config.model?.debug ?? false,
-      },
-      defaultWakeWords: Array.isArray(bundledConfig.config.defaultWakeWords)
-        ? bundledConfig.config.defaultWakeWords
-        : [],
-    },
-  };
 };
 
 const normalizeWakeWordText = (value: string): string => {
@@ -458,10 +325,6 @@ const buildWakeWordKeywordLines = (wakeWord: string): string[] | null => {
   return lines.size > 0 ? Array.from(lines) : null;
 };
 
-const prepareWakeKeywords = (wakeWords: string[]): PreparedWakeKeywords | null => {
-  return prepareWakeKeywordsWithSupportedTokens(wakeWords);
-};
-
 const loadSupportedTokens = (tokensPath: string): SherpaSupportedTokens => {
   try {
     const content = fs.readFileSync(tokensPath, 'utf8');
@@ -572,19 +435,19 @@ export class SherpaOnnxWakeService extends EventEmitter {
     return super.on(event, listener);
   }
 
-  getAvailability(wakeWords?: string[]): { supported: boolean; configuredWakeWords: string[]; error?: string } {
-    const resolved = resolveBundledResources();
-    if (!resolved.resources) {
+  getAvailability(options?: SherpaWakeStartOptions): { supported: boolean; configuredWakeWords: string[]; error?: string } {
+    const runtime = inspectSherpaOnnxWakeRuntime(options?.modelId);
+    if (!runtime.ready || !runtime.resolvedTokensPath) {
       return {
         supported: false,
         configuredWakeWords: [],
-        error: resolved.error,
+        error: runtime.error,
       };
     }
 
-    const supportedTokens = loadSupportedTokens(resolved.resources.model.tokens);
+    const supportedTokens = loadSupportedTokens(runtime.resolvedTokensPath);
     const preparedKeywords = prepareWakeKeywordsWithSupportedTokens(
-      wakeWords?.length ? wakeWords : resolved.resources.defaultWakeWords,
+      options?.wakeWords?.length ? options.wakeWords : runtime.defaultWakeWords,
       supportedTokens,
     );
     if (!preparedKeywords) {
@@ -601,7 +464,7 @@ export class SherpaOnnxWakeService extends EventEmitter {
     };
   }
 
-  async start(wakeWords?: string[]): Promise<{ success: boolean; error?: string; configuredWakeWords?: string[] }> {
+  async start(options?: SherpaWakeStartOptions): Promise<{ success: boolean; error?: string; configuredWakeWords?: string[] }> {
     if (this.listening) {
       return {
         success: true,
@@ -609,14 +472,20 @@ export class SherpaOnnxWakeService extends EventEmitter {
       };
     }
 
-    const resolved = resolveBundledResources();
-    if (!resolved.resources) {
-      return { success: false, error: resolved.error };
+    const runtime = inspectSherpaOnnxWakeRuntime(options?.modelId);
+    if (
+      !runtime.ready
+      || !runtime.resolvedEncoderPath
+      || !runtime.resolvedDecoderPath
+      || !runtime.resolvedJoinerPath
+      || !runtime.resolvedTokensPath
+    ) {
+      return { success: false, error: runtime.error };
     }
 
-    const supportedTokens = loadSupportedTokens(resolved.resources.model.tokens);
+    const supportedTokens = loadSupportedTokens(runtime.resolvedTokensPath);
     const preparedKeywords = prepareWakeKeywordsWithSupportedTokens(
-      wakeWords?.length ? wakeWords : resolved.resources.defaultWakeWords,
+      options?.wakeWords?.length ? options.wakeWords : runtime.defaultWakeWords,
       supportedTokens,
     );
     if (!preparedKeywords) {
@@ -636,24 +505,24 @@ export class SherpaOnnxWakeService extends EventEmitter {
     try {
       this.keywordSpotter = new KeywordSpotter({
         featConfig: {
-          sampleRate: resolved.resources.sampleRate,
-          featureDim: resolved.resources.featureDim,
+          sampleRate: runtime.sampleRate,
+          featureDim: runtime.featureDim,
         },
         modelConfig: {
           transducer: {
-            encoder: resolved.resources.model.encoder,
-            decoder: resolved.resources.model.decoder,
-            joiner: resolved.resources.model.joiner,
+            encoder: runtime.resolvedEncoderPath,
+            decoder: runtime.resolvedDecoderPath,
+            joiner: runtime.resolvedJoinerPath,
           },
-          tokens: resolved.resources.model.tokens,
-          provider: resolved.resources.model.provider,
-          numThreads: resolved.resources.model.numThreads,
-          debug: resolved.resources.model.debug ? 1 : 0,
+          tokens: runtime.resolvedTokensPath,
+          provider: runtime.provider,
+          numThreads: runtime.numThreads,
+          debug: runtime.debug ? 1 : 0,
         },
-        maxActivePaths: resolved.resources.maxActivePaths,
-        numTrailingBlanks: resolved.resources.numTrailingBlanks,
-        keywordsScore: resolved.resources.keywordsScore,
-        keywordsThreshold: resolved.resources.keywordsThreshold,
+        maxActivePaths: runtime.maxActivePaths,
+        numTrailingBlanks: runtime.numTrailingBlanks,
+        keywordsScore: runtime.keywordsScore,
+        keywordsThreshold: runtime.keywordsThreshold,
         keywordsFile: keywordsFilePath,
       });
       this.keywordStream = this.keywordSpotter.createStream();
@@ -667,7 +536,7 @@ export class SherpaOnnxWakeService extends EventEmitter {
 
     try {
       this.recorder = new PvRecorder(
-        resolved.resources.recorderFrameLength,
+        runtime.recorderFrameLength,
         -1,
         SHERPA_KWS_BUFFERED_FRAMES_COUNT,
       );
@@ -685,10 +554,10 @@ export class SherpaOnnxWakeService extends EventEmitter {
     this.listenSessionId += 1;
     this.activeWakeWords = [...preparedKeywords.wakeWords];
     const currentSessionId = this.listenSessionId;
-    this.captureLoopPromise = this.runCaptureLoop(currentSessionId, resolved.resources.sampleRate);
+    this.captureLoopPromise = this.runCaptureLoop(currentSessionId, runtime.sampleRate);
     console.log(
       '[SherpaWake] Started background wake listener.',
-      JSON.stringify({ wakeWords: this.activeWakeWords }),
+      JSON.stringify({ wakeWords: this.activeWakeWords, modelId: runtime.modelId }),
     );
 
     return {

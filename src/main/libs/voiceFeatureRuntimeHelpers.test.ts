@@ -178,6 +178,9 @@ describe('voiceFeatureRuntimeHelpers', () => {
   test('delegates sherpa inspection and enriches qwen status using resolver outputs', () => {
     sherpaState.inspectStatus.mockReturnValue({
       resourceRoot: '/sherpa-root',
+      wakeResourceRoot: '/sherpa-wake-root',
+      wakeModelId: DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.wakeModelId,
+      wakeReady: true,
       ready: true,
       enabled: true,
     });
@@ -216,6 +219,9 @@ describe('voiceFeatureRuntimeHelpers', () => {
     const sherpaStatus = helpers.buildLocalSherpaOnnxStatus(DEFAULT_VOICE_CONFIG);
     expect(sherpaStatus).toEqual({
       resourceRoot: '/sherpa-root',
+      wakeResourceRoot: '/sherpa-wake-root',
+      wakeModelId: DEFAULT_VOICE_CONFIG.providers.sherpaOnnx.wakeModelId,
+      wakeReady: true,
       ready: true,
       enabled: true,
     });
