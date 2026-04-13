@@ -86,6 +86,14 @@ import {
 } from './auth/adapter';
 import { resolveAuthBackendConfig } from './auth/config';
 import {
+  createQingShuAuthFetchProvider,
+  createQingShuExtensionHost,
+  createQingShuGovernanceService,
+  resolveQingShuModuleFeatureFlagsFromConfig,
+} from './qingshuModules';
+import { QingShuManagedCatalogService } from './qingshuManaged/catalogService';
+import { QingShuObjectSourceType } from '../shared/qingshuManaged/constants';
+import {
   AuthBackend,
   type AuthCallbackPayload,
   type AuthConfig,
@@ -95,6 +103,7 @@ import { MacSpeechService, broadcastSpeechState } from './libs/macSpeechService'
 import { MacTtsService, broadcastTtsState } from './libs/macTtsService';
 import { EdgeTtsService } from './libs/edgeTtsService';
 import { TtsRouterService } from './libs/ttsRouterService';
+import { AssistantSpeechGuard } from './libs/assistantSpeechGuard';
 import {
   resolveForegroundSpeechRetryDelayMs,
   shouldRetryForegroundSpeech,
@@ -120,9 +129,17 @@ import {
 import {
   TtsIpcChannel,
   TtsEngine,
+  TtsPlaybackSource,
+  TtsStateType,
   type TtsPrepareOptions,
+  type TtsQueryOptions,
   type TtsSpeakOptions,
 } from '../shared/tts/constants';
+import type {
+  QingShuExtensionHost,
+  QingShuGovernanceService,
+  QingShuModuleFlagConfig,
+} from './qingshuModules/types';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -719,6 +736,9 @@ let imGatewayManager: IMGatewayManager | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
 let openClawEngineManager: OpenClawEngineManager | null = null;
 let openClawConfigSync: OpenClawConfigSync | null = null;
+let qingShuExtensionHost: QingShuExtensionHost | null = null;
+let qingShuGovernanceService: QingShuGovernanceService | null = null;
+let qingShuManagedCatalogService: QingShuManagedCatalogService | null = null;
 let openClawBootstrapPromise: Promise<OpenClawEngineStatus> | null = null;
 let openClawStatusForwarderBound = false;
 let coworkRuntimeForwarderBound = false;
@@ -909,10 +929,74 @@ const getCoworkStore = () => {
 let agentManager: AgentManager | null = null;
 const getAgentManager = () => {
   if (!agentManager) {
-    agentManager = new AgentManager(getCoworkStore());
+    agentManager = new AgentManager(getCoworkStore(), {
+      getManagedAgents: () => qingShuManagedCatalogService?.listManagedAgents() ?? [],
+    });
   }
   return agentManager;
 };
+
+const listWorkspaceSkillInstalls = (): Array<{
+  agentId: string;
+  agentName: string;
+  workspacePath: string;
+  skillIds: string[];
+}> => {
+  const stateDir = getOpenClawEngineManager().getStateDir();
+  if (!fs.existsSync(stateDir)) {
+    return [];
+  }
+
+  const installs: Array<{
+    agentId: string;
+    agentName: string;
+    workspacePath: string;
+    skillIds: string[];
+  }> = [];
+
+  for (const entry of fs.readdirSync(stateDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('workspace-')) {
+      continue;
+    }
+
+    const agentId = entry.name.slice('workspace-'.length).trim();
+    if (!agentId) {
+      continue;
+    }
+
+    const workspacePath = path.join(stateDir, entry.name);
+    const skillsPath = path.join(workspacePath, 'skills');
+    if (!fs.existsSync(skillsPath) || !fs.statSync(skillsPath).isDirectory()) {
+      continue;
+    }
+
+    const skillIds = fs.readdirSync(skillsPath, { withFileTypes: true })
+      .filter((skillEntry) => skillEntry.isDirectory() && !skillEntry.name.startsWith('.'))
+      .map((skillEntry) => skillEntry.name.trim())
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right));
+
+    if (skillIds.length === 0) {
+      continue;
+    }
+
+    const agent = getAgentManager().getAgent(agentId);
+    installs.push({
+      agentId,
+      agentName: agent?.name?.trim() || agentId,
+      workspacePath,
+      skillIds,
+    });
+  }
+
+  return installs.sort((left, right) => left.agentName.localeCompare(right.agentName));
+};
+
+const normalizeIds = (values: string[] | undefined): string[] => Array.from(new Set(
+  (values ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean),
+));
 
 const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
   const configured = getCoworkStore().getConfig().agentEngine;
@@ -1014,6 +1098,12 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
         };
       },
       getAgents: () => getCoworkStore().listAgents(),
+      getQingShuEnabledToolBundles: () => qingShuExtensionHost?.getEnabledToolBundles() ?? [],
+      getQingShuSharedToolCatalog: () => qingShuExtensionHost?.getSharedToolCatalog() ?? {
+        generatedAt: Date.now(),
+        modules: [],
+        tools: [],
+      },
     });
   }
   return openClawConfigSync;
@@ -1238,7 +1328,7 @@ const bindCoworkRuntimeForwarder = (): void => {
     );
     if (followUpDecision.request) {
       disarmSpeechFollowUp(`session ${sessionId} finished`);
-      triggerSpeechFollowUpDictation(followUpDecision.request);
+      assistantSpeechGuard?.scheduleFollowUp(followUpDecision.request);
     }
     // If session used a server model, notify renderer to refresh quota
     try {
@@ -1267,6 +1357,7 @@ const bindCoworkRuntimeForwarder = (): void => {
       console.warn(`[SpeechFollowUp] Session ${sessionId} failed; canceling follow-up dictation.`);
       disarmSpeechFollowUp(`session ${sessionId} failed`);
     }
+    assistantSpeechGuard?.clearPendingFollowUp();
   });
 
   coworkRuntimeForwarderBound = true;
@@ -1343,24 +1434,23 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
       mcpBridgeSecret = crypto.randomUUID();
     }
 
+    if (!mcpServerManager) {
+      mcpServerManager = new McpServerManager();
+    }
+    qingShuManagedCatalogService?.registerLocalToolRuntime(mcpServerManager);
+
     // Discover MCP tools (may be empty if no servers configured)
     const enabledServers = getMcpStore().getEnabledServers();
     console.log(`[McpBridge] enabledServers: ${enabledServers.length} (${enabledServers.map(s => s.name).join(', ')})`);
 
-    let tools: Awaited<ReturnType<McpServerManager['startServers']>> = [];
+    let tools: Awaited<ReturnType<McpServerManager['startServers']>> = mcpServerManager.toolManifest;
     if (enabledServers.length > 0) {
-      if (!mcpServerManager) {
-        mcpServerManager = new McpServerManager();
-      }
       console.log('[McpBridge] starting MCP servers...');
       tools = await mcpServerManager.startServers(enabledServers);
       console.log(`[McpBridge] tools discovered: ${tools.length}`);
     }
 
     // Always start HTTP callback server (serves both MCP Bridge and AskUserQuestion)
-    if (!mcpServerManager) {
-      mcpServerManager = new McpServerManager();
-    }
     if (!mcpBridgeServer) {
       mcpBridgeServer = new McpBridgeServer(mcpServerManager, mcpBridgeSecret);
     }
@@ -1700,11 +1790,13 @@ let isQuitting = false;
 const activeStreamControllers = new Map<string, AbortController>();
 let lastReloadAt = 0;
 const MIN_RELOAD_INTERVAL_MS = 5000;
+
 type AppConfigSettings = {
   theme?: string;
   language?: string;
   useSystemProxy?: boolean;
   auth?: Partial<AuthConfig>;
+  qingshuModules?: Record<string, QingShuModuleFlagConfig | undefined>;
   speechInput?: {
     stopCommand?: string;
     submitCommand?: string;
@@ -1802,6 +1894,7 @@ let foregroundSpeechOrigin: ForegroundSpeechOrigin | null = null;
 let foregroundSpeechStartOptions: SpeechStartOptions | null = null;
 let foregroundSpeechRecoveryAttempts = 0;
 let foregroundSpeechRecoveryTimer: NodeJS.Timeout | null = null;
+let assistantSpeechGuard: AssistantSpeechGuard | null = null;
 
 const clearForegroundSpeechRecoveryTimer = (): void => {
   if (foregroundSpeechRecoveryTimer) {
@@ -1829,6 +1922,19 @@ const resetForegroundSpeechRecoveryState = (): void => {
   foregroundSpeechStartOptions = null;
 };
 
+const stopForegroundSpeechIfActive = async (reason: string): Promise<void> => {
+  if (!foregroundSpeechOrigin) {
+    return;
+  }
+
+  const activeOrigin = foregroundSpeechOrigin;
+  console.log(`[SpeechFollowUp] Stopping foreground speech because ${reason}.`);
+  foregroundSpeechOrigin = null;
+  resetForegroundSpeechRecoveryState();
+  wakeInputService.handleForegroundSpeechEnded(activeOrigin);
+  await macSpeechService.stop();
+};
+
 type SpeechFollowUpState = {
   armed: boolean;
   armedSessionId: string | null;
@@ -1849,12 +1955,14 @@ const isTempSessionId = (sessionId: string | null): boolean => {
 
 const disarmSpeechFollowUp = (reason: string): void => {
   if (!speechFollowUpState.armed && !speechFollowUpState.config) {
+    assistantSpeechGuard?.clearPendingFollowUp();
     return;
   }
   console.log(`[SpeechFollowUp] Disarmed follow-up dictation because ${reason}.`);
   speechFollowUpState.armed = false;
   speechFollowUpState.armedSessionId = null;
   speechFollowUpState.config = null;
+  assistantSpeechGuard?.clearPendingFollowUp();
 };
 
 const armSpeechFollowUp = (payload: SpeechFollowUpArmRequest): void => {
@@ -2009,13 +2117,15 @@ const wakeInputService = new WakeInputService({
   stopListening: async () => {
     return macSpeechService.stop();
   },
+  shouldSuppressTriggering: () => assistantSpeechGuard?.isAssistantReplyActive() ?? false,
 });
 const macTtsService = new MacTtsService();
 const edgeTtsService = new EdgeTtsService();
+let cachedTtsConfig = mergeTtsConfig();
 const ttsRouterService = new TtsRouterService(
   macTtsService,
   edgeTtsService,
-  () => mergeTtsConfig(getStore().get<AppConfigSettings>('app_config')?.tts),
+  () => cachedTtsConfig,
 );
 
 const getWakeActivationReplyConfig = (): { enabled: boolean; text: string } => {
@@ -2097,6 +2207,7 @@ const maybeSpeakWakeActivationReply = async (): Promise<void> => {
       voiceId: ttsConfig.voiceId,
       rate: ttsConfig.rate,
       volume: ttsConfig.volume,
+      source: TtsPlaybackSource.WakeActivation,
     },
     {
       allowPrepare: false,
@@ -2121,6 +2232,11 @@ const triggerSpeechFollowUpDictation = (request: WakeInputDictationRequest): voi
     source: 'follow_up',
   } satisfies WakeInputDictationRequest);
 };
+
+assistantSpeechGuard = new AssistantSpeechGuard((request) => {
+  console.log('[SpeechFollowUp] Releasing queued follow-up dictation after assistant playback guard.');
+  triggerSpeechFollowUpDictation(request);
+});
 
 wakeInputService.on('stateChanged', (status) => {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -2213,6 +2329,12 @@ macSpeechService.onStateChanged((event) => {
 });
 
 ttsRouterService.on('stateChanged', (event) => {
+  if (event.type === TtsStateType.Speaking) {
+    assistantSpeechGuard?.handleTtsStarted(event.source);
+  }
+  if (event.type === TtsStateType.Stopped || event.type === TtsStateType.Error) {
+    assistantSpeechGuard?.handleTtsStopped(event.source);
+  }
   broadcastTtsState(BrowserWindow.getAllWindows(), TtsIpcChannel.StateChanged, event);
 });
 
@@ -2675,6 +2797,15 @@ if (!gotTheLock) {
     return getCurrentAuthBackendConfig().apiBaseUrl;
   };
 
+  const resolveQingShuModuleFeatureFlags = (
+    moduleId: string,
+    enabledByDefault: boolean,
+  ) => resolveQingShuModuleFeatureFlagsFromConfig(
+    getStore().get<AppConfigSettings>('app_config'),
+    moduleId,
+    enabledByDefault,
+  );
+
   const getCurrentAuthAdapter = (): AuthAdapter => {
     const backendConfig = getCurrentAuthBackendConfig();
     const openExternalForAuth = async (url: string) => {
@@ -2730,8 +2861,88 @@ if (!gotTheLock) {
     });
   };
 
+  const getQingShuExtensionHost = (): QingShuExtensionHost => {
+    if (!qingShuExtensionHost) {
+      qingShuExtensionHost = createQingShuExtensionHost({
+        auth: createQingShuAuthFetchProvider({
+          fetchFn: (url: string, options?: RequestInit): Promise<Response> =>
+            session.defaultSession.fetch(url, options),
+          getAuthAdapter: getCurrentAuthAdapter,
+          resolveApiBaseUrl: getCurrentAuthApiBaseUrl,
+        }),
+        resolveFeatureFlags: resolveQingShuModuleFeatureFlags,
+        modules: [],
+      });
+      console.log('[QingShuExtensionHost] Initialized extension host with 0 module(s)');
+    }
+    return qingShuExtensionHost;
+  };
+
+  const getQingShuGovernanceService = (): QingShuGovernanceService => {
+    if (!qingShuGovernanceService) {
+      qingShuGovernanceService = createQingShuGovernanceService({
+        getSharedToolCatalogSummary: () =>
+          getOpenClawConfigSync().getQingShuSharedToolCatalogSummary(),
+        listInstalledSkills: () =>
+          getSkillManager().listSkills().map((skill) => ({
+            id: skill.id,
+            skillPath: skill.skillPath,
+          })),
+        resolveSkillPathById: (skillId: string) => {
+          const skill = getSkillManager().listSkills().find((entry) => entry.id === skillId);
+          return skill?.skillPath ?? null;
+        },
+      });
+      console.log('[QingShuGovernanceService] Initialized governance service');
+    }
+    return qingShuGovernanceService;
+  };
+
+  const getQingShuManagedCatalogService = (): QingShuManagedCatalogService => {
+    if (!qingShuManagedCatalogService) {
+      qingShuManagedCatalogService = new QingShuManagedCatalogService({
+        fetchFn: (url: string, options?: RequestInit): Promise<Response> =>
+          session.defaultSession.fetch(url, options),
+        getAuthAdapter: getCurrentAuthAdapter,
+        resolveApiBaseUrl: getCurrentAuthApiBaseUrl,
+        skillManager: getSkillManager(),
+        store: getStore(),
+        onCatalogChanged: () => {
+          if (mcpServerManager && qingShuManagedCatalogService) {
+            qingShuManagedCatalogService.registerLocalToolRuntime(mcpServerManager);
+          }
+          if (mcpBridgeServer || mcpServerManager) {
+            void refreshMcpBridge().catch((error) => {
+              console.warn('[QingShuManaged] Failed to refresh MCP bridge after catalog sync:', error);
+            });
+          } else {
+            void syncOpenClawConfig({
+              reason: 'qingshu-managed-catalog-changed',
+              restartGatewayIfRunning: true,
+            }).catch((error) => {
+              console.warn('[QingShuManaged] Failed to sync OpenClaw config after catalog sync:', error);
+            });
+          }
+        },
+      });
+      console.log('[QingShuManaged] Initialized managed catalog service');
+    }
+    return qingShuManagedCatalogService;
+  };
+
   ipcMain.handle('auth:getBackend', async () => {
     return getCurrentAuthAdapter().getBackend();
+  });
+
+  ipcMain.handle('qingshuManaged:syncCatalog', async () => {
+    return getQingShuManagedCatalogService().syncCatalog();
+  });
+
+  ipcMain.handle('qingshuManaged:getCatalog', async () => {
+    return {
+      success: true,
+      snapshot: getQingShuManagedCatalogService().getSnapshot(),
+    };
   });
 
   ipcMain.handle('auth:login', async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
@@ -2896,6 +3107,15 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle('skills:listWorkspaceInstalls', () => {
+    try {
+      const installs = listWorkspaceSkillInstalls();
+      return { success: true, installs };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to list workspace skill installs' };
+    }
+  });
+
   ipcMain.handle('skills:autoRoutingPrompt', () => {
     try {
       const prompt = getSkillManager().buildAutoRoutingPrompt();
@@ -2919,6 +3139,57 @@ if (!gotTheLock) {
     config: Record<string, string>
   ) => {
     return getSkillManager().testEmailConnectivity(skillId, config);
+  });
+
+  ipcMain.handle('skills:governance:analyzeById', (_event, skillId: string) => {
+    try {
+      const result = getQingShuGovernanceService().analyzeSkillById(skillId);
+      if (!result) {
+        return {
+          success: false,
+          error: `Failed to resolve skill path for ${skillId}`,
+        };
+      }
+      return {
+        success: true,
+        result,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to analyze skill governance',
+      };
+    }
+  });
+
+  ipcMain.handle('skills:governance:analyzeFiles', (_event, skillFilePaths: string[]) => {
+    try {
+      return {
+        success: true,
+        results: getQingShuGovernanceService().analyzeSkillFiles(
+          Array.isArray(skillFilePaths) ? skillFilePaths : [],
+        ),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to analyze skill governance batch',
+      };
+    }
+  });
+
+  ipcMain.handle('skills:governance:getCatalogSummary', () => {
+    try {
+      return {
+        success: true,
+        summary: getQingShuGovernanceService().getSharedToolCatalogSummary(),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get skill governance catalog summary',
+      };
+    }
   });
 
   ipcMain.handle('openclaw:engine:getStatus', async () => {
@@ -3450,6 +3721,43 @@ if (!gotTheLock) {
 
   ipcMain.handle('agents:update', async (_event, id: string, updates: import('./coworkStore').UpdateAgentRequest) => {
     try {
+      const managedAgent = qingShuManagedCatalogService?.getManagedAgent(id);
+      if (managedAgent) {
+        const unsupportedKeys = Object.entries(updates)
+          .filter(([, value]) => value !== undefined)
+          .map(([key]) => key)
+          .filter((key) => key !== 'skillIds');
+        if (unsupportedKeys.length > 0) {
+          throw new Error('Managed agents only support appending local skills.');
+        }
+
+        const requestedSkillIds = normalizeIds(updates.skillIds);
+        const baseSkillIds = normalizeIds(managedAgent.managedBaseSkillIds ?? []);
+        const missingBaseSkillIds = baseSkillIds.filter((skillId) => !requestedSkillIds.includes(skillId));
+        if (missingBaseSkillIds.length > 0) {
+          throw new Error('Managed base skills cannot be removed.');
+        }
+
+        const extraSkillIds = requestedSkillIds.filter((skillId) => !baseSkillIds.includes(skillId));
+        const availableExtraSkillIds = new Set(
+          getSkillManager()
+            .listSkills()
+            .filter((skill) =>
+              skill.enabled
+              && skill.sourceType !== QingShuObjectSourceType.QingShuManaged,
+            )
+            .map((skill) => skill.id),
+        );
+        const invalidExtraSkillIds = extraSkillIds.filter((skillId) => !availableExtraSkillIds.has(skillId));
+        if (invalidExtraSkillIds.length > 0) {
+          throw new Error(`These skills cannot be attached to a managed agent: ${invalidExtraSkillIds.join(', ')}`);
+        }
+
+        const agent = qingShuManagedCatalogService?.setManagedAgentExtraSkillIds(id, extraSkillIds) ?? null;
+        syncOpenClawConfig({ reason: 'managed-agent-extra-skills-updated' }).catch(() => {});
+        return { success: true, agent };
+      }
+
       const agent = getAgentManager().updateAgent(id, updates);
       syncOpenClawConfig({ reason: 'agent-updated' }).catch(() => {});
       return { success: true, agent };
@@ -4441,6 +4749,7 @@ if (!gotTheLock) {
     if (!isMacSpeechInputEnabled()) {
       return { success: false, error: SpeechErrorCode.HelperUnavailable };
     }
+    await ttsRouterService.stop();
     const origin = await wakeInputService.prepareForegroundSpeechStart(normalizeForegroundSpeechOrigin(options));
     let result = await macSpeechService.start(options);
     if (!result.success && result.error === SpeechErrorCode.AlreadyListening) {
@@ -4495,13 +4804,13 @@ if (!gotTheLock) {
     return { success: true, status: config };
   });
 
-  ipcMain.handle(TtsIpcChannel.GetAvailability, async () => {
-    return ttsRouterService.getAvailability();
+  ipcMain.handle(TtsIpcChannel.GetAvailability, async (_event, options?: TtsQueryOptions) => {
+    return ttsRouterService.getAvailability(options);
   });
 
-  ipcMain.handle(TtsIpcChannel.GetVoices, async () => {
+  ipcMain.handle(TtsIpcChannel.GetVoices, async (_event, options?: TtsQueryOptions) => {
     try {
-      const voices = await ttsRouterService.getVoices();
+      const voices = await ttsRouterService.getVoices(options);
       return { success: true, voices };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list TTS voices.' };
@@ -4513,6 +4822,9 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle(TtsIpcChannel.Speak, async (_event, options?: TtsSpeakOptions) => {
+    if (options?.source === TtsPlaybackSource.AssistantReply) {
+      await stopForegroundSpeechIfActive('assistant reply TTS is starting');
+    }
     return ttsRouterService.speak(options ?? { text: '' });
   });
 
@@ -5190,6 +5502,8 @@ if (!gotTheLock) {
       return tokens;
     });
     setServerBaseUrlGetter(() => getCurrentAuthApiBaseUrl() || getServerApiBaseUrl());
+    getQingShuExtensionHost();
+    getQingShuGovernanceService();
 
     // Wire up token refresher for the OpenAI compat proxy so it can retry
     // on 401/403 with a fresh accessToken instead of failing immediately.
@@ -5364,6 +5678,7 @@ if (!gotTheLock) {
     await syncWakeInputAvailabilityFromSpeech();
     await wakeInputService.startBackgroundListening();
     const initialTtsConfig = mergeTtsConfig(appConfig?.tts);
+    cachedTtsConfig = initialTtsConfig;
     if (initialTtsConfig.engine === TtsEngine.EdgeTts) {
       void ttsRouterService.prepare({ engine: TtsEngine.EdgeTts }).catch((error) => {
         console.error('[TtsRouterService] Failed to prepare edge-tts during app init:', error);
@@ -5465,6 +5780,7 @@ if (!gotTheLock) {
       if (currentTtsConfig !== lastTtsConfig) {
         lastTtsConfig = currentTtsConfig;
         const mergedTtsConfig = mergeTtsConfig(newConfig?.tts);
+        cachedTtsConfig = mergedTtsConfig;
         void ttsRouterService.prepare({ engine: mergedTtsConfig.engine }).catch((error) => {
           console.error('[TtsRouterService] Failed to refresh TTS availability after config change:', error);
         });

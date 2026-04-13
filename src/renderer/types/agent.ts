@@ -1,4 +1,6 @@
-export type AgentSource = 'custom' | 'preset';
+import type { QingShuObjectSourceType } from '@shared/qingshuManaged/constants';
+
+export type AgentSource = 'custom' | 'preset' | 'managed';
 
 export interface Agent {
   id: string;
@@ -9,9 +11,18 @@ export interface Agent {
   model: string;
   icon: string;
   skillIds: string[];
+  toolBundleIds: string[];
   enabled: boolean;
   isDefault: boolean;
   source: AgentSource;
+  sourceType?: QingShuObjectSourceType;
+  readOnly?: boolean;
+  allowed?: boolean;
+  backendAgentId?: string;
+  managedToolNames?: string[];
+  managedBaseSkillIds?: string[];
+  managedExtraSkillIds?: string[];
+  policyNote?: string;
   presetId: string;
   createdAt: number;
   updatedAt: number;
@@ -39,6 +50,7 @@ export interface CreateAgentRequest {
   model?: string;
   icon?: string;
   skillIds?: string[];
+  toolBundleIds?: string[];
   source?: string;
   presetId?: string;
 }
@@ -51,5 +63,6 @@ export interface UpdateAgentRequest {
   model?: string;
   icon?: string;
   skillIds?: string[];
+  toolBundleIds?: string[];
   enabled?: boolean;
 }

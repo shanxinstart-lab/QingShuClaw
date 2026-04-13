@@ -4,10 +4,19 @@
  */
 
 import { configService } from './config';
+import { DEFAULT_QTB_API_BASE_URL } from '../../common/auth';
 
 const isTestMode = () => {
   return configService.getConfig().app?.testMode === true;
 };
+
+const getQtbApiBaseUrl = () => {
+  return configService.getConfig().auth?.qtbApiBaseUrl?.trim().replace(/\/+$/, '')
+    || DEFAULT_QTB_API_BASE_URL;
+};
+
+// 品牌运行时配置
+export const getBrandRuntimeConfigUrl = () => `${getQtbApiBaseUrl()}/api/qingshu-claw/runtime-config`;
 
 // 自动更新
 export const getUpdateCheckUrl = () => isTestMode()

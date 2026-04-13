@@ -1,23 +1,31 @@
 import type { CoworkStore, Agent, CreateAgentRequest, UpdateAgentRequest } from './coworkStore';
 import { PRESET_AGENTS, presetToCreateRequest, type PresetAgent } from './presetAgents';
 
+type AgentManagerDeps = {
+  getManagedAgents?: () => Agent[];
+};
+
 /**
  * AgentManager handles CRUD operations for agents and preset agent installation.
  * Agents are stored in the SQLite `agents` table via CoworkStore.
  */
 export class AgentManager {
   private store: CoworkStore;
+  private readonly getManagedAgents: () => Agent[];
 
-  constructor(store: CoworkStore) {
+  constructor(store: CoworkStore, deps: AgentManagerDeps = {}) {
     this.store = store;
+    this.getManagedAgents = deps.getManagedAgents ?? (() => []);
   }
 
   listAgents(): Agent[] {
-    return this.store.listAgents();
+    return [...this.store.listAgents(), ...this.getManagedAgents()];
   }
 
   getAgent(agentId: string): Agent | null {
-    return this.store.getAgent(agentId);
+    return this.store.getAgent(agentId)
+      || this.getManagedAgents().find((agent) => agent.id === agentId)
+      || null;
   }
 
   getDefaultAgent(): Agent {
@@ -30,10 +38,16 @@ export class AgentManager {
   }
 
   updateAgent(agentId: string, updates: UpdateAgentRequest): Agent | null {
+    if (this.getManagedAgents().some((agent) => agent.id === agentId)) {
+      throw new Error('Managed agents are read-only');
+    }
     return this.store.updateAgent(agentId, updates);
   }
 
   deleteAgent(agentId: string): boolean {
+    if (this.getManagedAgents().some((agent) => agent.id === agentId)) {
+      throw new Error('Managed agents cannot be deleted');
+    }
     return this.store.deleteAgent(agentId);
   }
 

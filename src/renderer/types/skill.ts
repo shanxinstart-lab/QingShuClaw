@@ -1,3 +1,5 @@
+import type { QingShuObjectSourceType } from '@shared/qingshuManaged/constants';
+
 // Skill type definition
 export interface Skill {
   id: string;
@@ -10,6 +12,23 @@ export interface Skill {
   prompt: string;         // System prompt content
   skillPath: string;      // Absolute path to SKILL.md
   version?: string;       // Skill version from SKILL.md frontmatter
+  sourceType?: QingShuObjectSourceType;
+  readOnly?: boolean;
+  backendSkillId?: string;
+  backendAgentIds?: string[];
+  packageUrl?: string;
+  catalogVersion?: string;
+  installedBy?: string;
+  toolRefs?: string[];
+  policyNote?: string;
+  allowed?: boolean;
+}
+
+export interface WorkspaceSkillInstall {
+  agentId: string;
+  agentName: string;
+  workspacePath: string;
+  skillIds: string[];
 }
 
 export type LocalizedText = { en: string; zh: string };

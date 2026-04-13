@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+import { QingShuObjectSourceType, type QingShuObjectSourceType as QingShuObjectSourceTypeValue } from '../shared/qingshuManaged/constants';
 import {
   extractTurnMemoryChanges,
   isQuestionLikeMemoryText,
@@ -298,7 +299,7 @@ export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
 export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
 
-export type AgentSource = 'custom' | 'preset';
+export type AgentSource = 'custom' | 'preset' | 'managed';
 
 export interface Agent {
   id: string;
@@ -309,9 +310,18 @@ export interface Agent {
   model: string;
   icon: string;
   skillIds: string[];
+  toolBundleIds: string[];
   enabled: boolean;
   isDefault: boolean;
   source: AgentSource;
+  sourceType?: QingShuObjectSourceTypeValue;
+  readOnly?: boolean;
+  allowed?: boolean;
+  backendAgentId?: string;
+  managedToolNames?: string[];
+  managedBaseSkillIds?: string[];
+  managedExtraSkillIds?: string[];
+  policyNote?: string;
   presetId: string;
   createdAt: number;
   updatedAt: number;
@@ -326,6 +336,7 @@ export interface CreateAgentRequest {
   model?: string;
   icon?: string;
   skillIds?: string[];
+  toolBundleIds?: string[];
   source?: AgentSource;
   presetId?: string;
 }
@@ -338,6 +349,7 @@ export interface UpdateAgentRequest {
   model?: string;
   icon?: string;
   skillIds?: string[];
+  toolBundleIds?: string[];
   enabled?: boolean;
 }
 
@@ -524,6 +536,21 @@ interface CoworkUserMemoryRow {
   updated_at: number;
   last_used_at: number | null;
 }
+
+const parseJsonStringArray = (value?: string | null): string[] => {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
+};
 
 export class CoworkStore {
   private db: Database;
@@ -1704,6 +1731,7 @@ export class CoworkStore {
       model: string;
       icon: string;
       skill_ids: string;
+      tool_bundle_ids: string | null;
       enabled: number;
       is_default: number;
       source: string;
@@ -1729,6 +1757,7 @@ export class CoworkStore {
       model: string;
       icon: string;
       skill_ids: string;
+      tool_bundle_ids: string | null;
       enabled: number;
       is_default: number;
       source: string;
@@ -1754,8 +1783,8 @@ export class CoworkStore {
     }
 
     this.db.run(`
-      INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+      INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, tool_bundle_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
     `, [
       id,
       request.name,
@@ -1765,6 +1794,7 @@ export class CoworkStore {
       request.model || '',
       request.icon || '',
       JSON.stringify(request.skillIds || []),
+      JSON.stringify(request.toolBundleIds || []),
       request.source || 'custom',
       request.presetId || '',
       now,
@@ -1811,6 +1841,10 @@ export class CoworkStore {
       setClauses.push('skill_ids = ?');
       values.push(JSON.stringify(updates.skillIds));
     }
+    if (updates.toolBundleIds !== undefined) {
+      setClauses.push('tool_bundle_ids = ?');
+      values.push(JSON.stringify(updates.toolBundleIds));
+    }
     if (updates.enabled !== undefined) {
       setClauses.push('enabled = ?');
       values.push(updates.enabled ? 1 : 0);
@@ -1839,6 +1873,7 @@ export class CoworkStore {
     model: string;
     icon: string;
     skill_ids: string;
+    tool_bundle_ids?: string | null;
     enabled: number;
     is_default: number;
     source: string;
@@ -1846,12 +1881,8 @@ export class CoworkStore {
     created_at: number;
     updated_at: number;
   }): Agent {
-    let skillIds: string[] = [];
-    try {
-      skillIds = JSON.parse(row.skill_ids);
-    } catch {
-      skillIds = [];
-    }
+    const skillIds = parseJsonStringArray(row.skill_ids);
+    const toolBundleIds = parseJsonStringArray(row.tool_bundle_ids);
     return {
       id: row.id,
       name: row.name,
@@ -1861,9 +1892,17 @@ export class CoworkStore {
       model: row.model,
       icon: row.icon,
       skillIds,
+      toolBundleIds,
       enabled: Boolean(row.enabled),
       isDefault: Boolean(row.is_default),
       source: row.source as AgentSource,
+      sourceType: row.source === 'preset'
+        ? QingShuObjectSourceType.Preset
+        : QingShuObjectSourceType.LocalCustom,
+      readOnly: false,
+      backendAgentId: undefined,
+      managedToolNames: [],
+      policyNote: '',
       presetId: row.preset_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

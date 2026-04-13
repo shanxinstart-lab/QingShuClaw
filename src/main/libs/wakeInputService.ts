@@ -130,6 +130,8 @@ export class WakeInputService extends EventEmitter {
 
   private stopListening: () => Promise<{ success: boolean; error?: string }>;
 
+  private shouldSuppressTriggering: () => boolean;
+
   private speechListening = false;
 
   private supported = false;
@@ -147,11 +149,13 @@ export class WakeInputService extends EventEmitter {
     platform: string;
     startListening: () => Promise<{ success: boolean; error?: string }>;
     stopListening: () => Promise<{ success: boolean; error?: string }>;
+    shouldSuppressTriggering?: () => boolean;
   }) {
     super();
     this.config = { ...options.config };
     this.startListening = options.startListening;
     this.stopListening = options.stopListening;
+    this.shouldSuppressTriggering = options.shouldSuppressTriggering ?? (() => false);
     this.status = {
       enabled: this.config.enabled,
       supported: false,
@@ -360,6 +364,10 @@ export class WakeInputService extends EventEmitter {
     }
 
     if (event.type === 'partial' || event.type === 'final') {
+      if (this.shouldSuppressTriggering()) {
+        console.debug('[WakeInput] Background speech ignored because assistant playback guard is active.');
+        return;
+      }
       const wakeMatch = matchWakeWord(event.text ?? '', this.config.wakeWords);
       console.debug(
         '[WakeInput] Background speech received.',

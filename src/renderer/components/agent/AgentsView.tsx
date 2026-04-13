@@ -4,7 +4,7 @@ import { RootState } from '../../store';
 import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
-import { PlusIcon } from '@heroicons/react/24/outline';
+import { LockClosedIcon, PlusIcon } from '@heroicons/react/24/outline';
 import type { PresetAgent } from '../../types/agent';
 import AgentCreateModal from './AgentCreateModal';
 import AgentSettingsPanel from './AgentSettingsPanel';
@@ -30,6 +30,7 @@ const AgentsView: React.FC<AgentsViewProps> = ({
   const isMac = window.electron.platform === 'darwin';
   const agents = useSelector((state: RootState) => state.agent.agents);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
   const [presets, setPresets] = useState<PresetAgent[]>([]);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [settingsAgentId, setSettingsAgentId] = useState<string | null>(null);
@@ -45,9 +46,13 @@ const AgentsView: React.FC<AgentsViewProps> = ({
     agentService.getPresets().then(setPresets);
   }, [agents]);
 
-  const enabledAgents = agents.filter((a) => a.enabled && a.id !== 'main');
+  const visibleAgents = agents.filter((a) => a.id !== 'main');
+  const enabledAgents = visibleAgents.filter((a) => a.enabled);
   const presetAgents = enabledAgents.filter((a) => a.source === 'preset');
+  const managedAgents = visibleAgents.filter((a) => a.source === 'managed');
   const customAgents = enabledAgents.filter((a) => a.source === 'custom');
+  const managedAvailableAgents = managedAgents.filter((agent) => isLoggedIn && agent.allowed !== false);
+  const managedLockedAgents = managedAgents.filter((agent) => !isLoggedIn || agent.allowed === false);
   const uninstalledPresets = presets.filter((p) => !p.installed);
 
   const handleAddPreset = async (presetId: string) => {
@@ -60,7 +65,10 @@ const AgentsView: React.FC<AgentsViewProps> = ({
   };
 
   const handleSwitchAgent = (agentId: string) => {
-    agentService.switchAgent(agentId);
+    const switched = agentService.switchAgent(agentId);
+    if (!switched) {
+      return;
+    }
     coworkService.loadSessions(agentId);
     onShowCowork?.();
   };
@@ -140,6 +148,71 @@ const AgentsView: React.FC<AgentsViewProps> = ({
             </div>
           )}
 
+          {managedAgents.length > 0 && (
+            <div className="mb-8">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-sm font-medium text-secondary">
+                  {i18nService.t('managedAgents')}
+                </h2>
+                <div className="flex items-center gap-2 text-[11px] text-secondary">
+                  <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 font-medium text-emerald-700 dark:text-emerald-300">
+                    {i18nService.t('managedAvailableSection')} {managedAvailableAgents.length}
+                  </span>
+                  <span className="rounded-full border border-border bg-muted/40 px-2 py-1 font-medium">
+                    {i18nService.t('managedLockedSection')} {managedLockedAgents.length}
+                  </span>
+                </div>
+              </div>
+              {managedAvailableAgents.length > 0 && (
+                <div className="mb-4">
+                  <div className="mb-2 text-xs font-medium text-secondary">
+                    {i18nService.t('managedAvailableSection')}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {managedAvailableAgents.map((agent) => (
+                      <AgentCard
+                        key={agent.id}
+                        icon={agent.icon}
+                        name={agent.name}
+                        description={agent.description}
+                        isActive={agent.id === currentAgentId}
+                        badgeLabel={i18nService.t('sourceTypeQingShuManaged')}
+                        onClick={() => setSettingsAgentId(agent.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {managedLockedAgents.length > 0 && (
+                <div>
+                  <div className="mb-2 text-xs font-medium text-secondary">
+                    {i18nService.t('managedLockedSection')}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {managedLockedAgents.map((agent) => {
+                      const unavailableLabel = !isLoggedIn
+                        ? i18nService.t('managedUnavailableTag')
+                        : i18nService.t('managedForbiddenTag');
+                      return (
+                        <AgentCard
+                          key={agent.id}
+                          icon={agent.icon}
+                          name={agent.name}
+                          description={agent.description}
+                          isActive={agent.id === currentAgentId}
+                          badgeLabel={i18nService.t('sourceTypeQingShuManaged')}
+                          unavailableLabel={unavailableLabel}
+                          isUnavailable={true}
+                          onClick={() => setSettingsAgentId(agent.id)}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Custom Agents Section */}
           <div>
             <h2 className="text-sm font-medium text-secondary mb-3">
@@ -195,25 +268,50 @@ const AgentCard: React.FC<{
   name: string;
   description: string;
   isActive: boolean;
+  badgeLabel?: string;
+  unavailableLabel?: string;
+  isUnavailable?: boolean;
   onClick: () => void;
-}> = ({ icon, name, description, isActive, onClick }) => (
+}> = ({ icon, name, description, isActive, badgeLabel, unavailableLabel, isUnavailable, onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    className={`flex flex-col items-start gap-2 p-4 rounded-xl border-2 text-left transition-all min-h-[140px] hover:shadow-md hover:bg-surface-raised ${
+    className={`relative flex flex-col items-start gap-2 p-4 rounded-xl border-2 text-left transition-all min-h-[140px] ${
+      isUnavailable
+        ? 'border-border/70 bg-muted/30 text-muted-foreground saturate-0'
+        : 'hover:shadow-md hover:bg-surface-raised'
+    } ${
       isActive
         ? 'border-primary bg-primary/5'
         : 'border-border'
-    }`}
+    } ${isUnavailable ? 'opacity-85' : ''}`}
   >
+    {isUnavailable && (
+      <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-border bg-background/85 px-2 py-1 text-[10px] font-medium text-secondary shadow-sm">
+        <LockClosedIcon className="h-3 w-3" />
+        {unavailableLabel}
+      </div>
+    )}
     <span className="text-3xl">{icon || '🤖'}</span>
     <div className="min-w-0 w-full">
-      <div className="text-sm font-semibold text-foreground truncate">
-        {name}
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="text-sm font-semibold text-foreground truncate">
+          {name}
+        </div>
+        {badgeLabel && (
+          <span className="px-1.5 py-0.5 rounded bg-surface-raised text-[10px] text-secondary font-medium">
+            {badgeLabel}
+          </span>
+        )}
       </div>
       {description && (
         <div className="text-xs text-secondary mt-0.5 line-clamp-2">
           {description}
+        </div>
+      )}
+      {isUnavailable && (
+        <div className="mt-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 text-[11px] leading-4 text-secondary">
+          {i18nService.t('managedUnavailableHint')}
         </div>
       )}
     </div>

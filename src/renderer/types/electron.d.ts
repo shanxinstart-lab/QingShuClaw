@@ -88,6 +88,7 @@ interface TtsAvailability {
   availableEngines: Array<'macos_native' | 'edge_tts'>;
   prepareStatus: 'idle' | 'installing' | 'ready' | 'error';
   error?: string;
+  canRetryPrepare?: boolean;
 }
 
 interface TtsVoice {
@@ -102,6 +103,7 @@ interface TtsVoice {
 interface TtsStateEvent {
   type: 'idle' | 'speaking' | 'stopped' | 'error' | 'availability';
   voiceId?: string;
+  source?: 'assistant_reply' | 'wake_activation' | 'manual_preview';
   code?: string;
   message?: string;
   availability?: TtsAvailability;
@@ -234,6 +236,50 @@ interface Skill {
   updatedAt: number;
   prompt: string;
   skillPath: string;
+  version?: string;
+  sourceType?: import('@shared/qingshuManaged/constants').QingShuObjectSourceType;
+  readOnly?: boolean;
+  backendSkillId?: string;
+  backendAgentIds?: string[];
+  packageUrl?: string;
+  catalogVersion?: string;
+  installedBy?: string;
+  toolRefs?: string[];
+  policyNote?: string;
+  allowed?: boolean;
+}
+
+interface WorkspaceSkillInstall {
+  agentId: string;
+  agentName: string;
+  workspacePath: string;
+  skillIds: string[];
+}
+
+interface AgentIpcRecord {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  identity: string;
+  model: string;
+  icon: string;
+  skillIds: string[];
+  toolBundleIds: string[];
+  enabled: boolean;
+  isDefault: boolean;
+  source: 'custom' | 'preset' | 'managed';
+  sourceType?: import('@shared/qingshuManaged/constants').QingShuObjectSourceType;
+  readOnly?: boolean;
+  allowed?: boolean;
+  backendAgentId?: string;
+  managedToolNames?: string[];
+  managedBaseSkillIds?: string[];
+  managedExtraSkillIds?: string[];
+  policyNote?: string;
+  presetId: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 type EmailConnectivityCheckCode = 'imap_connection' | 'smtp_connection';
@@ -310,6 +356,7 @@ interface McpMarketplaceData {
 }
 
 import type { Agent, PresetAgent } from './agent';
+import type { QingShuManagedCatalogSnapshot } from '@shared/qingshuManaged/types';
 import type {
   AuthBackend,
   AuthCallbackPayload,
@@ -349,6 +396,7 @@ interface IElectronAPI {
     upgrade: (skillId: string, downloadUrl: string) => Promise<{ success: boolean; skills?: Skill[]; error?: string; auditReport?: any; pendingInstallId?: string }>;
     confirmInstall: (pendingId: string, action: string) => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
     getRoot: () => Promise<{ success: boolean; path?: string; error?: string }>;
+    listWorkspaceInstalls: () => Promise<{ success: boolean; installs?: WorkspaceSkillInstall[]; error?: string }>;
     autoRoutingPrompt: () => Promise<{ success: boolean; prompt?: string | null; error?: string }>;
     getConfig: (skillId: string) => Promise<{ success: boolean; config?: Record<string, string>; error?: string }>;
     setConfig: (skillId: string, config: Record<string, string>) => Promise<{ success: boolean; error?: string }>;
@@ -356,7 +404,16 @@ interface IElectronAPI {
       skillId: string,
       config: Record<string, string>
     ) => Promise<{ success: boolean; result?: EmailConnectivityTestResult; error?: string }>;
+    governance: {
+      analyzeById: (skillId: string) => Promise<{ success: boolean; result?: QingShuSkillGovernanceResultIPC; error?: string }>;
+      analyzeFiles: (skillFilePaths: string[]) => Promise<{ success: boolean; results?: QingShuSkillGovernanceBatchItemIPC[]; error?: string }>;
+      getCatalogSummary: () => Promise<{ success: boolean; summary?: QingShuSharedToolCatalogSummaryIPC; error?: string }>;
+    };
     onChanged: (callback: () => void) => () => void;
+  };
+  qingshuManaged: {
+    syncCatalog: () => Promise<{ success: boolean; snapshot?: QingShuManagedCatalogSnapshot; error?: string }>;
+    getCatalog: () => Promise<{ success: boolean; snapshot?: QingShuManagedCatalogSnapshot; error?: string }>;
   };
   mcp: {
     list: () => Promise<{ success: boolean; servers?: McpServerConfigIPC[]; error?: string }>;
@@ -370,8 +427,8 @@ interface IElectronAPI {
   agents: {
     list: () => Promise<Agent[]>;
     get: (id: string) => Promise<Agent | null>;
-    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
-    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => Promise<Agent>;
+    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
+    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => Promise<Agent>;
     delete: (id: string) => Promise<void>;
     presets: () => Promise<PresetAgent[]>;
     addPreset: (presetId: string) => Promise<Agent>;
@@ -496,10 +553,16 @@ interface IElectronAPI {
     onDictationRequested: (callback: (data: WakeInputDictationRequest) => void) => () => void;
   };
   tts: {
-    getAvailability: () => Promise<TtsAvailability>;
-    getVoices: () => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
+    getAvailability: (options?: { engine?: 'macos_native' | 'edge_tts' }) => Promise<TtsAvailability>;
+    getVoices: (options?: { engine?: 'macos_native' | 'edge_tts' }) => Promise<{ success: boolean; voices?: TtsVoice[]; error?: string }>;
     prepare: (options?: { engine?: 'macos_native' | 'edge_tts'; force?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => Promise<{ success: boolean; error?: string }>;
+    speak: (options: {
+      text: string;
+      voiceId?: string;
+      rate?: number;
+      volume?: number;
+      source?: 'assistant_reply' | 'wake_activation' | 'manual_preview';
+    }) => Promise<{ success: boolean; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
     onStateChanged: (callback: (data: TtsStateEvent) => void) => () => void;
   };
@@ -646,7 +709,13 @@ interface IElectronAPI {
     onQuotaChanged: (callback: () => void) => () => void;
   }
   enterprise: {
-    getConfig: () => Promise<{ ui?: Record<string, 'hide' | 'disable' | 'readonly'>; disableUpdate?: boolean; version: string; name: string } | null>;
+    getConfig: () => Promise<{
+      ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
+      disableUpdate?: boolean;
+      autoAcceptPrivacy?: boolean;
+      version: string;
+      name: string;
+    } | null>;
   };
   networkStatus: {
     send: (status: 'online' | 'offline') => void;
@@ -1013,6 +1082,85 @@ interface IMMessage {
   content: string;
   chatType: 'direct' | 'group';
   timestamp: number;
+}
+
+interface QingShuSkillDependencyParseResultIPC {
+  dependencies: {
+    toolBundles: string[];
+    toolRefs: string[];
+    capabilityRefs: string[];
+  };
+  hasDeclarations: boolean;
+}
+
+interface QingShuSkillDependencyValidationIssueIPC {
+  level: 'error' | 'warn' | 'info';
+  code: string;
+  message: string;
+  field: 'toolBundles' | 'toolRefs' | 'capabilityRefs' | 'general';
+  ref?: string;
+}
+
+interface QingShuSharedToolCatalogSummaryIPC {
+  generatedAt: number;
+  modules: Array<{
+    moduleId: string;
+    version: string;
+    status: 'active' | 'disabled' | 'failed';
+    enabled: boolean;
+    sharedToolsEnabled: boolean;
+    builtInSkillsEnabled: boolean;
+    sharedToolCount: number;
+    bundles: string[];
+    error?: string;
+  }>;
+  bundles: Array<{
+    bundle: string;
+    moduleIds: string[];
+    toolNames: string[];
+    toolCount: number;
+  }>;
+  tools: Array<{
+    capabilityKey: string;
+    toolName: string;
+    description: string;
+    module: string;
+    bundle: string;
+    visibility: 'internal' | 'shared' | 'experimental';
+    audience: 'system' | 'user-skill' | 'both';
+    stability: 'stable' | 'beta';
+    dangerLevel: 'read' | 'write' | 'admin';
+    inputSchema?: Record<string, unknown>;
+  }>;
+}
+
+interface QingShuSharedToolContractArtifactsIPC {
+  payload: {
+    generatedAt: number;
+    modules: QingShuSharedToolCatalogSummaryIPC['modules'];
+    bundles: QingShuSharedToolCatalogSummaryIPC['bundles'];
+    tools: QingShuSharedToolCatalogSummaryIPC['tools'];
+  };
+  markdown: string;
+  json: string;
+  suggestedMarkdownPath: string;
+  suggestedJsonPath: string;
+}
+
+interface QingShuSkillGovernanceResultIPC {
+  dependencies: QingShuSkillDependencyParseResultIPC;
+  validation: {
+    valid: boolean;
+    issues: QingShuSkillDependencyValidationIssueIPC[];
+    dependencies: QingShuSkillDependencyParseResultIPC['dependencies'];
+  };
+  catalog: QingShuSharedToolCatalogSummaryIPC;
+  contracts: QingShuSharedToolContractArtifactsIPC;
+}
+
+interface QingShuSkillGovernanceBatchItemIPC {
+  skillFilePath: string;
+  governance: QingShuSkillGovernanceResultIPC;
 }
 
 declare global {

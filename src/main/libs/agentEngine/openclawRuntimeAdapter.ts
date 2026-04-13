@@ -27,7 +27,9 @@ import {
 import {
   extractGatewayHistoryEntries,
   extractGatewayMessageText,
+  normalizeGatewayHistoryText,
 } from '../openclawHistory';
+import { buildTransientSessionFromOpenClawTranscript } from '../openclawTranscript';
 import { extractOpenClawAssistantStreamText } from '../openclawAssistantText';
 import { buildOpenClawLocalTimeContextPrompt } from '../openclawLocalTimeContextPrompt';
 import { isDeleteCommand, getCommandDangerLevel } from '../commandSafety';
@@ -41,6 +43,9 @@ const BRIDGE_MAX_MESSAGE_CHARS = 1200;
 const GATEWAY_READY_TIMEOUT_MS = 15_000;
 const FINAL_HISTORY_SYNC_LIMIT = 50;
 const CHANNEL_SESSION_DISCOVERY_LIMIT = 200;
+const INTERNAL_SYSTEM_PROMPT_HEADER = '[LobsterAI system instructions]';
+const INTERNAL_SYSTEM_PROMPT_REPLACEMENT_HINT =
+  'If earlier LobsterAI system instructions exist, replace them with this version.';
 
 type GatewayEventFrame = {
   event: string;
@@ -167,6 +172,21 @@ const isSameChannelHistoryEntry = (
 const truncate = (value: string, maxChars: number): string => {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}...`;
+};
+
+const unwrapInternalSystemPrompt = (text: string): string => {
+  const normalized = text.trim();
+  if (!normalized.startsWith(INTERNAL_SYSTEM_PROMPT_HEADER)) {
+    return normalized;
+  }
+  const lines = normalized.split('\n');
+  const replacementHintIndex = lines.findIndex(
+    (line) => line.trim() === INTERNAL_SYSTEM_PROMPT_REPLACEMENT_HINT,
+  );
+  if (replacementHintIndex === -1) {
+    return normalized;
+  }
+  return lines.slice(replacementHintIndex + 1).join('\n').trim();
 };
 
 /** Strip Discord mention markup: <@userId>, <@!userId>, <#channelId>, <@&roleId> */
@@ -650,6 +670,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
     }
 
+    const transcriptSession = await this.readTranscriptSessionByKey(sessionKey);
+    if (transcriptSession) {
+      return transcriptSession;
+    }
+
     // 2. Fetch history from OpenClaw server and build a transient session object
     const client = this.gatewayClient;
     if (!client) return null;
@@ -702,6 +727,52 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   /**
+   * Prefer local transcript files for task-history replay so we can preserve
+   * full turn history and tool records instead of relying on byte-limited
+   * chat.history windows.
+   */
+  private async readTranscriptSessionByKey(sessionKey: string): Promise<CoworkSession | null> {
+    try {
+      const agentMatch = sessionKey.match(/^agent:([^:]+):/);
+      const agentId = agentMatch?.[1] ?? 'main';
+      const runMatch = sessionKey.match(/(?:^|:)run:([0-9a-f-]{36})(?:$|:)/i);
+      const sessionId = runMatch?.[1];
+      if (!sessionId) return null;
+
+      const stateDir = this.engineManager.getStateDir();
+      const sessionsDir = path.join(stateDir, 'agents', agentId, 'sessions');
+      const activeFilePath = path.join(sessionsDir, `${sessionId}.jsonl`);
+
+      let targetFilePath: string | null = null;
+      if (fs.existsSync(activeFilePath)) {
+        targetFilePath = activeFilePath;
+      } else {
+        const files = await fs.promises.readdir(sessionsDir).catch(() => [] as string[]);
+        const deletedFile = files
+          .filter((fileName) => fileName.startsWith(`${sessionId}.jsonl.deleted.`))
+          .sort((left, right) => right.localeCompare(left))[0];
+        if (deletedFile) {
+          targetFilePath = path.join(sessionsDir, deletedFile);
+        }
+      }
+
+      if (!targetFilePath) {
+        return null;
+      }
+
+      const fileContent = await fs.promises.readFile(targetFilePath, 'utf-8');
+      return buildTransientSessionFromOpenClawTranscript({
+        sessionKey,
+        title: sessionKey.split(':').pop() || 'Cron Session',
+        fileContent,
+      });
+    } catch (error) {
+      console.warn('[OpenClawRuntime] readTranscriptSessionByKey failed:', error);
+      return null;
+    }
+  }
+
+  /**
    * Fallback for fetchSessionByKey when chat.history returns no messages.
    *
    * openclaw's maintenance logic may archive a session transcript by renaming
@@ -712,86 +783,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    */
   private async readFromDeletedTranscript(sessionKey: string): Promise<CoworkSession | null> {
     try {
-      // Extract agentId from "agent:{agentId}:..." pattern
-      const agentMatch = sessionKey.match(/^agent:([^:]+):/);
-      const agentId = agentMatch?.[1] ?? 'main';
-
-      // Extract sessionId from "...run:{uuid}" pattern (runId equals sessionId)
-      const runMatch = sessionKey.match(/(?:^|:)run:([0-9a-f-]{36})(?:$|:)/i);
-      const sessionId = runMatch?.[1];
-      if (!sessionId) return null;
-
-      const stateDir = this.engineManager.getStateDir();
-      const sessionsDir = path.join(stateDir, 'agents', agentId, 'sessions');
-
-      const files = await fs.promises.readdir(sessionsDir).catch(() => [] as string[]);
-      const deletedFile = files.find(f => f.startsWith(`${sessionId}.jsonl.deleted.`));
-      if (!deletedFile) {
-        console.log('[OpenClawRuntime] readFromDeletedTranscript: no archived transcript found for sessionId:', sessionId);
-        return null;
-      }
-
-      console.log('[OpenClawRuntime] readFromDeletedTranscript: reading archived transcript:', deletedFile);
-      const filePath = path.join(sessionsDir, deletedFile);
-      const content = await fs.promises.readFile(filePath, 'utf-8');
-      const lines = content.split(/\r?\n/);
-
-      const messages: CoworkMessage[] = [];
-      let msgIndex = 0;
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
-          if (parsed?.type !== 'message' || !parsed.message) continue;
-          const msg = parsed.message as { role?: string; content?: unknown; timestamp?: number };
-          const role = msg.role;
-          if (role !== 'user' && role !== 'assistant') continue;
-
-          const msgContent = msg.content;
-          const text = Array.isArray(msgContent)
-            ? (msgContent as Array<Record<string, unknown>>)
-                .filter(b => b?.type === 'text')
-                .map(b => b.text as string)
-                .join('\n')
-            : typeof msgContent === 'string' ? msgContent : '';
-
-          if (!text.trim()) continue;
-
-          const timestamp = typeof msg.timestamp === 'number'
-            ? msg.timestamp
-            : typeof parsed.timestamp === 'string' ? Date.parse(parsed.timestamp) : Date.now();
-
-          messages.push({
-            id: `transient-${msgIndex++}`,
-            type: role as 'user' | 'assistant',
-            content: text,
-            timestamp,
-            metadata: role === 'assistant' ? { isStreaming: false, isFinal: true } : {},
-          });
-        } catch {
-          // skip malformed lines
-        }
-      }
-
-      if (messages.length === 0) return null;
-
-      const firstTimestamp = messages[0]?.timestamp ?? Date.now();
-      return {
-        id: `transient-${sessionKey}`,
-        agentId: '',
-        title: sessionKey.split(':').pop() || 'Cron Session',
-        claudeSessionId: null,
-        status: 'completed' as CoworkSessionStatus,
-        pinned: false,
-        cwd: '',
-        systemPrompt: '',
-        executionMode: 'local' as CoworkExecutionMode,
-        activeSkillIds: [],
-        messages,
-        createdAt: firstTimestamp,
-        updatedAt: firstTimestamp,
-      };
+      return this.readTranscriptSessionByKey(sessionKey);
     } catch (error) {
       console.warn('[OpenClawRuntime] readFromDeletedTranscript failed:', error);
       return null;
@@ -2909,6 +2901,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     const session = this.store.getSession(sessionId);
+    const sessionSystemPrompt = session?.systemPrompt?.trim() || '';
     const existingSystemTexts = new Set(
       (session?.messages ?? [])
         .filter((message) => message.type === 'system')
@@ -2917,16 +2910,27 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     );
 
     for (const entry of systemEntries) {
-      if (existingSystemTexts.has(entry.text)) {
+      const normalizedText = entry.text.trim();
+      const unwrappedText = unwrapInternalSystemPrompt(normalizedText);
+      const isInjectedSystemPrompt = normalizedText.startsWith(INTERNAL_SYSTEM_PROMPT_HEADER)
+        || (sessionSystemPrompt
+          && (
+            normalizedText === sessionSystemPrompt
+            || unwrappedText === sessionSystemPrompt
+            || normalizedText.includes(sessionSystemPrompt)
+            || unwrappedText.includes(sessionSystemPrompt)
+          ));
+
+      if (!normalizedText || isInjectedSystemPrompt || existingSystemTexts.has(normalizedText)) {
         continue;
       }
 
       const systemMessage = this.store.addMessage(sessionId, {
         type: 'system',
-        content: entry.text,
+        content: normalizedText,
         metadata: {},
       });
-      existingSystemTexts.add(entry.text);
+      existingSystemTexts.add(normalizedText);
       this.emit('message', sessionId, systemMessage);
     }
   }
@@ -3011,7 +3015,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         if (!isRecord(message)) continue;
         const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
         if (role !== 'user' && role !== 'assistant') continue;
-        let text = extractMessageText(message).trim();
+        let text = normalizeGatewayHistoryText(
+          role as 'user' | 'assistant',
+          extractMessageText(message),
+        );
         if (!text) continue;
         if (isDiscord) text = stripDiscordMentions(text);
         if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
@@ -3267,7 +3274,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (!isRecord(message)) continue;
       const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
       if (role !== 'user' && role !== 'assistant') continue;
-      let text = extractMessageText(message).trim();
+      let text = normalizeGatewayHistoryText(
+        role as 'user' | 'assistant',
+        extractMessageText(message),
+      );
       // POPO's moltbot-popo plugin converts newlines to HTML break tags (<br />),
       // causing raw <br /> to appear in the UI and AI conversation.
       if (isPopo) text = text.replace(/<br\s*\/?>/gi, '\n');

@@ -4,16 +4,36 @@ import { RootState } from '../../store';
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { CheckIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import AgentSkillGovernancePreview from './AgentSkillGovernancePreview';
 
 interface AgentSkillSelectorProps {
   selectedSkillIds: string[];
+  toolBundleIds?: string[];
   onChange: (skillIds: string[]) => void;
+  allowManagedSkills?: boolean;
+  usesAllEnabledSkillsWhenEmpty?: boolean;
 }
 
-const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({ selectedSkillIds, onChange }) => {
+const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({
+  selectedSkillIds,
+  toolBundleIds = [],
+  onChange,
+  allowManagedSkills = true,
+  usesAllEnabledSkillsWhenEmpty = true,
+}) => {
   const skills = useSelector((state: RootState) => state.skill.skills);
   const [search, setSearch] = useState('');
   const [i18nReady, setI18nReady] = useState(false);
+  const showGovernanceDebug = import.meta.env.DEV;
+  const getSourceLabel = (sourceType?: string) => {
+    if (sourceType === 'qingshu-managed') {
+      return i18nService.t('sourceTypeQingShuManaged');
+    }
+    if (sourceType === 'preset') {
+      return i18nService.t('sourceTypePreset');
+    }
+    return i18nService.t('sourceTypeLocalCustom');
+  };
 
   // Load localized skill descriptions from marketplace API
   useEffect(() => {
@@ -23,8 +43,8 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({ selectedSkillId
   }, []);
 
   const enabledSkills = useMemo(
-    () => skills.filter((s) => s.enabled),
-    [skills],
+    () => skills.filter((s) => s.enabled && (allowManagedSkills || s.sourceType !== 'qingshu-managed')),
+    [allowManagedSkills, skills],
   );
 
   const filteredSkills = useMemo(() => {
@@ -34,6 +54,15 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({ selectedSkillId
       (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
     );
   }, [enabledSkills, search]);
+
+  const effectiveSkillIds = useMemo(
+    () => (
+      selectedSkillIds.length > 0
+        ? selectedSkillIds
+        : (usesAllEnabledSkillsWhenEmpty ? enabledSkills.map((skill) => skill.id) : [])
+    ),
+    [enabledSkills, selectedSkillIds, usesAllEnabledSkillsWhenEmpty],
+  );
 
   const toggle = (skillId: string) => {
     if (selectedSkillIds.includes(skillId)) {
@@ -87,8 +116,13 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({ selectedSkillId
                   {isSelected && <CheckIcon className="h-3 w-3 text-white" />}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-foreground truncate">
-                    {skill.name}
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 text-sm font-medium text-foreground truncate">
+                      {skill.name}
+                    </div>
+                    <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-secondary">
+                      {getSourceLabel(skill.sourceType)}
+                    </span>
                   </div>
                   {skill.description && (
                     <div className="text-xs text-secondary/60 truncate">
@@ -103,6 +137,13 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({ selectedSkillId
           })
         )}
       </div>
+      {showGovernanceDebug ? (
+        <AgentSkillGovernancePreview
+          skillIds={effectiveSkillIds}
+          toolBundleIds={toolBundleIds}
+          usesAllEnabledSkills={selectedSkillIds.length === 0}
+        />
+      ) : null}
     </div>
   );
 };

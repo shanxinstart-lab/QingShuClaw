@@ -1238,25 +1238,8 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
     },
 
     async logout() {
-      try {
-        const tokens = deps.getAuthTokens();
-        const activeToken = tokens?.accessToken;
-        if (activeToken) {
-          await Promise.allSettled([
-            deps.fetchFn(`${resolveApiBaseUrl()}/api/auth/logout`, {
-              method: 'POST',
-              headers: buildQtbAuthHeaders(activeToken),
-            }),
-            deps.fetchFn(`${resolveApiBaseUrl()}/api/datachat/qingshu/auth/logout`, {
-              method: 'POST',
-              headers: buildQtbAuthHeaders(activeToken),
-            }),
-          ]);
-        }
-      } finally {
-        deps.clearAuthTokens();
-        deps.clearServerModelMetadata();
-      }
+      deps.clearAuthTokens();
+      deps.clearServerModelMetadata();
       return { success: true };
     },
 

@@ -7,6 +7,7 @@ import {
   TtsEngine,
   TtsPrepareStatus,
   TtsStateType,
+  type TtsPlaybackSource,
   type TtsAvailability,
   type TtsSpeakOptions,
   type TtsStateEvent,
@@ -21,6 +22,7 @@ type HelperVoiceResponse = {
 type HelperTtsEvent = {
   type: string;
   voiceId?: string;
+  source?: TtsPlaybackSource;
   code?: string;
   message?: string;
 };
@@ -51,11 +53,11 @@ const isJsonLikeLine = (line: string): boolean => {
 const sanitizeTtsEvent = (event: HelperTtsEvent): TtsStateEvent => {
   switch (event.type) {
     case TtsStateType.Speaking:
-      return { type: TtsStateType.Speaking, voiceId: event.voiceId };
+      return { type: TtsStateType.Speaking, voiceId: event.voiceId, source: event.source };
     case TtsStateType.Stopped:
-      return { type: TtsStateType.Stopped, voiceId: event.voiceId };
+      return { type: TtsStateType.Stopped, voiceId: event.voiceId, source: event.source };
     case TtsStateType.Error:
-      return { type: TtsStateType.Error, code: event.code, message: event.message };
+      return { type: TtsStateType.Error, code: event.code, message: event.message, source: event.source };
     default:
       return {
         type: TtsStateType.Error,
@@ -73,6 +75,8 @@ export class MacTtsService extends EventEmitter {
   private speaking = false;
 
   private stopping = false;
+
+  private currentSource: TtsPlaybackSource | undefined;
 
   private ensureHelperBinary(): string {
     const helperPath = app.isPackaged ? resolvePackagedHelperBinaryPath() : resolveDevHelperBinaryPath();
@@ -100,7 +104,10 @@ export class MacTtsService extends EventEmitter {
       }
       try {
         const rawEvent = JSON.parse(trimmed) as HelperTtsEvent;
-        const event = sanitizeTtsEvent(rawEvent);
+        const event = {
+          ...sanitizeTtsEvent(rawEvent),
+          source: rawEvent.source ?? this.currentSource,
+        } satisfies TtsStateEvent;
         if (event.type === TtsStateType.Speaking) {
           this.speaking = true;
         }
@@ -108,6 +115,9 @@ export class MacTtsService extends EventEmitter {
           this.speaking = false;
         }
         this.emit('stateChanged', event);
+        if (event.type === TtsStateType.Stopped || event.type === TtsStateType.Error) {
+          this.currentSource = undefined;
+        }
       } catch (error) {
         this.emit('stateChanged', {
           type: TtsStateType.Error,
@@ -199,6 +209,7 @@ export class MacTtsService extends EventEmitter {
 
     try {
       const helperPath = this.ensureHelperBinary();
+      this.currentSource = options.source;
       const child = spawn(
         helperPath,
         [
@@ -225,6 +236,7 @@ export class MacTtsService extends EventEmitter {
             type: TtsStateType.Error,
             code: 'runtime_error',
             message,
+            source: this.currentSource,
           } satisfies TtsStateEvent);
         }
       });
@@ -233,9 +245,13 @@ export class MacTtsService extends EventEmitter {
         this.stdoutBuffer = '';
         if (!this.stopping && this.speaking) {
           this.speaking = false;
-          this.emit('stateChanged', { type: TtsStateType.Stopped } satisfies TtsStateEvent);
+          this.emit('stateChanged', {
+            type: TtsStateType.Stopped,
+            source: this.currentSource,
+          } satisfies TtsStateEvent);
         }
         this.stopping = false;
+        this.currentSource = undefined;
       });
       child.stdin.write(text);
       child.stdin.end();
@@ -254,7 +270,11 @@ export class MacTtsService extends EventEmitter {
     this.speaking = false;
     this.activeChild.kill('SIGTERM');
     this.activeChild = null;
-    this.emit('stateChanged', { type: TtsStateType.Stopped } satisfies TtsStateEvent);
+    this.emit('stateChanged', {
+      type: TtsStateType.Stopped,
+      source: this.currentSource,
+    } satisfies TtsStateEvent);
+    this.currentSource = undefined;
     return { success: true };
   }
 

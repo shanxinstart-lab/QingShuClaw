@@ -410,7 +410,10 @@ const SidebarAgentList: React.FC<{
 
   const handleSwitch = (agentId: string) => {
     if (agentId === currentAgentId) return;
-    agentService.switchAgent(agentId);
+    const switched = agentService.switchAgent(agentId);
+    if (!switched) {
+      return;
+    }
     coworkService.loadSessions(agentId);
     onShowCowork();
   };

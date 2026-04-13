@@ -1,5 +1,6 @@
 import React from 'react';
 import { i18nService } from '../../services/i18n';
+import { resolveLocalizedText } from '../../services/brandRuntime';
 import type { AppUpdateInfo, AppUpdateDownloadProgress } from '../../services/appUpdate';
 
 export type UpdateModalState = 'info' | 'downloading' | 'installing' | 'error';
@@ -13,6 +14,7 @@ interface AppUpdateModalProps {
   errorMessage: string | null;
   onCancelDownload: () => void;
   onRetry: () => void;
+  onExitApp: () => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -35,11 +37,14 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
   errorMessage,
   onCancelDownload,
   onRetry,
+  onExitApp,
 }) => {
   const { latestVersion, date, changeLog } = updateInfo;
   const lang = i18nService.getLanguage();
   const currentLog = changeLog?.[lang] ?? { title: '', content: [] };
-  const isDismissible = modalState === 'info' || modalState === 'error';
+  const isForceUpdate = updateInfo.forceUpdate;
+  const forceReason = updateInfo.forceReason ? resolveLocalizedText(updateInfo.forceReason, lang) : '';
+  const isDismissible = !isForceUpdate && (modalState === 'info' || modalState === 'error');
 
   const handleBackdropClick = () => {
     if (isDismissible) {
@@ -67,6 +72,17 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
                 v{latestVersion}{date ? ` · ${date}` : ''}
               </p>
 
+              {isForceUpdate && (
+                <div className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2">
+                  <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                    {i18nService.t('updateForceTitle')}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-amber-700/90 dark:text-amber-200/90">
+                    {forceReason || i18nService.t('updateForceHint')}
+                  </p>
+                </div>
+              )}
+
               {currentLog.title && (
                 <p className="mt-3 text-sm font-medium text-foreground">
                   {currentLog.title}
@@ -86,13 +102,23 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             </div>
 
             <div className="px-5 pb-5 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-              >
-                {i18nService.t('updateAvailableCancel')}
-              </button>
+              {isForceUpdate ? (
+                <button
+                  type="button"
+                  onClick={onExitApp}
+                  className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  {i18nService.t('updateExitApp')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  {i18nService.t('updateAvailableCancel')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onConfirm}
@@ -147,15 +173,17 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
               </div>
             </div>
 
-            <div className="mt-4 flex items-center justify-end">
-              <button
-                type="button"
-                onClick={onCancelDownload}
-                className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-              >
-                {i18nService.t('updateDownloadCancel')}
-              </button>
-            </div>
+            {!isForceUpdate && (
+              <div className="mt-4 flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={onCancelDownload}
+                  className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  {i18nService.t('updateDownloadCancel')}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -197,13 +225,23 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             )}
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-              >
-                {i18nService.t('updateAvailableCancel')}
-              </button>
+              {isForceUpdate ? (
+                <button
+                  type="button"
+                  onClick={onExitApp}
+                  className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  {i18nService.t('updateExitApp')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  {i18nService.t('updateAvailableCancel')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onRetry}

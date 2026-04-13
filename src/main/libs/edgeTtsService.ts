@@ -9,6 +9,7 @@ import {
   TtsStateType,
   TtsVoiceQuality,
   type TtsAvailability,
+  type TtsPlaybackSource,
   type TtsPrepareOptions,
   type TtsSpeakOptions,
   type TtsStateEvent,
@@ -29,6 +30,14 @@ const EDGE_TTS_PYTHON_BASE_URL = process.env.LOBSTERAI_EDGE_TTS_PYTHON_BASE_URL?
   || `https://github.com/astral-sh/python-build-standalone/releases/download/${EDGE_TTS_PYTHON_BUILD_TAG}`;
 const EDGE_TTS_DEFAULT_ZH_VOICE = 'zh-CN-XiaoxiaoNeural';
 const EDGE_TTS_DEFAULT_EN_VOICE = 'en-US-AriaNeural';
+const EDGE_TTS_PACKAGED_RUNTIME_MISSING_ERROR = '当前安装包未内置 edge-tts 运行时，也未发现已安装的本地运行时。请先切换回系统语音，或使用内置 edge-tts 运行时的安装包。';
+
+export const EdgeTtsRuntimeMode = {
+  Bundled: 'bundled',
+  Managed: 'managed',
+  Unavailable: 'unavailable',
+} as const;
+export type EdgeTtsRuntimeMode = typeof EdgeTtsRuntimeMode[keyof typeof EdgeTtsRuntimeMode];
 
 type EdgeVoicePayload = {
   ShortName?: string;
@@ -36,10 +45,81 @@ type EdgeVoicePayload = {
   Locale?: string;
 };
 
+type EdgeWorkerRequest = {
+  id: string;
+  command: 'listVoices' | 'synthesize' | 'shutdown';
+  payload?: Record<string, unknown>;
+};
+
+type EdgeWorkerResponse = {
+  id?: string;
+  ok?: boolean;
+  result?: Record<string, unknown>;
+  error?: string;
+};
+
+type WorkerPendingRequest = {
+  resolve: (value: EdgeWorkerResponse) => void;
+  reject: (error: Error) => void;
+};
+
 type EdgeTtsServiceEvents = {
   stateChanged: (event: TtsStateEvent) => void;
   availabilityChanged: (availability: TtsAvailability) => void;
 };
+
+const EDGE_TTS_WORKER_SCRIPT = [
+  'import asyncio',
+  'import json',
+  'import pathlib',
+  'import sys',
+  'import traceback',
+  'import edge_tts',
+  '',
+  'async def handle_request(request):',
+  '    command = request.get("command")',
+  '    payload = request.get("payload") or {}',
+  '    if command == "listVoices":',
+  '        voices = await edge_tts.list_voices()',
+  '        return {"voices": voices}',
+  '    if command == "synthesize":',
+  '        output_path = pathlib.Path(payload["outputPath"])',
+  '        output_path.parent.mkdir(parents=True, exist_ok=True)',
+  '        communicate = edge_tts.Communicate(',
+  '            payload["text"],',
+  '            payload["voice"],',
+  '            rate=payload["rate"],',
+  '            volume=payload["volume"],',
+  '        )',
+  '        await communicate.save(str(output_path))',
+  '        return {"outputPath": str(output_path)}',
+  '    if command == "shutdown":',
+  '        return {"shutdown": True}',
+  '    raise RuntimeError(f"Unsupported edge-tts worker command: {command}")',
+  '',
+  'async def main():',
+  '    loop = asyncio.get_event_loop()',
+  '    while True:',
+  '        line = await loop.run_in_executor(None, sys.stdin.readline)',
+  '        if not line:',
+  '            break',
+  '        stripped = line.strip()',
+  '        if not stripped:',
+  '            continue',
+  '        request = json.loads(stripped)',
+  '        request_id = request.get("id")',
+  '        try:',
+  '            result = await handle_request(request)',
+  '            sys.stdout.write(json.dumps({"id": request_id, "ok": True, "result": result}, ensure_ascii=False) + "\\n")',
+  '            sys.stdout.flush()',
+  '            if result.get("shutdown"):',
+  '                break',
+  '        except Exception as error:',
+  '            sys.stdout.write(json.dumps({"id": request_id, "ok": False, "error": str(error), "traceback": traceback.format_exc(limit=1)}, ensure_ascii=False) + "\\n")',
+  '            sys.stdout.flush()',
+  '',
+  'asyncio.run(main())',
+].join('\n');
 
 const clamp = (value: number, min: number, max: number): number => {
   return Math.max(min, Math.min(max, value));
@@ -69,6 +149,23 @@ export const normalizeEdgeTtsVolume = (volume?: number): string => {
   const normalized = clamp(typeof volume === 'number' ? volume : 1, 0, 1);
   const percent = Math.round((normalized - 1) * 100);
   return normalizeSignedPercent(percent);
+};
+
+export const resolveEdgeTtsRuntimeMode = (options: {
+  isPackaged: boolean;
+  bundledReady: boolean;
+  managedReady: boolean;
+}): EdgeTtsRuntimeMode => {
+  if (options.bundledReady) {
+    return EdgeTtsRuntimeMode.Bundled;
+  }
+  if (options.managedReady) {
+    return EdgeTtsRuntimeMode.Managed;
+  }
+  if (options.isPackaged) {
+    return EdgeTtsRuntimeMode.Unavailable;
+  }
+  return EdgeTtsRuntimeMode.Managed;
 };
 
 const resolvePythonStandaloneTarget = (): string => {
@@ -113,47 +210,6 @@ const resolveDefaultEdgeVoiceShortName = (): string => {
   }
   return EDGE_TTS_DEFAULT_EN_VOICE;
 };
-
-const isJsonLikeText = (value: string): boolean => {
-  const trimmed = value.trim();
-  return trimmed.startsWith('{') || trimmed.startsWith('[');
-};
-
-const pythonListVoicesScript = [
-  'import asyncio',
-  'import json',
-  'import sys',
-  'import edge_tts',
-  '',
-  'async def main():',
-  '    voices = await edge_tts.list_voices()',
-  '    json.dump(voices, sys.stdout, ensure_ascii=False)',
-  '',
-  'asyncio.run(main())',
-].join('\n');
-
-const pythonSynthesizeScript = [
-  'import asyncio',
-  'import json',
-  'import pathlib',
-  'import sys',
-  'import edge_tts',
-  '',
-  'payload = json.load(sys.stdin)',
-  'output_path = pathlib.Path(payload["outputPath"])',
-  'output_path.parent.mkdir(parents=True, exist_ok=True)',
-  '',
-  'async def main():',
-  '    communicate = edge_tts.Communicate(',
-  '        payload["text"],',
-  '        payload["voice"],',
-  '        rate=payload["rate"],',
-  '        volume=payload["volume"],',
-  '    )',
-  '    await communicate.save(str(output_path))',
-  '',
-  'asyncio.run(main())',
-].join('\n');
 
 async function writeResponseBodyToFile(url: string, filePath: string): Promise<void> {
   const response = await fetch(url, { redirect: 'follow' });
@@ -222,9 +278,23 @@ export class EdgeTtsService extends EventEmitter {
 
   private currentVoiceId: string | undefined;
 
+  private currentSource: TtsPlaybackSource | undefined;
+
   private stopping = false;
 
   private preparePromise: Promise<void> | null = null;
+
+  private prepareSerialPromise: Promise<void> = Promise.resolve();
+
+  private workerProcess: ChildProcess | null = null;
+
+  private workerStartPromise: Promise<void> | null = null;
+
+  private workerStdoutBuffer = '';
+
+  private workerPendingRequests = new Map<string, WorkerPendingRequest>();
+
+  private refreshVoicesPromise: Promise<TtsVoice[]> | null = null;
 
   override on<U extends keyof EdgeTtsServiceEvents>(event: U, listener: EdgeTtsServiceEvents[U]): this {
     return super.on(event, listener);
@@ -234,15 +304,19 @@ export class EdgeTtsService extends EventEmitter {
     return path.join(app.getPath('userData'), 'runtimes', EDGE_TTS_RUNTIME_DIR_NAME);
   }
 
+  private getBundledRuntimeRoot(): string {
+    return path.join(process.resourcesPath, EDGE_TTS_RUNTIME_DIR_NAME);
+  }
+
   private getDownloadsRoot(): string {
     return path.join(this.getBaseRoot(), EDGE_TTS_DOWNLOADS_DIR_NAME);
   }
 
-  private getPythonRoot(): string {
+  private getManagedPythonRoot(): string {
     return path.join(this.getBaseRoot(), 'python');
   }
 
-  private getVenvRoot(): string {
+  private getManagedVenvRoot(): string {
     return path.join(this.getBaseRoot(), EDGE_TTS_VENV_DIR_NAME);
   }
 
@@ -250,16 +324,50 @@ export class EdgeTtsService extends EventEmitter {
     return path.join(this.getBaseRoot(), EDGE_TTS_TEMP_DIR_NAME);
   }
 
+  private getVoiceCachePath(): string {
+    return path.join(this.getBaseRoot(), 'voices-cache.json');
+  }
+
   private getManagedPythonBinary(): string {
-    return path.join(this.getPythonRoot(), 'bin', 'python3');
+    return path.join(this.getManagedPythonRoot(), 'bin', 'python3');
+  }
+
+  private getBundledVenvPythonBinary(): string {
+    return path.join(this.getBundledRuntimeRoot(), EDGE_TTS_VENV_DIR_NAME, 'bin', 'python3');
+  }
+
+  private getManagedVenvPythonBinary(): string {
+    return path.join(this.getManagedVenvRoot(), 'bin', 'python3');
+  }
+
+  private getRuntimeMode(): EdgeTtsRuntimeMode {
+    return resolveEdgeTtsRuntimeMode({
+      isPackaged: app.isPackaged,
+      bundledReady: fs.existsSync(this.getBundledVenvPythonBinary()),
+      managedReady: fs.existsSync(this.getManagedVenvPythonBinary()),
+    });
   }
 
   private getVenvPythonBinary(): string {
-    return path.join(this.getVenvRoot(), 'bin', 'python3');
+    return this.getRuntimeMode() === EdgeTtsRuntimeMode.Bundled
+      ? this.getBundledVenvPythonBinary()
+      : this.getManagedVenvPythonBinary();
   }
 
   private getArchivePath(): string {
     return path.join(this.getDownloadsRoot(), getPythonArchiveFileName());
+  }
+
+  private hasUsableRuntimeBinary(): boolean {
+    return fs.existsSync(this.getVenvPythonBinary());
+  }
+
+  private canRetryPrepare(): boolean {
+    return this.getRuntimeMode() !== EdgeTtsRuntimeMode.Unavailable;
+  }
+
+  private getUnavailableRuntimeError(): string {
+    return EDGE_TTS_PACKAGED_RUNTIME_MISSING_ERROR;
   }
 
   private setPrepareStatus(status: TtsPrepareStatus, error?: string): void {
@@ -284,7 +392,102 @@ export class EdgeTtsService extends EventEmitter {
         : [TtsEngine.EdgeTts],
       prepareStatus: this.prepareStatus,
       error: this.lastError,
+      canRetryPrepare: this.canRetryPrepare(),
     };
+  }
+
+  private rejectWorkerPendingRequests(message: string): void {
+    for (const pending of this.workerPendingRequests.values()) {
+      pending.reject(new Error(message));
+    }
+    this.workerPendingRequests.clear();
+  }
+
+  private clearWorkerProcessReference(): void {
+    this.workerProcess = null;
+    this.workerStdoutBuffer = '';
+  }
+
+  private handleWorkerStdout(chunk: string): void {
+    this.workerStdoutBuffer += chunk;
+    const lines = this.workerStdoutBuffer.split(/\r?\n/);
+    this.workerStdoutBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+        continue;
+      }
+      try {
+        const response = JSON.parse(trimmed) as EdgeWorkerResponse;
+        const requestId = typeof response.id === 'string' ? response.id : '';
+        if (!requestId) {
+          continue;
+        }
+        const pending = this.workerPendingRequests.get(requestId);
+        if (!pending) {
+          continue;
+        }
+        this.workerPendingRequests.delete(requestId);
+        pending.resolve(response);
+      } catch (error) {
+        console.warn('[EdgeTtsService] Failed to parse worker response:', error);
+      }
+    }
+  }
+
+  private readCachedVoices(): TtsVoice[] {
+    const cachePath = this.getVoiceCachePath();
+    if (!fs.existsSync(cachePath)) {
+      return [];
+    }
+
+    try {
+      const payload = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as { voices?: EdgeVoicePayload[] };
+      if (!Array.isArray(payload.voices)) {
+        return [];
+      }
+      return payload.voices
+        .map((voice) => mapEdgeVoice(voice))
+        .filter((voice): voice is TtsVoice => Boolean(voice));
+    } catch (error) {
+      console.warn('[EdgeTtsService] Failed to read cached voice list:', error);
+      return [];
+    }
+  }
+
+  private writeCachedVoices(voices: EdgeVoicePayload[]): TtsVoice[] {
+    const cachePath = this.getVoiceCachePath();
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    fs.writeFileSync(cachePath, `${JSON.stringify({ voices }, null, 2)}\n`, 'utf8');
+    return voices
+      .map((voice) => mapEdgeVoice(voice))
+      .filter((voice): voice is TtsVoice => Boolean(voice));
+  }
+
+  private async refreshVoicesCache(): Promise<TtsVoice[]> {
+    if (this.refreshVoicesPromise) {
+      return this.refreshVoicesPromise;
+    }
+
+    this.refreshVoicesPromise = (async () => {
+      await this.ensureWorkerStarted();
+      const response = await this.sendWorkerRequest('listVoices');
+      if (!response.ok) {
+        throw new Error(`拉取 edge-tts 音色失败: ${response.error || 'unknown error'}`);
+      }
+
+      const rawVoices = Array.isArray(response.result?.voices)
+        ? (response.result?.voices as EdgeVoicePayload[])
+        : [];
+      return this.writeCachedVoices(rawVoices);
+    })();
+
+    try {
+      return await this.refreshVoicesPromise;
+    } finally {
+      this.refreshVoicesPromise = null;
+    }
   }
 
   private async ensureArchiveReady(): Promise<string> {
@@ -303,14 +506,26 @@ export class EdgeTtsService extends EventEmitter {
     return archivePath;
   }
 
+  private removeDirectoryIfExists(targetPath: string): void {
+    if (!fs.existsSync(targetPath)) {
+      return;
+    }
+    fs.rmSync(targetPath, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 120,
+    });
+  }
+
   private async ensureManagedPythonReady(force = false): Promise<void> {
     const pythonBinary = this.getManagedPythonBinary();
     if (!force && fs.existsSync(pythonBinary)) {
       return;
     }
 
-    const pythonRoot = this.getPythonRoot();
-    fs.rmSync(pythonRoot, { recursive: true, force: true });
+    const pythonRoot = this.getManagedPythonRoot();
+    this.removeDirectoryIfExists(pythonRoot);
     fs.mkdirSync(pythonRoot, { recursive: true });
 
     const archivePath = await this.ensureArchiveReady();
@@ -334,8 +549,8 @@ export class EdgeTtsService extends EventEmitter {
       return;
     }
 
-    const venvRoot = this.getVenvRoot();
-    fs.rmSync(venvRoot, { recursive: true, force: true });
+    const venvRoot = this.getManagedVenvRoot();
+    this.removeDirectoryIfExists(venvRoot);
     fs.mkdirSync(venvRoot, { recursive: true });
 
     const managedPython = this.getManagedPythonBinary();
@@ -385,12 +600,131 @@ export class EdgeTtsService extends EventEmitter {
     ]);
   }
 
+  private async sendWorkerRequest(
+    command: EdgeWorkerRequest['command'],
+    payload?: Record<string, unknown>,
+  ): Promise<EdgeWorkerResponse> {
+    await this.ensureWorkerStarted();
+    if (!this.workerProcess) {
+      throw new Error('edge-tts worker is not running.');
+    }
+
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const request: EdgeWorkerRequest = {
+      id: requestId,
+      command,
+      ...(payload ? { payload } : {}),
+    };
+
+    return await new Promise((resolve, reject) => {
+      this.workerPendingRequests.set(requestId, { resolve, reject });
+      try {
+        this.workerProcess?.stdin.write(`${JSON.stringify(request)}\n`);
+      } catch (error) {
+        this.workerPendingRequests.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
   isReady(): boolean {
-    return this.prepareStatus === TtsPrepareStatus.Ready && fs.existsSync(this.getVenvPythonBinary());
+    return this.prepareStatus === TtsPrepareStatus.Ready && this.hasUsableRuntimeBinary();
   }
 
   async getAvailability(): Promise<TtsAvailability> {
     return this.getAvailabilitySync();
+  }
+
+  async ensureWorkerStarted(): Promise<void> {
+    if (this.workerProcess && !this.workerProcess.killed) {
+      return;
+    }
+    if (this.workerStartPromise) {
+      await this.workerStartPromise;
+      return;
+    }
+    if (!this.hasUsableRuntimeBinary()) {
+      throw new Error('edge-tts runtime is not ready.');
+    }
+
+    this.workerStartPromise = new Promise((resolve, reject) => {
+      const worker = spawn(this.getVenvPythonBinary(), ['-u', '-c', EDGE_TTS_WORKER_SCRIPT], {
+        stdio: 'pipe',
+      });
+      this.workerProcess = worker;
+      this.workerStdoutBuffer = '';
+
+      let settled = false;
+      const settleResolve = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+      const settleReject = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.clearWorkerProcessReference();
+        reject(error);
+      };
+
+      worker.stdout.setEncoding('utf8');
+      worker.stderr.setEncoding('utf8');
+      worker.stdout.on('data', (chunk: string) => {
+        this.handleWorkerStdout(chunk);
+      });
+      worker.stderr.on('data', (chunk: string) => {
+        const message = chunk.trim();
+        if (!message) {
+          return;
+        }
+        console.warn('[EdgeTtsService] Worker stderr:', message);
+      });
+      worker.once('spawn', () => {
+        console.log('[EdgeTtsService] edge-tts worker started.');
+        settleResolve();
+      });
+      worker.once('error', (error) => {
+        settleReject(error instanceof Error ? error : new Error(String(error)));
+      });
+      worker.once('close', (code) => {
+        this.clearWorkerProcessReference();
+        this.rejectWorkerPendingRequests(`edge-tts worker exited with code ${code ?? 'unknown'}`);
+        if (!settled) {
+          settleReject(new Error(`edge-tts worker exited with code ${code ?? 'unknown'}`));
+          return;
+        }
+        console.warn(`[EdgeTtsService] edge-tts worker exited with code ${code ?? 'unknown'}.`);
+      });
+    });
+
+    try {
+      await this.workerStartPromise;
+    } finally {
+      this.workerStartPromise = null;
+    }
+  }
+
+  async shutdownWorker(): Promise<void> {
+    this.refreshVoicesPromise = null;
+    if (!this.workerProcess) {
+      return;
+    }
+
+    const currentWorker = this.workerProcess;
+    try {
+      await this.sendWorkerRequest('shutdown');
+    } catch (error) {
+      console.warn('[EdgeTtsService] Failed to request worker shutdown gracefully:', error);
+    }
+
+    if (!currentWorker.killed) {
+      currentWorker.kill('SIGTERM');
+    }
+    this.clearWorkerProcessReference();
   }
 
   async prepare(options?: TtsPrepareOptions): Promise<{ success: boolean; error?: string }> {
@@ -400,35 +734,81 @@ export class EdgeTtsService extends EventEmitter {
     }
 
     const force = options?.force === true;
-    if (this.preparePromise && !force) {
-      try {
-        await this.preparePromise;
-        return { success: true };
-      } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : String(error) };
-      }
+    const runtimeMode = this.getRuntimeMode();
+    if (runtimeMode === EdgeTtsRuntimeMode.Unavailable) {
+      await this.shutdownWorker();
+      this.setPrepareStatus(TtsPrepareStatus.Error, this.getUnavailableRuntimeError());
+      return { success: false, error: this.lastError };
     }
 
-    this.preparePromise = (async () => {
-      this.setPrepareStatus(TtsPrepareStatus.Installing);
-      const shouldForceRebuild = force;
-      await this.ensureManagedPythonReady(shouldForceRebuild);
-      await this.ensureVirtualEnvReady(shouldForceRebuild);
-      await this.ensureEdgeTtsInstalled(shouldForceRebuild);
-      this.setPrepareStatus(TtsPrepareStatus.Ready);
-    })();
+    const runPrepare = async (): Promise<void> => {
+      if (this.preparePromise) {
+        await this.preparePromise;
+        return;
+      }
+
+      this.preparePromise = (async () => {
+        this.setPrepareStatus(TtsPrepareStatus.Installing);
+        if (app.isPackaged) {
+          if (force) {
+            await this.shutdownWorker();
+          }
+          await this.ensureWorkerStarted();
+          this.setPrepareStatus(TtsPrepareStatus.Ready);
+          return;
+        }
+        if (force) {
+          await this.shutdownWorker();
+          this.removeDirectoryIfExists(this.getManagedVenvRoot());
+          this.removeDirectoryIfExists(this.getManagedPythonRoot());
+        }
+        try {
+          await this.ensureManagedPythonReady(force);
+        } catch (error) {
+          throw new Error(`下载 Python 运行时失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        try {
+          await this.ensureVirtualEnvReady(force);
+        } catch (error) {
+          throw new Error(`创建 edge-tts 虚拟环境失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        try {
+          await this.ensureEdgeTtsInstalled(force);
+        } catch (error) {
+          throw new Error(`安装 edge-tts 运行依赖失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        this.setPrepareStatus(TtsPrepareStatus.Ready);
+        await this.ensureWorkerStarted();
+      })();
+
+      try {
+        await this.preparePromise;
+      } finally {
+        this.preparePromise = null;
+      }
+    };
+
+    const queuedPrepare = this.prepareSerialPromise.then(runPrepare);
+    this.prepareSerialPromise = queuedPrepare.catch((): void => undefined);
 
     try {
-      await this.preparePromise;
+      await queuedPrepare;
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[EdgeTtsService] Failed to prepare edge-tts runtime:', error);
+      await this.shutdownWorker();
       this.setPrepareStatus(TtsPrepareStatus.Error, message);
       return { success: false, error: message };
-    } finally {
-      this.preparePromise = null;
     }
+  }
+
+  async listVoicesCached(): Promise<TtsVoice[]> {
+    const cachedVoices = this.readCachedVoices();
+    if (cachedVoices.length > 0) {
+      return cachedVoices;
+    }
+    return await this.refreshVoicesCache();
   }
 
   async getVoices(): Promise<TtsVoice[]> {
@@ -437,21 +817,20 @@ export class EdgeTtsService extends EventEmitter {
       throw new Error(prepareResult.error || 'Failed to prepare edge-tts runtime.');
     }
 
-    const result = await spawnAndCollect(this.getVenvPythonBinary(), ['-c', pythonListVoicesScript]);
-    if (!isJsonLikeText(result.stdout)) {
-      throw new Error(result.stderr.trim() || 'edge-tts returned an invalid voice list.');
+    const cachedVoices = await this.listVoicesCached();
+    if (cachedVoices.length > 0) {
+      void this.refreshVoicesCache().catch((error) => {
+        console.warn('[EdgeTtsService] Failed to refresh voice cache in background:', error);
+      });
+      return cachedVoices;
     }
-
-    const payload = JSON.parse(result.stdout) as EdgeVoicePayload[];
-    if (!Array.isArray(payload)) {
-      return [];
-    }
-    return payload
-      .map((voice) => mapEdgeVoice(voice))
-      .filter((voice): voice is TtsVoice => Boolean(voice));
+    return await this.refreshVoicesCache();
   }
 
-  async speak(options: TtsSpeakOptions, executionOptions?: { allowPrepare?: boolean }): Promise<{ success: boolean; error?: string }> {
+  async speak(
+    options: TtsSpeakOptions,
+    executionOptions?: { allowPrepare?: boolean },
+  ): Promise<{ success: boolean; error?: string }> {
     if (process.platform !== 'darwin') {
       return { success: false, error: 'unsupported_platform' };
     }
@@ -473,8 +852,13 @@ export class EdgeTtsService extends EventEmitter {
       return { success: false, error: 'edge_tts_runtime_not_ready' };
     }
 
-    const voiceId = stripEdgeVoiceIdentifier(options.voiceId) ?? resolveDefaultEdgeVoiceShortName();
+    try {
+      await this.ensureWorkerStarted();
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
 
+    const voiceId = stripEdgeVoiceIdentifier(options.voiceId) ?? resolveDefaultEdgeVoiceShortName();
     const tempRoot = this.getTempRoot();
     fs.mkdirSync(tempRoot, { recursive: true });
     const outputPath = path.join(
@@ -483,27 +867,24 @@ export class EdgeTtsService extends EventEmitter {
     );
 
     try {
-      await spawnAndCollect(
-        this.getVenvPythonBinary(),
-        ['-c', pythonSynthesizeScript],
-        {
-          input: JSON.stringify({
-            text,
-            voice: voiceId,
-            rate: normalizeEdgeTtsRate(options.rate),
-            volume: normalizeEdgeTtsVolume(options.volume),
-            outputPath,
-          }),
-        },
-      );
+      const response = await this.sendWorkerRequest('synthesize', {
+        text,
+        voice: voiceId,
+        rate: normalizeEdgeTtsRate(options.rate),
+        volume: normalizeEdgeTtsVolume(options.volume),
+        outputPath,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || 'Unknown edge-tts worker synthesis failure.');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.lastError = message;
-      this.setPrepareStatus(TtsPrepareStatus.Error, message);
       this.emitState({
         type: TtsStateType.Error,
         code: 'edge_tts_synthesize_failed',
         message,
+        source: options.source,
       });
       return { success: false, error: message };
     }
@@ -512,6 +893,7 @@ export class EdgeTtsService extends EventEmitter {
       this.stopping = false;
       this.speaking = true;
       this.currentVoiceId = options.voiceId;
+      this.currentSource = options.source;
       this.activeAudioFilePath = outputPath;
       const player = spawn('afplay', [outputPath], {
         stdio: 'ignore',
@@ -527,7 +909,9 @@ export class EdgeTtsService extends EventEmitter {
           type: TtsStateType.Error,
           code: 'edge_tts_playback_failed',
           message,
+          source: this.currentSource,
         });
+        this.currentSource = undefined;
         resolve({ success: false, error: message });
       });
 
@@ -535,6 +919,7 @@ export class EdgeTtsService extends EventEmitter {
         this.emitState({
           type: TtsStateType.Speaking,
           voiceId: options.voiceId,
+          source: options.source,
         });
       });
 
@@ -545,6 +930,7 @@ export class EdgeTtsService extends EventEmitter {
         this.speaking = false;
         this.cleanupActiveAudioFile();
         if (wasStopping) {
+          this.currentSource = undefined;
           resolve({ success: true });
           return;
         }
@@ -552,7 +938,9 @@ export class EdgeTtsService extends EventEmitter {
           this.emitState({
             type: TtsStateType.Stopped,
             voiceId: this.currentVoiceId,
+            source: this.currentSource,
           });
+          this.currentSource = undefined;
           resolve({ success: true });
           return;
         }
@@ -562,7 +950,9 @@ export class EdgeTtsService extends EventEmitter {
           type: TtsStateType.Error,
           code: 'edge_tts_playback_failed',
           message,
+          source: this.currentSource,
         });
+        this.currentSource = undefined;
         resolve({ success: false, error: message });
       });
     });
@@ -597,11 +987,14 @@ export class EdgeTtsService extends EventEmitter {
     this.emitState({
       type: TtsStateType.Stopped,
       voiceId: this.currentVoiceId,
+      source: this.currentSource,
     });
+    this.currentSource = undefined;
     return { success: true };
   }
 
   dispose(): void {
     void this.stop();
+    void this.shutdownWorker();
   }
 }

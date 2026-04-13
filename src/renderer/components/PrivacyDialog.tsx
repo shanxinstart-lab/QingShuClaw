@@ -1,22 +1,29 @@
 import React from 'react';
 import { i18nService } from '@/services/i18n';
-
-const PRIVACY_URL = 'https://c.youdao.com/dict/hardware/lobsterai/lobsterai_service.html';
+import type { AgreementConfig } from '@/services/brandRuntime';
+import { resolveLocalizedText } from '@/services/brandRuntime';
 
 interface PrivacyDialogProps {
+  agreement: AgreementConfig;
   onAccept: () => void;
   onReject: () => void;
 }
 
-const PrivacyDialog: React.FC<PrivacyDialogProps> = ({ onAccept, onReject }) => {
+const PrivacyDialog: React.FC<PrivacyDialogProps> = ({ agreement, onAccept, onReject }) => {
+  const language = i18nService.getLanguage();
+  const title = resolveLocalizedText(agreement.title, language);
+  const description = resolveLocalizedText(agreement.descriptionTemplate, language);
+  const linkText = resolveLocalizedText(agreement.linkText, language);
+  const linkUrl = agreement.linkUrl;
+
   const handleLinkClick = async (e: React.MouseEvent) => {
     e.preventDefault();
-    await window.electron.shell.openExternal(PRIVACY_URL);
+    await window.electron.shell.openExternal(linkUrl);
   };
 
-  const desc = i18nService.t('privacyDialogDesc');
-  const linkText = i18nService.t('privacyDialogLinkText');
-  const parts = desc.split('{link}');
+  const parts = description.includes('{link}')
+    ? description.split('{link}')
+    : [description, ''];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center modal-backdrop">
@@ -24,7 +31,7 @@ const PrivacyDialog: React.FC<PrivacyDialogProps> = ({ onAccept, onReject }) => 
         {/* Header */}
         <div className="px-6 pt-6 pb-2">
           <h2 className="text-lg font-semibold text-foreground text-center">
-            {i18nService.t('privacyDialogTitle')}
+            {title}
           </h2>
         </div>
 
@@ -33,7 +40,7 @@ const PrivacyDialog: React.FC<PrivacyDialogProps> = ({ onAccept, onReject }) => 
           <p className="text-sm text-secondary text-center leading-relaxed">
             {parts[0]}
             <a
-              href={PRIVACY_URL}
+              href={linkUrl}
               onClick={handleLinkClick}
               className="text-primary hover:text-primary-hover underline"
             >

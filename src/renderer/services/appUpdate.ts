@@ -1,7 +1,8 @@
-import { getUpdateCheckUrl, getManualUpdateCheckUrl, getFallbackDownloadUrl } from './endpoints';
+import { localStore } from './store';
+import type { LocalizedText, UpdateConfig } from './brandRuntime';
 
-export const UPDATE_POLL_INTERVAL_MS = 12 * 60 * 60 * 1000;
-export const UPDATE_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
+export const APP_UPDATE_LAST_CHECKED_AT_KEY = 'app_update_last_checked_at';
+export const APP_UPDATE_CACHED_INFO_KEY = 'app_update_cached_info';
 
 type ChangeLogLang = {
   title?: string;
@@ -43,6 +44,9 @@ export interface AppUpdateInfo {
   date: string;
   changeLog: { zh: ChangeLogEntry; en: ChangeLogEntry };
   url: string;
+  forceUpdate: boolean;
+  minimumSupportedVersion: string;
+  forceReason: LocalizedText | null;
 }
 
 const toVersionParts = (version: string): number[] => (
@@ -73,25 +77,43 @@ const isNewerVersion = (latestVersion: string, currentVersion: string): boolean 
   compareVersions(latestVersion, currentVersion) > 0
 );
 
+const shouldForceUpdate = (currentVersion: string, updateConfig: UpdateConfig): boolean => {
+  if (updateConfig.forceUpdate) {
+    return true;
+  }
+
+  if (!updateConfig.minimumSupportedVersion) {
+    return false;
+  }
+
+  return compareVersions(currentVersion, updateConfig.minimumSupportedVersion) < 0;
+};
+
 type UpdateValue = NonNullable<NonNullable<UpdateApiResponse['data']>['value']>;
 
-const getPlatformDownloadUrl = (value: UpdateValue | undefined): string => {
+const getPlatformDownloadUrl = (value: UpdateValue | undefined, fallbackDownloadUrl: string): string => {
   const { platform, arch } = window.electron;
 
   if (platform === 'darwin') {
     const download = arch === 'arm64' ? value?.macArm : value?.macIntel;
-    return download?.url?.trim() || getFallbackDownloadUrl();
+    return download?.url?.trim() || fallbackDownloadUrl;
   }
 
   if (platform === 'win32') {
-    return value?.windowsX64?.url?.trim() || getFallbackDownloadUrl();
+    return value?.windowsX64?.url?.trim() || fallbackDownloadUrl;
   }
 
-  return getFallbackDownloadUrl();
+  return fallbackDownloadUrl;
 };
 
-export const checkForAppUpdate = async (currentVersion: string, manual?: boolean): Promise<AppUpdateInfo | null> => {
-  const url = manual ? getManualUpdateCheckUrl() : getUpdateCheckUrl();
+export const checkForAppUpdate = async (
+  currentVersion: string,
+  options: {
+    manual?: boolean;
+    updateConfig: UpdateConfig;
+  }
+): Promise<AppUpdateInfo | null> => {
+  const url = options.manual ? options.updateConfig.manualCheckUrl : options.updateConfig.autoCheckUrl;
   console.log(`[AppUpdate] checking update, currentVersion=${currentVersion}, url=${url}`);
 
   const response = await window.electron.api.fetch({
@@ -120,6 +142,8 @@ export const checkForAppUpdate = async (currentVersion: string, manual?: boolean
     return null;
   }
 
+  const forceUpdate = shouldForceUpdate(currentVersion, options.updateConfig);
+
   const toEntry = (log?: ChangeLogLang): ChangeLogEntry => ({
     title: typeof log?.title === 'string' ? log.title : '',
     content: Array.isArray(log?.content) ? log.content : [],
@@ -132,8 +156,34 @@ export const checkForAppUpdate = async (currentVersion: string, manual?: boolean
       zh: toEntry(value?.changeLog?.ch),
       en: toEntry(value?.changeLog?.en),
     },
-    url: getPlatformDownloadUrl(value),
+    url: getPlatformDownloadUrl(value, options.updateConfig.fallbackDownloadUrl),
+    forceUpdate,
+    minimumSupportedVersion: options.updateConfig.minimumSupportedVersion,
+    forceReason: forceUpdate ? options.updateConfig.forceReason : null,
   };
-  console.log(`[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, downloadUrl=${result.url}`);
+  console.log(
+    `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, forceUpdate=${forceUpdate}, downloadUrl=${result.url}`
+  );
   return result;
+};
+
+export const getStoredUpdateLastCheckedAt = async (): Promise<number> => {
+  const lastCheckedAt = await localStore.getItem<number>(APP_UPDATE_LAST_CHECKED_AT_KEY);
+  return typeof lastCheckedAt === 'number' && Number.isFinite(lastCheckedAt) ? lastCheckedAt : 0;
+};
+
+export const setStoredUpdateLastCheckedAt = async (timestamp: number): Promise<void> => {
+  await localStore.setItem(APP_UPDATE_LAST_CHECKED_AT_KEY, timestamp);
+};
+
+export const getStoredAppUpdateInfo = async (): Promise<AppUpdateInfo | null> => {
+  return await localStore.getItem<AppUpdateInfo>(APP_UPDATE_CACHED_INFO_KEY);
+};
+
+export const setStoredAppUpdateInfo = async (updateInfo: AppUpdateInfo): Promise<void> => {
+  await localStore.setItem(APP_UPDATE_CACHED_INFO_KEY, updateInfo);
+};
+
+export const clearStoredAppUpdateInfo = async (): Promise<void> => {
+  await localStore.removeItem(APP_UPDATE_CACHED_INFO_KEY);
 };

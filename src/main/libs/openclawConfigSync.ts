@@ -13,6 +13,14 @@ import type { McpToolManifestEntry } from './mcpServerManager';
 import { hasBundledOpenClawExtension } from './openclawLocalExtensions';
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
+import {
+  resolveAgentToolBundleSelections,
+  summarizeQingShuSharedToolCatalog,
+  type QingShuSharedToolCatalog,
+  type QingShuSharedToolCatalogSummary,
+  type QingShuAgentToolBundleSelection,
+  type QingShuToolBundleId,
+} from '../qingshuModules';
 
 export type McpBridgeConfig = {
   callbackUrl: string;
@@ -663,6 +671,8 @@ type OpenClawConfigSyncDeps = {
   getMcpBridgeConfig?: () => McpBridgeConfig | null;
   getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   getAgents?: () => Agent[];
+  getQingShuEnabledToolBundles?: () => QingShuToolBundleId[];
+  getQingShuSharedToolCatalog?: () => QingShuSharedToolCatalog;
 };
 
 export class OpenClawConfigSync {
@@ -682,6 +692,8 @@ export class OpenClawConfigSync {
   private readonly getMcpBridgeConfig?: () => McpBridgeConfig | null;
   private readonly getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   private readonly getAgents?: () => Agent[];
+  private readonly getQingShuEnabledToolBundles?: () => QingShuToolBundleId[];
+  private readonly getQingShuSharedToolCatalog?: () => QingShuSharedToolCatalog;
 
   constructor(deps: OpenClawConfigSyncDeps) {
     this.engineManager = deps.engineManager;
@@ -700,6 +712,25 @@ export class OpenClawConfigSync {
     this.getMcpBridgeConfig = deps.getMcpBridgeConfig;
     this.getSkillsList = deps.getSkillsList;
     this.getAgents = deps.getAgents;
+    this.getQingShuEnabledToolBundles = deps.getQingShuEnabledToolBundles;
+    this.getQingShuSharedToolCatalog = deps.getQingShuSharedToolCatalog;
+  }
+
+  getAgentToolBundleSelections(): QingShuAgentToolBundleSelection[] {
+    return resolveAgentToolBundleSelections(
+      this.getAgents?.() ?? [],
+      this.getQingShuEnabledToolBundles?.() ?? [],
+    );
+  }
+
+  getQingShuSharedToolCatalogSummary(): QingShuSharedToolCatalogSummary {
+    return summarizeQingShuSharedToolCatalog(
+      this.getQingShuSharedToolCatalog?.() ?? {
+        generatedAt: Date.now(),
+        modules: [],
+        tools: [],
+      },
+    );
   }
 
   sync(reason: string): OpenClawConfigSyncResult {

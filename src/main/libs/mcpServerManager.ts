@@ -24,6 +24,20 @@ export interface McpToolManifestEntry {
   inputSchema: Record<string, unknown>;
 }
 
+type LocalMcpToolResult = {
+  content: Array<{ type: string; text?: string }>;
+  isError: boolean;
+};
+
+type LocalMcpServerRegistration = {
+  name: string;
+  tools: McpToolManifestEntry[];
+  callTool: (
+    toolName: string,
+    args: Record<string, unknown>,
+  ) => Promise<LocalMcpToolResult>;
+};
+
 interface ManagedMcpServer {
   record: McpServerRecord;
   client: Client;
@@ -256,14 +270,29 @@ async function resolveStdioCommand(server: McpServerRecord): Promise<ResolvedStd
 
 export class McpServerManager {
   private servers: Map<string, ManagedMcpServer> = new Map();
+  private localServers: Map<string, LocalMcpServerRegistration> = new Map();
   private _toolManifest: McpToolManifestEntry[] = [];
 
   get toolManifest(): McpToolManifestEntry[] {
-    return this._toolManifest;
+    return [
+      ...this._toolManifest,
+      ...Array.from(this.localServers.values()).flatMap((server) => server.tools),
+    ];
   }
 
   get isRunning(): boolean {
-    return this.servers.size > 0;
+    return this.servers.size > 0 || this.localServers.size > 0;
+  }
+
+  registerLocalServer(server: LocalMcpServerRegistration): void {
+    this.localServers.set(server.name, {
+      ...server,
+      tools: [...server.tools],
+    });
+  }
+
+  unregisterLocalServer(serverName: string): void {
+    this.localServers.delete(serverName);
   }
 
   /**
@@ -291,8 +320,8 @@ export class McpServerManager {
       }
     }
 
-    log('INFO', `Discovered ${this._toolManifest.length} tools from ${this.servers.size} servers`);
-    return this._toolManifest;
+    log('INFO', `Discovered ${this.toolManifest.length} tools from ${this.servers.size} remote servers and ${this.localServers.size} local servers`);
+    return this.toolManifest;
   }
 
   private buildRemoteRequestInit(record: McpServerRecord): RequestInit | undefined {
@@ -418,6 +447,21 @@ export class McpServerManager {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }> {
+    const localServer = this.localServers.get(serverName);
+    if (localServer) {
+      try {
+        log('INFO', `Calling local tool "${toolName}" on server "${serverName}"`);
+        return await localServer.callTool(toolName, args);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        log('ERROR', `Local tool call "${toolName}" on "${serverName}" failed: ${errMsg}`);
+        return {
+          content: [{ type: 'text', text: `Tool execution error: ${errMsg}` }],
+          isError: true,
+        };
+      }
+    }
+
     const server = this.servers.get(serverName);
     if (!server) {
       return {

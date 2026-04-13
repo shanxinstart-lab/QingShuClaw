@@ -23,16 +23,29 @@ contextBridge.exposeInMainWorld('electron', {
     confirmInstall: (pendingId: string, action: string) =>
       ipcRenderer.invoke('skills:confirmInstall', pendingId, action),
     getRoot: () => ipcRenderer.invoke('skills:getRoot'),
+    listWorkspaceInstalls: () => ipcRenderer.invoke('skills:listWorkspaceInstalls'),
     autoRoutingPrompt: () => ipcRenderer.invoke('skills:autoRoutingPrompt'),
     getConfig: (skillId: string) => ipcRenderer.invoke('skills:getConfig', skillId),
     setConfig: (skillId: string, config: Record<string, string>) => ipcRenderer.invoke('skills:setConfig', skillId, config),
     testEmailConnectivity: (skillId: string, config: Record<string, string>) =>
       ipcRenderer.invoke('skills:testEmailConnectivity', skillId, config),
+    governance: {
+      analyzeById: (skillId: string) =>
+        ipcRenderer.invoke('skills:governance:analyzeById', skillId),
+      analyzeFiles: (skillFilePaths: string[]) =>
+        ipcRenderer.invoke('skills:governance:analyzeFiles', skillFilePaths),
+      getCatalogSummary: () =>
+        ipcRenderer.invoke('skills:governance:getCatalogSummary'),
+    },
     onChanged: (callback: () => void) => {
       const handler = () => callback();
       ipcRenderer.on('skills:changed', handler);
       return () => ipcRenderer.removeListener('skills:changed', handler);
     },
+  },
+  qingshuManaged: {
+    syncCatalog: () => ipcRenderer.invoke('qingshuManaged:syncCatalog'),
+    getCatalog: () => ipcRenderer.invoke('qingshuManaged:getCatalog'),
   },
   mcp: {
     list: () => ipcRenderer.invoke('mcp:list'),
@@ -151,11 +164,11 @@ contextBridge.exposeInMainWorld('electron', {
       const result = await ipcRenderer.invoke('agents:get', id);
       return result?.success ? result.agent : null;
     },
-    create: async (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => {
+    create: async (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => {
       const result = await ipcRenderer.invoke('agents:create', request);
       return result?.success ? result.agent : null;
     },
-    update: async (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => {
+    update: async (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => {
       const result = await ipcRenderer.invoke('agents:update', id, updates);
       return result?.success ? result.agent : null;
     },
@@ -329,10 +342,16 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
   tts: {
-    getAvailability: () => ipcRenderer.invoke(TtsIpcChannel.GetAvailability),
-    getVoices: () => ipcRenderer.invoke(TtsIpcChannel.GetVoices),
+    getAvailability: (options?: { engine?: 'macos_native' | 'edge_tts' }) => ipcRenderer.invoke(TtsIpcChannel.GetAvailability, options),
+    getVoices: (options?: { engine?: 'macos_native' | 'edge_tts' }) => ipcRenderer.invoke(TtsIpcChannel.GetVoices, options),
     prepare: (options?: { engine?: 'macos_native' | 'edge_tts'; force?: boolean }) => ipcRenderer.invoke(TtsIpcChannel.Prepare, options),
-    speak: (options: { text: string; voiceId?: string; rate?: number; volume?: number }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
+    speak: (options: {
+      text: string;
+      voiceId?: string;
+      rate?: number;
+      volume?: number;
+      source?: 'assistant_reply' | 'wake_activation' | 'manual_preview';
+    }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
     stop: () => ipcRenderer.invoke(TtsIpcChannel.Stop),
     onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
       const handler = (_event: any, data: Record<string, unknown>) => callback(data);

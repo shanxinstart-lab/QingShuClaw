@@ -7,8 +7,17 @@ interface AgentSummary {
   icon: string;
   enabled: boolean;
   isDefault: boolean;
-  source: 'custom' | 'preset';
+  source: 'custom' | 'preset' | 'managed';
+  sourceType?: string;
+  readOnly?: boolean;
+  allowed?: boolean;
+  backendAgentId?: string;
+  managedToolNames?: string[];
+  managedBaseSkillIds?: string[];
+  managedExtraSkillIds?: string[];
+  policyNote?: string;
   skillIds: string[];
+  toolBundleIds: string[];
 }
 
 interface AgentState {

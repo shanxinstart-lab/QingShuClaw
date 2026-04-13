@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { extractGatewayHistoryEntry, extractGatewayMessageText } from './openclawHistory';
+import {
+  extractGatewayHistoryEntry,
+  extractGatewayMessageText,
+  normalizeGatewayHistoryText,
+} from './openclawHistory';
 
 describe('openclawHistory', () => {
   test('extracts plain text content blocks', () => {
@@ -42,5 +46,25 @@ describe('openclawHistory', () => {
       role: 'assistant',
       text: 'final answer',
     });
+  });
+
+  test('strips injected local time context and current request wrapper for user history text', () => {
+    expect(
+      normalizeGatewayHistoryText(
+        'user',
+        [
+          '## Local Time Context',
+          '- Current local datetime: 2026-04-13 10:36:08 (timezone: Asia/Shanghai, UTC+08:00)',
+          '',
+          '[Current user request]',
+          '将杭州的流量供需情况和上海的流量供需情况对比生成ppt演示，并用默认的浏览器打开',
+        ].join('\n'),
+      ),
+    ).toBe('将杭州的流量供需情况和上海的流量供需情况对比生成ppt演示，并用默认的浏览器打开');
+  });
+
+  test('keeps assistant text unchanged when current request marker appears in content', () => {
+    const text = '[Current user request]\n这是模型解释该标记含义时的正常输出';
+    expect(normalizeGatewayHistoryText('assistant', text)).toBe(text);
   });
 });

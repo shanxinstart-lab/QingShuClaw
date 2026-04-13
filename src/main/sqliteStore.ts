@@ -172,6 +172,7 @@ export class SqliteStore {
         model TEXT NOT NULL DEFAULT '',
         icon TEXT NOT NULL DEFAULT '',
         skill_ids TEXT NOT NULL DEFAULT '[]',
+        tool_bundle_ids TEXT NOT NULL DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1,
         is_default INTEGER NOT NULL DEFAULT 0,
         source TEXT NOT NULL DEFAULT 'custom',
@@ -260,6 +261,17 @@ export class SqliteStore {
       // Column already exists or migration not needed.
     }
 
+    try {
+      const agentCols = this.db.exec('PRAGMA table_info(agents);');
+      const agentColNames = agentCols[0]?.values.map((row) => row[1]) || [];
+      if (!agentColNames.includes('tool_bundle_ids')) {
+        this.db.run("ALTER TABLE agents ADD COLUMN tool_bundle_ids TEXT NOT NULL DEFAULT '[]';");
+        this.save();
+      }
+    } catch {
+      // Column already exists or migration not needed.
+    }
+
     // Migration: Ensure default 'main' agent exists
     try {
       const mainAgent = this.db.exec("SELECT id FROM agents WHERE id = 'main'");
@@ -276,8 +288,8 @@ export class SqliteStore {
           // No existing systemPrompt
         }
         this.db.run(`
-          INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-          VALUES ('main', 'main', '', ?, '', '', '', '[]', 1, 1, 'custom', '', ?, ?)
+          INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, tool_bundle_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+          VALUES ('main', 'main', '', ?, '', '', '', '[]', '[]', 1, 1, 'custom', '', ?, ?)
         `, [existingSystemPrompt, now, now]);
         this.save();
       }

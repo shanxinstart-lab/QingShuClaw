@@ -4,6 +4,8 @@ import { useDispatch, useSelector } from 'react-redux';
 import {
   ArrowDownTrayIcon,
   CheckCircleIcon,
+  ChevronRightIcon,
+  LockClosedIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { ArrowPathIcon } from '@heroicons/react/20/solid';
@@ -18,11 +20,15 @@ import { i18nService } from '../../services/i18n';
 import { skillService, resolveLocalizedText, compareVersions } from '../../services/skill';
 import { setSkills } from '../../store/slices/skillSlice';
 import { RootState } from '../../store';
-import { Skill, MarketplaceSkill, MarketTag } from '../../types/skill';
+import { Skill, MarketplaceSkill, MarketTag, WorkspaceSkillInstall } from '../../types/skill';
 import ErrorMessage from '../ErrorMessage';
 import SkillSecurityReport from './SkillSecurityReport';
+import QingShuGovernancePreview from './QingShuGovernancePreview';
+import { qingshuGovernanceService } from '../../services/qingshuGovernance';
+import type { QingShuSkillGovernanceResult } from '../../types/qingshuGovernance';
 
 type SkillTab = 'installed' | 'marketplace';
+type ManagedSkillFilter = 'all' | 'available' | 'locked';
 
 interface SkillsManagerProps {
   readOnly?: boolean;
@@ -31,6 +37,8 @@ interface SkillsManagerProps {
 const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   const dispatch = useDispatch();
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
+  const showGovernanceDebug = import.meta.env.DEV;
 
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
   const [skillDownloadSource, setSkillDownloadSource] = useState('');
@@ -42,6 +50,8 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   const [marketplaceSkills, setMarketplaceSkills] = useState<MarketplaceSkill[]>([]);
   const [marketTags, setMarketTags] = useState<MarketTag[]>([]);
   const [activeMarketTag, setActiveMarketTag] = useState('all');
+  const [managedSkillFilter, setManagedSkillFilter] = useState<ManagedSkillFilter>('all');
+  const [workspaceTemporarySkills, setWorkspaceTemporarySkills] = useState<WorkspaceSkillInstall[]>([]);
   const [isLoadingMarketplace, setIsLoadingMarketplace] = useState(false);
   const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
   const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<MarketplaceSkill | null>(null);
@@ -51,6 +61,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   const [securityReport, setSecurityReport] = useState<any>(null);
   const [pendingInstallId, setPendingInstallId] = useState<string | null>(null);
   const [isConfirmingInstall, setIsConfirmingInstall] = useState(false);
+  const [governancePreviewSkillId, setGovernancePreviewSkillId] = useState<string | null>(null);
+  const [governancePreviewTitle, setGovernancePreviewTitle] = useState<string | null>(null);
+  const [governancePreviewResult, setGovernancePreviewResult] = useState<QingShuSkillGovernanceResult | null>(null);
   const [upgradeState, setUpgradeState] = useState<{
     isActive: boolean;
     total: number;
@@ -63,6 +76,45 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   const addSkillMenuRef = useRef<HTMLDivElement>(null);
   const addSkillButtonRef = useRef<HTMLButtonElement>(null);
   const githubImportInputRef = useRef<HTMLInputElement>(null);
+
+  const getSourceLabel = (sourceType?: string) => {
+    if (sourceType === 'qingshu-managed') {
+      return i18nService.t('sourceTypeQingShuManaged');
+    }
+    if (sourceType === 'preset') {
+      return i18nService.t('sourceTypePreset');
+    }
+    return i18nService.t('sourceTypeLocalCustom');
+  };
+
+  const isManagedSkillLoggedOut = (skill: Skill) =>
+    skill.sourceType === 'qingshu-managed' && !isLoggedIn;
+
+  const isManagedSkillForbidden = (skill: Skill) =>
+    skill.sourceType === 'qingshu-managed' && skill.allowed === false;
+
+  const isManagedSkillLocked = (skill: Skill) =>
+    isManagedSkillLoggedOut(skill) || isManagedSkillForbidden(skill);
+
+  const getManagedSkillLockTag = (skill: Skill) => {
+    if (isManagedSkillLoggedOut(skill)) {
+      return i18nService.t('managedUnavailableTag');
+    }
+    if (isManagedSkillForbidden(skill)) {
+      return i18nService.t('managedForbiddenTag');
+    }
+    return '';
+  };
+
+  const getManagedSkillLockHint = (skill: Skill) => {
+    if (isManagedSkillLoggedOut(skill)) {
+      return i18nService.t('managedUnavailableHint');
+    }
+    if (isManagedSkillForbidden(skill)) {
+      return skill.policyNote || i18nService.t('managedForbiddenHint');
+    }
+    return '';
+  };
 
   useEffect(() => {
     let isActive = true;
@@ -84,6 +136,23 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
       unsubscribe();
     };
   }, [dispatch]);
+
+  useEffect(() => {
+    let isActive = true;
+    const loadWorkspaceTemporarySkills = async () => {
+      const installs = await skillService.listWorkspaceTemporarySkills(skills);
+      if (!isActive) return;
+      setWorkspaceTemporarySkills(installs);
+    };
+
+    if (activeTab === 'installed') {
+      void loadWorkspaceTemporarySkills();
+    }
+
+    return () => {
+      isActive = false;
+    };
+  }, [activeTab, skills]);
 
   useEffect(() => {
     let isActive = true;
@@ -145,7 +214,12 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (selectedSkill) setSelectedSkill(null);
+        if (selectedSkill) {
+          setSelectedSkill(null);
+          setGovernancePreviewSkillId(null);
+          setGovernancePreviewTitle(null);
+          setGovernancePreviewResult(null);
+        }
         if (selectedMarketplaceSkill) setSelectedMarketplaceSkill(null);
       }
     };
@@ -164,6 +238,36 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
       return matchesSearch;
     });
   }, [skills, skillSearchQuery]);
+
+  const filteredManagedSkills = useMemo(
+    () => filteredSkills.filter((skill) => skill.sourceType === 'qingshu-managed'),
+    [filteredSkills],
+  );
+
+  const managedAvailableCount = useMemo(
+    () => filteredManagedSkills.filter((skill) => !isManagedSkillLocked(skill)).length,
+    [filteredManagedSkills],
+  );
+
+  const managedLockedCount = useMemo(
+    () => filteredManagedSkills.filter((skill) => isManagedSkillLocked(skill)).length,
+    [filteredManagedSkills],
+  );
+
+  const displayedInstalledSkills = useMemo(() => {
+    return filteredSkills.filter((skill) => {
+      if (skill.sourceType !== 'qingshu-managed') {
+        return true;
+      }
+      if (managedSkillFilter === 'available') {
+        return !isManagedSkillLocked(skill);
+      }
+      if (managedSkillFilter === 'locked') {
+        return isManagedSkillLocked(skill);
+      }
+      return true;
+    });
+  }, [filteredSkills, managedSkillFilter]);
 
   const filteredMarketplaceSkills = useMemo(() => {
     const query = skillSearchQuery.toLowerCase();
@@ -205,6 +309,69 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
     }
     setSkillActionError('');
     setSkillPendingDelete(skill);
+  };
+
+  const closeSelectedSkillDetail = () => {
+    setSelectedSkill(null);
+    setGovernancePreviewSkillId(null);
+    setGovernancePreviewTitle(null);
+    setGovernancePreviewResult(null);
+  };
+
+  const closeGovernancePreview = () => {
+    setGovernancePreviewSkillId(null);
+    setGovernancePreviewTitle(null);
+    setGovernancePreviewResult(null);
+  };
+
+  const handleAnalyzeSkillFiles = async (title: string, skillFilePaths: string[]) => {
+    const validSkillFilePaths = skillFilePaths
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    if (validSkillFilePaths.length === 0) {
+      return;
+    }
+
+    setSkillActionError('');
+    const results = await qingshuGovernanceService.analyzeSkillFiles(validSkillFilePaths);
+    const firstResult = results[0]?.governance ?? null;
+    if (!firstResult) {
+      setSkillActionError(i18nService.t('skillGovernancePreviewLoadFailed'));
+      return;
+    }
+
+    setGovernancePreviewSkillId(null);
+    setGovernancePreviewTitle(title);
+    setGovernancePreviewResult(firstResult);
+    setIsAddSkillMenuOpen(false);
+    setIsGithubImportOpen(false);
+  };
+
+  const handleAnalyzeLocalSkillFile = async () => {
+    const result = await window.electron.dialog.selectFile({
+      title: i18nService.t('skillGovernanceAnalyzeSkillFile'),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    });
+    if (!result.success || !result.path) {
+      return;
+    }
+    await handleAnalyzeSkillFiles(
+      i18nService.t('skillGovernancePreviewSourceTitle').replace('{source}', result.path),
+      [result.path],
+    );
+  };
+
+  const handleAnalyzeLocalSkillFolder = async () => {
+    const result = await window.electron.dialog.selectDirectory();
+    if (!result.success || !result.path) {
+      return;
+    }
+    const normalizedFolderPath = result.path.replace(/[\\/]$/, '');
+    const skillFilePath = `${normalizedFolderPath}/SKILL.md`;
+    await handleAnalyzeSkillFiles(
+      i18nService.t('skillGovernancePreviewSourceTitle').replace('{source}', skillFilePath),
+      [skillFilePath],
+    );
   };
 
   const handleCancelDeleteSkill = () => {
@@ -477,7 +644,8 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
             ref={addSkillButtonRef}
             type="button"
             onClick={() => setIsAddSkillMenuOpen(prev => !prev)}
-            className="px-3 py-2 text-sm rounded-xl border transition-colors bg-surface border-border text-foreground hover:bg-surface-raised flex items-center gap-2"
+            disabled={readOnly}
+            className="px-3 py-2 text-sm rounded-xl border transition-colors bg-surface border-border text-foreground hover:bg-surface-raised flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <PlusCircleIcon className="h-4 w-4" />
             <span>{i18nService.t('addSkill')}</span>
@@ -517,6 +685,29 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 <LinkIcon className="h-4 w-4 text-secondary" />
                 <span>{i18nService.t('importFromGithub')}</span>
               </button>
+              {showGovernanceDebug ? (
+                <>
+                  <div className="border-t border-border" />
+                  <button
+                    type="button"
+                    onClick={handleAnalyzeLocalSkillFile}
+                    disabled={isDownloadingSkill}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors disabled:opacity-50"
+                  >
+                    <UploadIcon className="h-4 w-4 text-secondary" />
+                    <span>{i18nService.t('skillGovernanceAnalyzeSkillFile')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAnalyzeLocalSkillFolder}
+                    disabled={isDownloadingSkill}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors disabled:opacity-50"
+                  >
+                    <FolderOpenIcon className="h-4 w-4 text-secondary" />
+                    <span>{i18nService.t('skillGovernanceAnalyzeSkillFolder')}</span>
+                  </button>
+                </>
+              ) : null}
             </div>
           )}
         </div>
@@ -573,16 +764,124 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
 
       {activeTab === 'installed' && (
       <>
+      {workspaceTemporarySkills.length > 0 && (
+        <details className="group mb-3 rounded-xl border border-amber-500/20 bg-amber-500/10">
+          <summary className="list-none cursor-pointer px-3 py-3">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                <FolderOpenIcon className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="text-sm font-medium text-foreground">
+                        {i18nService.t('workspaceTemporarySkillsTitle')}
+                      </div>
+                      <span className="rounded-full border border-amber-500/20 bg-background/80 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                        {i18nService.t('workspaceTemporarySkillsTag')}
+                      </span>
+                      <span className="rounded-full border border-amber-500/20 bg-background/80 px-2 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                        {i18nService.t('workspaceTemporarySkillsCount').replace('{count}', String(workspaceTemporarySkills.length))}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-secondary">
+                      {i18nService.t('workspaceTemporarySkillsCollapsedHint')}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                    <span>{i18nService.t('workspaceTemporarySkillsExpandAction')}</span>
+                    <ChevronRightIcon className="h-4 w-4 transition-transform group-open:rotate-90" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </summary>
+          <div className="border-t border-amber-500/15 px-3 pb-3">
+            <p className="pt-3 text-xs leading-5 text-secondary">
+              {i18nService.t('workspaceTemporarySkillsDescription')}
+            </p>
+            <div className="mt-3 space-y-2">
+              {workspaceTemporarySkills.map((install) => (
+                <div
+                  key={`${install.agentId}:${install.workspacePath}`}
+                  className="rounded-lg border border-amber-500/15 bg-background/70 px-3 py-2"
+                >
+                  <div className="text-xs font-medium text-foreground">
+                    {i18nService.t('workspaceTemporarySkillsAgent').replace('{name}', install.agentName)}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {install.skillIds.map((skillId) => (
+                      <span
+                        key={`${install.agentId}:${skillId}`}
+                        className="rounded-full border border-border bg-surface-raised px-2 py-1 text-[10px] font-medium text-secondary"
+                      >
+                        {skillId}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-2 break-all text-[11px] leading-5 text-secondary/80">
+                    {i18nService.t('workspaceTemporarySkillsPath').replace('{path}', install.workspacePath)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </details>
+      )}
+      {filteredManagedSkills.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface-raised/60 px-3 py-2">
+          <div className="flex items-center gap-2 text-[11px] text-secondary">
+            <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 font-medium text-emerald-700 dark:text-emerald-300">
+              {i18nService.t('managedAvailableSection')} {managedAvailableCount}
+            </span>
+            <span className="rounded-full border border-border bg-muted/40 px-2 py-1 font-medium">
+              {i18nService.t('managedLockedSection')} {managedLockedCount}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {([
+              ['all', i18nService.t('managedFilterAll')],
+              ['available', i18nService.t('managedFilterAvailable')],
+              ['locked', i18nService.t('managedFilterLocked')],
+            ] as Array<[ManagedSkillFilter, string]>).map(([filterValue, label]) => (
+              <button
+                key={filterValue}
+                type="button"
+                onClick={() => setManagedSkillFilter(filterValue)}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  managedSkillFilter === filterValue
+                    ? 'bg-primary text-white'
+                    : 'border border-border bg-background text-secondary hover:bg-surface'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
-        {filteredSkills.length === 0 ? (
+        {displayedInstalledSkills.length === 0 ? (
           <div className="col-span-2 text-center py-8 text-sm text-secondary">
             {i18nService.t('noSkillsAvailable')}
           </div>
         ) : (
-          filteredSkills.map((skill) => (
+          displayedInstalledSkills.map((skill) => (
+            (() => {
+              const skillReadOnly = readOnly || skill.readOnly;
+              const skillLocked = isManagedSkillLoggedOut(skill) || isManagedSkillForbidden(skill);
+              const skillToggleDisabled = skillReadOnly || skillLocked;
+              const managedLockTag = getManagedSkillLockTag(skill);
+              const managedLockHint = getManagedSkillLockHint(skill);
+              return (
             <div
               key={skill.id}
-              className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary cursor-pointer"
+              className={`rounded-xl border p-3 transition-colors cursor-pointer ${
+                skillLocked
+                  ? 'border-border/70 bg-muted/30 saturate-0 opacity-85'
+                  : 'border-border bg-surface hover:border-primary'
+              }`}
               onClick={() => setSelectedSkill(skill)}
             >
               <div className="flex items-start justify-between mb-2">
@@ -595,7 +894,13 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {!readOnly && !skill.isBuiltIn && (
+                  {managedLockTag && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[10px] font-medium text-secondary shadow-sm">
+                      <LockClosedIcon className="h-3 w-3" />
+                      {managedLockTag}
+                    </span>
+                  )}
+                  {!skillReadOnly && !skill.isBuiltIn && (
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); handleRequestDeleteSkill(skill); }}
@@ -607,11 +912,20 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                   )}
                   <div
                     className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
-                      readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                      skillToggleDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
                     } ${
                       skill.enabled ? 'bg-primary' : 'bg-border'
                     }`}
-                    onClick={(e) => { e.stopPropagation(); if (!readOnly) handleToggleSkill(skill.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (skillToggleDisabled) {
+                        if (skillLocked) {
+                          void handleToggleSkill(skill.id);
+                        }
+                        return;
+                      }
+                      void handleToggleSkill(skill.id);
+                    }}
                   >
                     <div
                       className={`w-3.5 h-3.5 rounded-full bg-white shadow-md transform transition-transform ${
@@ -626,8 +940,18 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
               </p>
 
+              {managedLockHint && (
+                <div className="mb-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 text-[11px] leading-4 text-secondary">
+                  {managedLockHint}
+                </div>
+              )}
+
               <div className="flex items-center justify-between text-[10px] text-secondary">
                 <div className="flex items-center gap-2">
+                <span className="px-1.5 py-0.5 rounded bg-surface-raised font-medium">
+                  {getSourceLabel(skill.sourceType)}
+                </span>
+                <span>·</span>
                 {skill.isOfficial && (
                   <>
                     <span className="px-1.5 py-0.5 rounded bg-primary-muted text-primary font-medium">
@@ -644,11 +968,27 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                     <span>·</span>
                   </>
                 )}
+                {skillReadOnly && (
+                  <>
+                    <span className="px-1.5 py-0.5 rounded bg-surface-raised font-medium">
+                      {i18nService.t('readOnlyTag')}
+                    </span>
+                    <span>·</span>
+                  </>
+                )}
+                {managedLockTag && (
+                  <>
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 font-medium">
+                      {managedLockTag}
+                    </span>
+                    <span>·</span>
+                  </>
+                )}
                 <span>{formatSkillDate(skill.updatedAt)}</span>
                 </div>
                 {(() => {
                   const mp = marketplaceSkills.find(m => m.id === skill.id);
-                  if (mp && mp.version && compareVersions(mp.version, skill.version || '0.0.0') > 0) {
+                  if (!skillReadOnly && mp && mp.version && compareVersions(mp.version, skill.version || '0.0.0') > 0) {
                     return (
                       <button
                         type="button"
@@ -665,6 +1005,8 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 })()}
               </div>
             </div>
+              );
+            })()
           ))
         )}
       </div>
@@ -920,7 +1262,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
       {selectedSkill && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-          onClick={() => setSelectedSkill(null)}
+          onClick={closeSelectedSkillDetail}
         >
           <div
             className="w-full max-w-md mx-4 rounded-2xl bg-surface border border-border shadow-2xl p-6"
@@ -939,7 +1281,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedSkill(null)}
+                onClick={closeSelectedSkillDetail}
                 className="p-1.5 rounded-lg text-secondary hover:text-foreground hover:bg-surface-raised transition-colors flex-shrink-0"
               >
                 <XMarkIcon className="h-5 w-5" />
@@ -949,6 +1291,17 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
             <p className="text-sm text-secondary mb-4">
               {skillService.getLocalizedSkillDescription(selectedSkill.id, selectedSkill.name, selectedSkill.description)}
             </p>
+            {getManagedSkillLockHint(selectedSkill) && (
+              <div className="mb-4 rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-xs text-secondary">
+                <div className="inline-flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[10px] font-medium text-secondary">
+                  <LockClosedIcon className="h-3 w-3" />
+                  {getManagedSkillLockTag(selectedSkill)}
+                </div>
+                <div className="mt-2 leading-5">
+                  {getManagedSkillLockHint(selectedSkill)}
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2 mb-5">
               {(() => {
@@ -981,6 +1334,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                         )}
                       </div>
                     )}
+                    {!mp?.source?.from && (
+                      <div className="flex items-center text-xs">
+                        <span className="w-16 flex-shrink-0 text-secondary">{i18nService.t('skillDetailSource')}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-surface-raised text-foreground font-medium">
+                          {getSourceLabel(selectedSkill.sourceType)}
+                        </span>
+                      </div>
+                    )}
                     {mp?.source?.url && (
                       <div className="flex items-start text-xs">
                         <span className="w-16 flex-shrink-0 text-secondary pt-0.5">URL</span>
@@ -993,33 +1354,58 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                         </button>
                       </div>
                     )}
+                    {selectedSkill.policyNote && (
+                      <div className="flex items-start text-xs">
+                        <span className="w-16 flex-shrink-0 text-secondary pt-0.5">{i18nService.t('skillDetailPolicy')}</span>
+                        <span className="text-foreground">{selectedSkill.policyNote}</span>
+                      </div>
+                    )}
                   </>
                 );
               })()}
             </div>
 
-            <div className="flex items-center justify-between">
-              {!readOnly && !selectedSkill.isBuiltIn ? (
-                <button
-                  type="button"
-                  onClick={() => { setSelectedSkill(null); handleRequestDeleteSkill(selectedSkill); }}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-xl text-red-500 dark:text-red-400 hover:bg-red-500/10 transition-colors"
-                >
-                  <TrashIcon className="h-4 w-4" />
-                  {i18nService.t('deleteSkill')}
-                </button>
-              ) : (
-                <div />
-              )}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                {!(readOnly || selectedSkill.readOnly) && !selectedSkill.isBuiltIn ? (
+                  <button
+                    type="button"
+                    onClick={() => { closeSelectedSkillDetail(); handleRequestDeleteSkill(selectedSkill); }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-xl text-red-500 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                    {i18nService.t('deleteSkill')}
+                  </button>
+                ) : null}
+                {showGovernanceDebug ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGovernancePreviewResult(null);
+                      setGovernancePreviewTitle(null);
+                      setGovernancePreviewSkillId(selectedSkill.id);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-xl border border-border text-secondary hover:border-primary/30 hover:text-foreground hover:bg-surface-raised transition-colors"
+                  >
+                    {i18nService.t('skillGovernancePreviewAction')}
+                  </button>
+                ) : null}
+              </div>
               <div
                 className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
-                  readOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                  (readOnly || selectedSkill.readOnly || isManagedSkillLoggedOut(selectedSkill) || isManagedSkillForbidden(selectedSkill))
+                    ? 'opacity-50 cursor-not-allowed'
+                    : 'cursor-pointer'
                 } ${
                   selectedSkill.enabled ? 'bg-primary' : 'bg-border'
                 }`}
                 onClick={() => {
-                  if (readOnly) return;
-                  handleToggleSkill(selectedSkill.id);
+                  if (readOnly || selectedSkill.readOnly) return;
+                  if (isManagedSkillLoggedOut(selectedSkill) || isManagedSkillForbidden(selectedSkill)) {
+                    void handleToggleSkill(selectedSkill.id);
+                    return;
+                  }
+                  void handleToggleSkill(selectedSkill.id);
                   setSelectedSkill({ ...selectedSkill, enabled: !selectedSkill.enabled });
                 }}
               >
@@ -1033,6 +1419,21 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
           </div>
         </div>
       , document.body)}
+
+      {showGovernanceDebug && governancePreviewSkillId ? (
+        <QingShuGovernancePreview
+          skillId={governancePreviewSkillId}
+          onClose={closeGovernancePreview}
+        />
+      ) : null}
+
+      {showGovernanceDebug && governancePreviewResult ? (
+        <QingShuGovernancePreview
+          governance={governancePreviewResult}
+          title={governancePreviewTitle || i18nService.t('skillGovernancePreviewEyebrow')}
+          onClose={closeGovernancePreview}
+        />
+      ) : null}
 
       {skillPendingDelete && createPortal(
         <div

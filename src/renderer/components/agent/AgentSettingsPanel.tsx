@@ -1,17 +1,34 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import { agentService } from '../../services/agent';
 import { imService } from '../../services/im';
 import { i18nService } from '../../services/i18n';
-import { XMarkIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { LockClosedIcon, PlusIcon, WrenchScrewdriverIcon, XMarkIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type { Agent } from '../../types/agent';
 import type { Platform } from '@shared/platform';
 import type { IMGatewayConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import { PlatformRegistry } from '@shared/platform';
 import AgentSkillSelector from './AgentSkillSelector';
+import AgentToolBundleCompatibilityHint from './AgentToolBundleCompatibilityHint';
+import AgentToolBundleSelector from './AgentToolBundleSelector';
+import AgentToolBundleDebugGuide from './AgentToolBundleDebugGuide';
+import AgentToolBundleDebugSelector from './AgentToolBundleDebugSelector';
+import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import EmojiPicker from './EmojiPicker';
+import { resolveAgentBundleSaveFlow } from './agentBundleSaveFlow';
+import {
+  buildAgentBundleSaveWarningState,
+} from './agentBundleSaveGuard';
+import { buildPersistedUpdateAgentRequest } from './agentPersistedDraft';
+import { loadQingShuAgentGovernanceSummary } from '../../services/qingshuGovernanceSummary';
+import { qingshuManagedService } from '../../services/qingshuManaged';
+import type {
+  QingShuManagedCatalogSnapshot,
+  QingShuManagedSkillDescriptor,
+  QingShuManagedToolDescriptor,
+} from '@shared/qingshuManaged/types';
 
 type SettingsTab = 'basic' | 'skills' | 'im';
 
@@ -22,14 +39,26 @@ interface AgentSettingsPanelProps {
 }
 
 const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClose, onSwitchAgent }) => {
+  const showGovernanceDebug = import.meta.env.DEV;
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
-  const [, setAgent] = useState<Agent | null>(null);
+  const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
+  const installedSkills = useSelector((state: RootState) => state.skill.skills);
+  const [agent, setAgent] = useState<Agent | null>(null);
+  const [managedCatalog, setManagedCatalog] = useState<QingShuManagedCatalogSnapshot | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
   const [icon, setIcon] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
+  const [managedBaseSkillIds, setManagedBaseSkillIds] = useState<string[]>([]);
+  const [managedExtraSkillIds, setManagedExtraSkillIds] = useState<string[]>([]);
+  const [savedManagedExtraSkillIds, setSavedManagedExtraSkillIds] = useState<string[]>([]);
+  const [toolBundleIds, setToolBundleIds] = useState<string[]>([]);
+  const [savedToolBundleIds, setSavedToolBundleIds] = useState<string[]>([]);
+  const [debugToolBundleIds, setDebugToolBundleIds] = useState<string[]>([]);
+  const [saveWarningSignature, setSaveWarningSignature] = useState<string | null>(null);
+  const [saveWarningMissingBundles, setSaveWarningMissingBundles] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('basic');
@@ -41,9 +70,14 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
 
   useEffect(() => {
     if (!agentId) return;
+    let cancelled = false;
     setActiveTab('basic');
     setShowDeleteConfirm(false);
+    setSaveWarningSignature(null);
+    setSaveWarningMissingBundles([]);
+    setManagedCatalog(null);
     window.electron?.agents?.get(agentId).then((a) => {
+      if (cancelled) return;
       if (a) {
         setAgent(a);
         setName(a.name);
@@ -52,10 +86,26 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         setIdentity(a.identity);
         setIcon(a.icon);
         setSkillIds(a.skillIds ?? []);
+        setManagedBaseSkillIds(a.managedBaseSkillIds ?? []);
+        setManagedExtraSkillIds(a.managedExtraSkillIds ?? []);
+        setSavedManagedExtraSkillIds(a.managedExtraSkillIds ?? []);
+        setToolBundleIds(a.toolBundleIds ?? []);
+        setSavedToolBundleIds(a.toolBundleIds ?? []);
+        setDebugToolBundleIds(a.toolBundleIds ?? []);
+      }
+    });
+    qingshuManagedService.getCatalog().then((snapshot) => {
+      if (!cancelled) {
+        setManagedCatalog(snapshot);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setManagedCatalog(null);
       }
     });
     // Load IM config for bindings
     imService.loadConfig().then((cfg) => {
+      if (cancelled) return;
       if (cfg) {
         setImConfig(cfg);
         const bindings = cfg.settings?.platformAgentBindings || {};
@@ -69,22 +119,150 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         setInitialBoundPlatforms(new Set(bound));
       }
     });
+
+    return () => {
+      cancelled = true;
+    };
   }, [agentId]);
+
+  useEffect(() => {
+    setSaveWarningSignature(null);
+    setSaveWarningMissingBundles([]);
+  }, [skillIds, toolBundleIds]);
+
+  const saveWarningState = useMemo(
+    () => buildAgentBundleSaveWarningState(saveWarningMissingBundles),
+    [saveWarningMissingBundles],
+  );
+  const saveWarningMoreText = saveWarningState && saveWarningState.hiddenBundleCount > 0
+    ? i18nService.t('agentToolBundlesSaveWarningMore')
+      .replace('{count}', String(saveWarningState.hiddenBundleCount))
+    : '';
+  const saveButtonLabel = saving
+    ? (i18nService.t('saving') || 'Saving...')
+    : saveWarningState
+      ? (i18nService.t('agentToolBundlesConfirmSave') || 'Save Again')
+      : (i18nService.t('save') || 'Save');
+  const isManagedReadOnly = agent?.readOnly === true;
+  const isManagedUnavailable = isManagedReadOnly && !isLoggedIn;
+  const isManagedForbidden = isManagedReadOnly && agent?.allowed === false;
+  const hasManagedExtraSkillChanges = useMemo(() => {
+    const left = [...managedExtraSkillIds].sort();
+    const right = [...savedManagedExtraSkillIds].sort();
+    return left.length !== right.length || left.some((value, index) => value !== right[index]);
+  }, [managedExtraSkillIds, savedManagedExtraSkillIds]);
+  const getManagedLockTag = (allowed?: boolean) => {
+    if (isManagedUnavailable) {
+      return i18nService.t('managedUnavailableTag');
+    }
+    if (allowed === false) {
+      return i18nService.t('managedForbiddenTag');
+    }
+    return '';
+  };
+  const getManagedLockHint = (allowed?: boolean, policyNote?: string) => {
+    if (isManagedUnavailable) {
+      return i18nService.t('managedUnavailableHint');
+    }
+    if (allowed === false) {
+      return policyNote || i18nService.t('managedForbiddenHint');
+    }
+    return '';
+  };
+  const managedSkillDetails = useMemo(() => {
+    if (!isManagedReadOnly || !agent || !managedCatalog) {
+      return [] as Array<QingShuManagedSkillDescriptor | { skillId: string; name: string; description: string; policyNote?: string }>;
+    }
+    const skillMap = new Map(managedCatalog.skills.map((skill) => [skill.skillId, skill]));
+    return (managedBaseSkillIds ?? []).map((skillId) => (
+      skillMap.get(skillId) ?? {
+        skillId,
+        name: skillId,
+        description: '',
+      }
+    ));
+  }, [agent, isManagedReadOnly, managedBaseSkillIds, managedCatalog]);
+  const managedExtraSkillDetails = useMemo(() => {
+    if (!isManagedReadOnly) {
+      return [] as Array<{ id: string; name: string; description: string; sourceType?: string }>;
+    }
+    const skillMap = new Map(installedSkills.map((skill) => [skill.id, skill]));
+    return managedExtraSkillIds.map((skillId) => ({
+      id: skillId,
+      name: skillMap.get(skillId)?.name || skillId,
+      description: skillMap.get(skillId)?.description || '',
+      sourceType: skillMap.get(skillId)?.sourceType,
+    }));
+  }, [installedSkills, isManagedReadOnly, managedExtraSkillIds]);
+  const managedToolDetails = useMemo(() => {
+    if (!isManagedReadOnly || !agent || !managedCatalog) {
+      return [] as Array<QingShuManagedToolDescriptor | { toolName: string; description: string; policyNote?: string }>;
+    }
+    const toolMap = new Map(managedCatalog.tools.map((tool) => [tool.toolName, tool]));
+    return (agent.managedToolNames ?? []).map((toolName) => (
+      toolMap.get(toolName) ?? {
+        toolName,
+        description: '',
+      }
+    ));
+  }, [agent, isManagedReadOnly, managedCatalog]);
+  const getSkillSourceLabel = (sourceType?: string) => {
+    if (sourceType === 'qingshu-managed') {
+      return i18nService.t('sourceTypeQingShuManaged');
+    }
+    if (sourceType === 'preset') {
+      return i18nService.t('sourceTypePreset');
+    }
+    return i18nService.t('sourceTypeLocalCustom');
+  };
 
   if (!agentId) return null;
 
   const handleSave = async () => {
+    if (isManagedReadOnly) {
+      if (isManagedUnavailable || isManagedForbidden || !agent) return;
+      setSaving(true);
+      try {
+        const mergedSkillIds = Array.from(new Set([
+          ...managedBaseSkillIds,
+          ...managedExtraSkillIds,
+        ]));
+        await agentService.updateAgent(agentId, {
+          skillIds: mergedSkillIds,
+        });
+        onClose();
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (!name.trim()) return;
     setSaving(true);
     try {
-      await agentService.updateAgent(agentId, {
-        name: name.trim(),
-        description: description.trim(),
-        systemPrompt: systemPrompt.trim(),
-        identity: identity.trim(),
-        icon: icon.trim(),
+      const summary = await loadQingShuAgentGovernanceSummary(skillIds, toolBundleIds);
+      const saveFlow = resolveAgentBundleSaveFlow({
         skillIds,
+        toolBundleIds,
+        missingBundles: summary.missingBundles,
+        acknowledgedSignature: saveWarningSignature,
       });
+      setSaveWarningSignature(saveFlow.nextAcknowledgedSignature);
+      setSaveWarningMissingBundles(saveFlow.nextMissingBundles);
+      if (!saveFlow.allowSave) {
+        setActiveTab('skills');
+        return;
+      }
+
+      await agentService.updateAgent(agentId, buildPersistedUpdateAgentRequest({
+        name,
+        description,
+        systemPrompt,
+        identity,
+        icon,
+        skillIds,
+        toolBundleIds,
+        debugToolBundleIds,
+      }));
       // Persist IM bindings if changed
       const bindingsChanged =
         boundPlatforms.size !== initialBoundPlatforms.size ||
@@ -113,6 +291,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
   };
 
   const handleDelete = async () => {
+    if (isManagedReadOnly) return;
     const success = await agentService.deleteAgent(agentId);
     if (success) {
       onClose();
@@ -190,12 +369,40 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 <label className="block text-sm font-medium text-secondary mb-1">
                   {i18nService.t('agentName') || 'Name'}
                 </label>
+                {isManagedReadOnly && (
+                  <p className="mb-2 text-xs text-secondary">
+                    {i18nService.t('managedReadOnlyHint')}
+                  </p>
+                )}
+                {isManagedUnavailable && (
+                  <div className="mb-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-secondary">
+                    <div className="inline-flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[10px] font-medium text-secondary">
+                      <LockClosedIcon className="h-3 w-3" />
+                      {i18nService.t('managedUnavailableTag')}
+                    </div>
+                    <div className="mt-2 leading-5">
+                      {i18nService.t('managedUnavailableHint')}
+                    </div>
+                  </div>
+                )}
+                {isManagedForbidden && !isManagedUnavailable && (
+                  <div className="mb-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-secondary">
+                    <div className="inline-flex items-center gap-1 rounded-full border border-border bg-background/80 px-2 py-1 text-[10px] font-medium text-secondary">
+                      <LockClosedIcon className="h-3 w-3" />
+                      {i18nService.t('managedForbiddenTag')}
+                    </div>
+                    <div className="mt-2 leading-5">
+                      {agent?.policyNote || i18nService.t('managedForbiddenHint')}
+                    </div>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <EmojiPicker value={icon} onChange={setIcon} />
                   <input
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
+                    disabled={isManagedReadOnly}
                     className="flex-1 px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm"
                   />
                 </div>
@@ -208,6 +415,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                   type="text"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
+                  disabled={isManagedReadOnly}
                   className="w-full px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm"
                 />
               </div>
@@ -218,6 +426,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 <textarea
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
+                  disabled={isManagedReadOnly}
                   rows={4}
                   className="w-full px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm resize-none"
                 />
@@ -229,16 +438,274 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 <textarea
                   value={identity}
                   onChange={(e) => setIdentity(e.target.value)}
+                  disabled={isManagedReadOnly}
                   rows={3}
                   placeholder={i18nService.t('agentIdentityPlaceholder') || 'Identity description (IDENTITY.md)...'}
                   className="w-full px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm resize-none"
                 />
               </div>
+              {agent?.policyNote && (
+                <div className="rounded-lg border border-border bg-surface-raised/60 px-3 py-2 text-xs text-secondary">
+                  {agent.policyNote}
+                </div>
+              )}
             </div>
           )}
 
           {activeTab === 'skills' && (
-            <AgentSkillSelector selectedSkillIds={skillIds} onChange={setSkillIds} />
+            isManagedReadOnly ? (
+              <div className={`overflow-hidden rounded-2xl border ${
+                isManagedUnavailable
+                  ? 'border-border/70 bg-muted/20 saturate-0'
+                  : 'border-border bg-surface'
+              }`}>
+                <section className="px-4 py-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.16em] text-secondary/70 uppercase">
+                        <span className="h-1.5 w-1.5 rounded-full bg-secondary/60" />
+                        {i18nService.t('managedBaseSkillsEyebrow')}
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-foreground">
+                        {i18nService.t('managedBaseSkillsTitle')}
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-secondary/75">
+                        {i18nService.t('managedBaseSkillsHint')}
+                      </p>
+                    </div>
+                    <div className="shrink-0 rounded-full border border-border bg-background/70 px-2.5 py-1 text-[11px] font-medium text-secondary">
+                      {i18nService.t('managedBaseSkillsCount').replace('{count}', String(managedSkillDetails.length))}
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2.5">
+                    {managedSkillDetails.length > 0 ? managedSkillDetails.map((skill) => (
+                      <div
+                        key={skill.skillId}
+                        className={`rounded-xl border px-3.5 py-3 ${
+                          isManagedUnavailable
+                            ? 'border-border/60 bg-muted/25'
+                            : 'border-border/80 bg-surface-raised/60'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-medium text-foreground">
+                                {skill.name || skill.skillId}
+                              </div>
+                              <span className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
+                                {i18nService.t('sourceTypeQingShuManaged')}
+                              </span>
+                              {getManagedLockTag('allowed' in skill ? skill.allowed : undefined) ? (
+                                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
+                                  <LockClosedIcon className="h-3 w-3" />
+                                  {getManagedLockTag('allowed' in skill ? skill.allowed : undefined)}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-1 text-[11px] text-secondary/80">
+                              {skill.skillId}
+                            </div>
+                          </div>
+                        </div>
+                        {skill.description ? (
+                          <div className="mt-2 text-xs leading-5 text-secondary">
+                            {skill.description}
+                          </div>
+                        ) : null}
+                        {getManagedLockHint(
+                          'allowed' in skill ? skill.allowed : undefined,
+                          'policyNote' in skill ? skill.policyNote : undefined,
+                        ) ? (
+                          <div className="mt-2 text-[11px] leading-5 text-secondary/80">
+                            {getManagedLockHint(
+                              'allowed' in skill ? skill.allowed : undefined,
+                              'policyNote' in skill ? skill.policyNote : undefined,
+                            )}
+                          </div>
+                        ) : null}
+                        {'policyNote' in skill && skill.policyNote && !('allowed' in skill && skill.allowed === false) ? (
+                          <div className="mt-2 text-[11px] leading-5 text-secondary/80">
+                            {skill.policyNote}
+                          </div>
+                        ) : null}
+                      </div>
+                    )) : (
+                      <span className="text-xs text-secondary">-</span>
+                    )}
+                  </div>
+                </section>
+
+                <section className="border-t border-border/70 px-4 py-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.16em] text-secondary/70 uppercase">
+                        <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary/12 text-primary">
+                          <PlusIcon className="h-2.5 w-2.5" />
+                        </span>
+                        {i18nService.t('managedExtraSkillsEyebrow')}
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-foreground">
+                        {i18nService.t('managedExtraSkillsTitle')}
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-secondary/75">
+                        {i18nService.t('managedExtraSkillsHint')}
+                      </p>
+                    </div>
+                    <div className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                      {i18nService.t('managedExtraSkillsCount').replace('{count}', String(managedExtraSkillIds.length))}
+                    </div>
+                  </div>
+                  <div className="mt-4 rounded-2xl border border-border bg-background/70 p-3">
+                    <AgentSkillSelector
+                      selectedSkillIds={managedExtraSkillIds}
+                      toolBundleIds={[]}
+                      onChange={setManagedExtraSkillIds}
+                      allowManagedSkills={false}
+                      usesAllEnabledSkillsWhenEmpty={false}
+                    />
+                  </div>
+                  <div className="mt-3">
+                    {managedExtraSkillDetails.length > 0 ? (
+                      <div className="space-y-2">
+                        {managedExtraSkillDetails.map((skill) => (
+                          <div
+                            key={skill.id}
+                            className="rounded-xl border border-primary/15 bg-primary/[0.045] px-3.5 py-3"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-medium text-foreground">
+                                {skill.name}
+                              </div>
+                              <span className="rounded-full border border-primary/20 bg-background/70 px-2 py-0.5 text-[10px] font-medium text-primary">
+                                {i18nService.t('managedExtraSkillTag')}
+                              </span>
+                              <span className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
+                                {getSkillSourceLabel(skill.sourceType)}
+                              </span>
+                            </div>
+                            {skill.description ? (
+                              <div className="mt-2 text-xs leading-5 text-secondary">
+                                {skill.description}
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-border px-3.5 py-3 text-xs text-secondary/70">
+                        {i18nService.t('managedExtraSkillsEmpty')}
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="border-t border-border/70 px-4 py-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.16em] text-secondary/70 uppercase">
+                        <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-secondary/12 text-secondary">
+                          <WrenchScrewdriverIcon className="h-2.5 w-2.5" />
+                        </span>
+                        {i18nService.t('managedToolsEyebrow')}
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-foreground">
+                        {i18nService.t('managedToolsTitle')}
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-secondary/75">
+                        {i18nService.t('managedToolsHint')}
+                      </p>
+                    </div>
+                    <div className="shrink-0 rounded-full border border-border bg-background/70 px-2.5 py-1 text-[11px] font-medium text-secondary">
+                      {i18nService.t('managedToolsCount').replace('{count}', String(managedToolDetails.length))}
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2.5">
+                    {managedToolDetails.length > 0 ? managedToolDetails.map((tool) => (
+                      <div
+                        key={tool.toolName}
+                        className={`rounded-xl border px-3.5 py-3 ${
+                          isManagedUnavailable
+                            ? 'border-border/60 bg-muted/25'
+                            : 'border-border/80 bg-surface-raised/40'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-sm font-medium text-foreground">
+                            {tool.toolName}
+                          </div>
+                          <span className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
+                            {i18nService.t('readOnlyTag')}
+                          </span>
+                          {getManagedLockTag('allowed' in tool ? tool.allowed : undefined) ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
+                              <LockClosedIcon className="h-3 w-3" />
+                              {getManagedLockTag('allowed' in tool ? tool.allowed : undefined)}
+                            </span>
+                          ) : null}
+                        </div>
+                        {tool.description ? (
+                          <div className="mt-2 text-xs leading-5 text-secondary">
+                            {tool.description}
+                          </div>
+                        ) : null}
+                        {getManagedLockHint(
+                          'allowed' in tool ? tool.allowed : undefined,
+                          'policyNote' in tool ? tool.policyNote : undefined,
+                        ) ? (
+                          <div className="mt-2 text-[11px] leading-5 text-secondary/80">
+                            {getManagedLockHint(
+                              'allowed' in tool ? tool.allowed : undefined,
+                              'policyNote' in tool ? tool.policyNote : undefined,
+                            )}
+                          </div>
+                        ) : null}
+                        {'policyNote' in tool && tool.policyNote && !('allowed' in tool && tool.allowed === false) ? (
+                          <div className="mt-2 text-[11px] leading-5 text-secondary/80">
+                            {tool.policyNote}
+                          </div>
+                        ) : null}
+                      </div>
+                    )) : (
+                      <span className="text-xs text-secondary">-</span>
+                    )}
+                  </div>
+                </section>
+              </div>
+            ) : (
+            <>
+              <AgentToolBundleSelector
+                selectedBundleIds={toolBundleIds}
+                onChange={(nextBundleIds) => {
+                  setToolBundleIds(nextBundleIds);
+                  if (showGovernanceDebug) {
+                    setDebugToolBundleIds(nextBundleIds);
+                  }
+                }}
+              />
+              <AgentToolBundleCompatibilityHint
+                skillIds={skillIds}
+                toolBundleIds={toolBundleIds}
+                usesAllEnabledSkills={skillIds.length === 0}
+              />
+              {showGovernanceDebug ? (
+                <>
+                  <AgentToolBundleDebugGuide />
+                  <AgentToolBundleReadOnlyPanel toolBundleIds={savedToolBundleIds} />
+                  <AgentToolBundleDebugSelector
+                    selectedBundleIds={debugToolBundleIds}
+                    baselineBundleIds={toolBundleIds}
+                    onChange={setDebugToolBundleIds}
+                  />
+                </>
+              ) : null}
+              <AgentSkillSelector
+                selectedSkillIds={skillIds}
+                toolBundleIds={showGovernanceDebug ? debugToolBundleIds : toolBundleIds}
+                onChange={setSkillIds}
+              />
+            </>
+            )
           )}
 
           {activeTab === 'im' && (
@@ -308,7 +775,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         {/* Footer */}
         <div className="flex items-center justify-between px-5 py-4 border-t border-border">
           <div>
-            {!isMainAgent && !showDeleteConfirm && (
+            {!isMainAgent && !showDeleteConfirm && !isManagedReadOnly && (
               <button
                 type="button"
                 onClick={() => setShowDeleteConfirm(true)}
@@ -324,7 +791,8 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 <button
                   type="button"
                   onClick={handleDelete}
-                  className="px-2 py-1 text-xs font-medium rounded bg-red-500 text-white hover:bg-red-600"
+                  disabled={isManagedReadOnly}
+                  className="px-2 py-1 text-xs font-medium rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {i18nService.t('delete') || 'Delete'}
                 </button>
@@ -338,31 +806,60 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
               </div>
             )}
           </div>
-          <div className="flex gap-2">
-            {onSwitchAgent && agentId !== currentAgentId && (
+          <div className="flex items-center gap-3">
+            <div className="min-h-[1rem]">
+              {saveWarningState ? (
+                <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-right">
+                  <div className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                    {i18nService.t('agentToolBundlesSaveWarningTitle')}
+                  </div>
+                  <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                    {i18nService.t('agentToolBundlesSaveWarningBody')
+                      .replace('{count}', String(saveWarningState.missingBundles.length))
+                      .replace('{bundles}', saveWarningState.previewBundles.join(', '))
+                      .replace('{moreText}', saveWarningMoreText)}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="flex gap-2">
+              {onSwitchAgent && agentId !== currentAgentId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isManagedUnavailable) {
+                      return;
+                    }
+                    onSwitchAgent(agentId);
+                  }}
+                  disabled={isManagedUnavailable || isManagedForbidden}
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-primary text-primary hover:bg-primary/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {(isManagedUnavailable || isManagedForbidden)
+                    ? (isManagedUnavailable
+                      ? i18nService.t('managedUnavailableTag')
+                      : i18nService.t('managedForbiddenTag'))
+                    : (i18nService.t('switchToAgent') || 'Use this Agent')}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => onSwitchAgent(agentId)}
-                className="px-4 py-2 text-sm font-medium rounded-lg border border-primary text-primary hover:bg-primary/10 transition-colors"
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
               >
-                {i18nService.t('switchToAgent') || 'Use this Agent'}
+                {i18nService.t('cancel') || 'Cancel'}
               </button>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-            >
-              {i18nService.t('cancel') || 'Cancel'}
-            </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!name.trim() || saving}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {saving ? (i18nService.t('saving') || 'Saving...') : (i18nService.t('save') || 'Save')}
-            </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={isManagedReadOnly
+                  ? (saving || isManagedUnavailable || isManagedForbidden || !hasManagedExtraSkillChanges)
+                  : (!name.trim() || saving)}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {saveButtonLabel}
+              </button>
+            </div>
           </div>
         </div>
       </div>

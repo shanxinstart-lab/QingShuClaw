@@ -13,6 +13,13 @@ export const TtsEngine = {
 } as const;
 export type TtsEngine = typeof TtsEngine[keyof typeof TtsEngine];
 
+export const TtsPlaybackSource = {
+  AssistantReply: 'assistant_reply',
+  WakeActivation: 'wake_activation',
+  ManualPreview: 'manual_preview',
+} as const;
+export type TtsPlaybackSource = typeof TtsPlaybackSource[keyof typeof TtsPlaybackSource];
+
 export const TtsPrepareStatus = {
   Idle: 'idle',
   Installing: 'installing',
@@ -48,6 +55,7 @@ export interface TtsAvailability {
   availableEngines: TtsEngine[];
   prepareStatus: TtsPrepareStatus;
   error?: string;
+  canRetryPrepare?: boolean;
 }
 
 export interface TtsVoice {
@@ -64,11 +72,13 @@ export interface TtsSpeakOptions {
   voiceId?: string;
   rate?: number;
   volume?: number;
+  source?: TtsPlaybackSource;
 }
 
 export interface TtsStateEvent {
   type: TtsStateType;
   voiceId?: string;
+  source?: TtsPlaybackSource;
   code?: string;
   message?: string;
   availability?: TtsAvailability;
@@ -77,4 +87,8 @@ export interface TtsStateEvent {
 export interface TtsPrepareOptions {
   engine?: TtsEngine;
   force?: boolean;
+}
+
+export interface TtsQueryOptions {
+  engine?: TtsEngine;
 }

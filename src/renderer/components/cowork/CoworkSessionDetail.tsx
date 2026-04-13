@@ -1607,6 +1607,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       voiceId: ttsConfig.voiceId,
       rate: ttsConfig.rate,
       volume: ttsConfig.volume,
+      source: 'assistant_reply',
     });
     if (!result.success) {
       setTtsPlayingMessageId(null);

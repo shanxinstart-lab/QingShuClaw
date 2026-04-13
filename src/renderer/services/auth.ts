@@ -8,6 +8,9 @@ import {
   updateUserAvatar,
 } from '../store/slices/authSlice';
 import { setServerModels, clearServerModels } from '../store/slices/modelSlice';
+import { setAgents, setCurrentAgentId } from '../store/slices/agentSlice';
+import { clearActiveSkills, setSkills } from '../store/slices/skillSlice';
+import { clearCurrentSession } from '../store/slices/coworkSlice';
 import type { Model } from '../store/slices/modelSlice';
 import {
   AuthBackend,
@@ -21,6 +24,7 @@ import {
 import { AppCustomEvent } from '../constants/app';
 import { configService } from './config';
 import { i18nService } from './i18n';
+import { qingshuManagedService } from './qingshuManaged';
 
 class AuthService {
   private unsubCallback: (() => void) | null = null;
@@ -133,6 +137,28 @@ class AuthService {
     this.pendingFeishuScanSessionPromise = null;
     this.cachedFeishuScanSession = null;
     this.lastRefreshTime = 0;
+    const state = store.getState();
+    const visibleAgents = state.agent.agents.map((agent) => (
+      agent.sourceType === 'qingshu-managed'
+        ? {
+          ...agent,
+          enabled: false,
+        }
+        : agent
+    ));
+    const visibleSkills = state.skill.skills.map((skill) => (
+      skill.sourceType === 'qingshu-managed'
+        ? {
+          ...skill,
+          enabled: false,
+        }
+        : skill
+    ));
+    store.dispatch(setAgents(visibleAgents));
+    store.dispatch(setSkills(visibleSkills));
+    store.dispatch(setCurrentAgentId('main'));
+    store.dispatch(clearActiveSkills());
+    store.dispatch(clearCurrentSession());
     store.dispatch(setLoggedOut());
     store.dispatch(clearServerModels());
   }
@@ -144,6 +170,11 @@ class AuthService {
 
     store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
     await this.loadServerModels();
+    try {
+      await qingshuManagedService.syncCatalog();
+    } catch (error) {
+      console.warn('[AuthService] failed to sync QingShu managed catalog:', error);
+    }
     void this.fetchProfileSummary();
     return true;
   }

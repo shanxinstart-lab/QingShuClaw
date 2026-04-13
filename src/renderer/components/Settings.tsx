@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { configService } from '../services/config';
 import { apiService } from '../services/api';
-import { checkForAppUpdate } from '../services/appUpdate';
-import type { AppUpdateInfo } from '../services/appUpdate';
 import { themeService } from '../services/theme';
 import { i18nService, LanguageType } from '../services/i18n';
 import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPayload, PasswordEncryptedPayload } from '../services/encryption';
@@ -82,7 +80,8 @@ export type SettingsOpenOptions = {
 
 interface SettingsProps extends SettingsOpenOptions {
   onClose: () => void;
-  onUpdateFound?: (info: AppUpdateInfo) => void;
+  onManualCheckUpdate?: () => Promise<'available' | 'upToDate' | 'error'>;
+  updateCheckManaged?: boolean;
   enterpriseConfig?: {
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
@@ -476,7 +475,14 @@ const ShortcutRecorder: React.FC<{ value: string; onChange: (v: string) => void 
   );
 };
 
-const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpdateFound, enterpriseConfig }) => {
+const Settings: React.FC<SettingsProps> = ({
+  onClose,
+  initialTab,
+  notice,
+  onManualCheckUpdate,
+  updateCheckManaged,
+  enterpriseConfig,
+}) => {
   const dispatch = useDispatch();
   // 状态
   const [activeTab, setActiveTab] = useState<TabType>(initialTab ?? 'general');
@@ -506,6 +512,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [ttsSkipKeywordsText, setTtsSkipKeywordsText] = useState(DEFAULT_VOICE_POST_PROCESS_CONFIG.ttsSkipKeywords.join('\n'));
   const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
   const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
+  const [isPreparingEdgeTts, setIsPreparingEdgeTts] = useState(false);
   const [qtbApiBaseUrl, setQtbApiBaseUrl] = useState(DEFAULT_QTB_API_BASE_URL);
   const [qtbWebBaseUrl, setQtbWebBaseUrl] = useState(DEFAULT_QTB_WEB_BASE_URL);
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
@@ -578,23 +585,27 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   }, [activeProvider]);
 
   const handleCheckUpdate = useCallback(async () => {
-    if (updateCheckStatus === 'checking' || !appVersion) return;
+    if (updateCheckManaged || updateCheckStatus === 'checking') return;
     setUpdateCheckStatus('checking');
     try {
-      const info = await checkForAppUpdate(appVersion, true);
-      if (info) {
+      const result = onManualCheckUpdate ? await onManualCheckUpdate() : 'upToDate';
+      if (result === 'available') {
         setUpdateCheckStatus('idle');
-        onUpdateFound?.(info);
-      } else {
-        setUpdateCheckStatus('upToDate');
-        if (updateCheckTimerRef.current != null) {
-          window.clearTimeout(updateCheckTimerRef.current);
-        }
-        updateCheckTimerRef.current = window.setTimeout(() => {
-          setUpdateCheckStatus('idle');
-          updateCheckTimerRef.current = null;
-        }, 3000);
+        return;
       }
+
+      if (result === 'error') {
+        throw new Error('manual update check failed');
+      }
+
+      setUpdateCheckStatus('upToDate');
+      if (updateCheckTimerRef.current != null) {
+        window.clearTimeout(updateCheckTimerRef.current);
+      }
+      updateCheckTimerRef.current = window.setTimeout(() => {
+        setUpdateCheckStatus('idle');
+        updateCheckTimerRef.current = null;
+      }, 3000);
     } catch {
       setUpdateCheckStatus('error');
       if (updateCheckTimerRef.current != null) {
@@ -605,7 +616,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         updateCheckTimerRef.current = null;
       }, 3000);
     }
-  }, [appVersion, updateCheckStatus, onUpdateFound]);
+  }, [onManualCheckUpdate, updateCheckManaged, updateCheckStatus]);
 
   const handleExportLogs = useCallback(async () => {
     if (isExportingLogs) {
@@ -933,20 +944,35 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     }
 
     let active = true;
-    const refreshTtsAvailability = async (): Promise<void> => {
+    const shouldLoadVoices = (availability?: TtsAvailability | null): boolean => {
+      if (ttsEngine !== TtsEngine.EdgeTts) {
+        return true;
+      }
+      return availability?.prepareStatus === TtsPrepareStatus.Ready;
+    };
+
+    const refreshTtsAvailability = async (): Promise<TtsAvailability | null> => {
       try {
-        const availability = await window.electron.tts.getAvailability();
+        const availability = await window.electron.tts.getAvailability({ engine: ttsEngine });
         if (active) {
           setTtsAvailability(availability);
         }
+        return availability;
       } catch (error) {
         console.error('Failed to load TTS availability:', error);
+        return null;
       }
     };
 
-    const refreshTtsVoices = async (): Promise<void> => {
+    const refreshTtsVoices = async (availability?: TtsAvailability | null): Promise<void> => {
+      if (!shouldLoadVoices(availability)) {
+        if (active) {
+          setTtsVoices([]);
+        }
+        return;
+      }
       try {
-        const result = await window.electron.tts.getVoices();
+        const result = await window.electron.tts.getVoices({ engine: ttsEngine });
         if (active) {
           setTtsVoices(result.success && result.voices ? result.voices : []);
         }
@@ -963,8 +989,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       console.error('Failed to load wake input status:', error);
     });
 
-    void refreshTtsAvailability();
-    void refreshTtsVoices();
+    void refreshTtsAvailability().then((availability) => refreshTtsVoices(availability)).catch(() => undefined);
 
     const unsubscribeWakeInput = window.electron.wakeInput.onStateChanged((status) => {
       if (active) {
@@ -979,7 +1004,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         setTtsAvailability(event.availability);
       }
       if (event.type === 'availability') {
-        void refreshTtsVoices();
+        void refreshTtsVoices(event.availability);
       }
     });
 
@@ -988,7 +1013,42 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       unsubscribeWakeInput();
       unsubscribeTts();
     };
-  }, [isMac]);
+  }, [isMac, ttsEngine]);
+
+  const handleRetryEdgeTtsPrepare = useCallback(() => {
+    if (isPreparingEdgeTts || ttsAvailability?.canRetryPrepare === false) {
+      return;
+    }
+
+    setError(null);
+    setNoticeMessage(i18nService.t('ttsPrepareRetryStarted'));
+    setIsPreparingEdgeTts(true);
+
+    void window.electron.tts.prepare({ engine: TtsEngine.EdgeTts, force: true }).then(async () => {
+      const availability = await window.electron.tts.getAvailability({ engine: TtsEngine.EdgeTts });
+      let voicesResult: { success: boolean; voices?: TtsVoice[]; error?: string } = { success: false, voices: [] };
+      if (availability.prepareStatus === TtsPrepareStatus.Ready) {
+        voicesResult = await window.electron.tts.getVoices({ engine: TtsEngine.EdgeTts });
+      }
+      setTtsAvailability(availability);
+      setTtsVoices(voicesResult.success && voicesResult.voices ? voicesResult.voices : []);
+      if (availability.prepareStatus === TtsPrepareStatus.Ready) {
+        setNoticeMessage(i18nService.t('ttsPrepareRetrySucceeded'));
+        return;
+      }
+      setError(
+        availability.error
+          ? `${i18nService.t('ttsPrepareRetryFailed')}: ${availability.error}`
+          : i18nService.t('ttsPrepareRetryFailed'),
+      );
+    }).catch((prepareError) => {
+      console.error('Failed to force-prepare edge-tts:', prepareError);
+      const message = prepareError instanceof Error ? prepareError.message : String(prepareError);
+      setError(`${i18nService.t('ttsPrepareRetryFailed')}: ${message}`);
+    }).finally(() => {
+      setIsPreparingEdgeTts(false);
+    });
+  }, [isPreparingEdgeTts, ttsAvailability?.canRetryPrepare]);
 
   useEffect(() => {
     if (!isMac) {
@@ -996,16 +1056,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     }
     let active = true;
     const syncEdgeTtsSelection = async (): Promise<void> => {
+      let prepareSucceeded = true;
       if (ttsEngine === TtsEngine.EdgeTts) {
         const prepareResult = await window.electron.tts.prepare({ engine: TtsEngine.EdgeTts });
         if (!prepareResult.success) {
+          prepareSucceeded = false;
           console.warn('[Settings] Failed to prepare edge-tts after engine selection:', prepareResult.error);
         }
       }
-      const [availability, voicesResult] = await Promise.all([
-        window.electron.tts.getAvailability(),
-        window.electron.tts.getVoices(),
-      ]);
+      const availability = await window.electron.tts.getAvailability({ engine: ttsEngine });
+      const voicesResult = prepareSucceeded || ttsEngine !== TtsEngine.EdgeTts
+        ? await window.electron.tts.getVoices({ engine: ttsEngine })
+        : { success: false, voices: [] as TtsVoice[] | undefined };
       if (!active) {
         return;
       }
@@ -2830,21 +2892,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     {ttsEngine === TtsEngine.EdgeTts && (
                       <button
                         type="button"
-                        onClick={() => {
-                          void window.electron.tts.prepare({ engine: TtsEngine.EdgeTts, force: true }).then(async () => {
-                            const [availability, voicesResult] = await Promise.all([
-                              window.electron.tts.getAvailability(),
-                              window.electron.tts.getVoices(),
-                            ]);
-                            setTtsAvailability(availability);
-                            setTtsVoices(voicesResult.success && voicesResult.voices ? voicesResult.voices : []);
-                          }).catch((error) => {
-                            console.error('Failed to force-prepare edge-tts:', error);
-                          });
-                        }}
-                        className="mt-2 rounded-lg border dark:border-claude-darkBorder border-claude-border px-3 py-1.5 text-xs dark:text-claude-darkText text-claude-text hover:bg-black/5 dark:hover:bg-white/5"
+                        onClick={handleRetryEdgeTtsPrepare}
+                        disabled={isPreparingEdgeTts || ttsAvailability?.canRetryPrepare === false}
+                        className={`mt-2 rounded-lg border px-3 py-1.5 text-xs ${
+                          isPreparingEdgeTts || ttsAvailability?.canRetryPrepare === false
+                            ? 'cursor-not-allowed opacity-70 dark:border-claude-darkBorder border-claude-border dark:text-claude-darkText text-claude-text'
+                            : 'dark:border-claude-darkBorder border-claude-border dark:text-claude-darkText text-claude-text hover:bg-black/5 dark:hover:bg-white/5'
+                        }`}
                       >
-                        {i18nService.t('ttsPrepareRetry')}
+                        {isPreparingEdgeTts
+                          ? i18nService.t('ttsPrepareRetrying')
+                          : ttsAvailability?.canRetryPrepare === false
+                            ? i18nService.t('ttsPrepareRetryUnavailable')
+                            : i18nService.t('ttsPrepareRetry')}
                       </button>
                     )}
                   </div>
@@ -4152,7 +4212,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 <span className="text-sm text-foreground">{i18nService.t('aboutVersion')}</span>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-secondary">{appVersion}</span>
-                  {!enterpriseConfig?.disableUpdate && (
+                  {!updateCheckManaged && (
                     <button
                       type="button"
                       disabled={updateCheckStatus === 'checking'}
@@ -4168,7 +4228,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                       {updateCheckStatus === 'idle' && i18nService.t('checkForUpdate')}
                     </button>
                   )}
-                  {enterpriseConfig?.disableUpdate && (
+                  {updateCheckManaged && (
                     <span className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">
                       {i18nService.t('settings.enterprise.managed')}
                     </span>

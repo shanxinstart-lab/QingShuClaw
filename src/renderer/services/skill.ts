@@ -1,6 +1,12 @@
-import { Skill, MarketplaceSkill, MarketTag, LocalSkillInfo, LocalizedText } from '../types/skill';
+import { Skill, MarketplaceSkill, MarketTag, LocalSkillInfo, LocalizedText, WorkspaceSkillInstall } from '../types/skill';
 import { getSkillStoreUrl } from './endpoints';
 import { i18nService } from './i18n';
+import { store } from '../store';
+import { AppCustomEvent } from '../constants/app';
+import type {
+  QingShuManagedCatalogSnapshot,
+  QingShuManagedSkillDescriptor,
+} from '@shared/qingshuManaged/types';
 
 export function resolveLocalizedText(text: string | LocalizedText): string {
   if (!text) return '';
@@ -40,6 +46,124 @@ class SkillService {
   private localSkillDescriptions: Map<string, string | LocalizedText> = new Map();
   private marketplaceSkillDescriptions: Map<string, string | LocalizedText> = new Map();
 
+  private showManagedUnavailableToast(message?: string) {
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+      detail: message || i18nService.t('managedUnavailableHint'),
+    }));
+  }
+
+  private async loadManagedCatalog(): Promise<QingShuManagedCatalogSnapshot | null> {
+    try {
+      const result = await window.electron.qingshuManaged.getCatalog();
+      if (!result.success) {
+        return null;
+      }
+      return result.snapshot ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private toVirtualManagedSkill(
+    descriptor: QingShuManagedSkillDescriptor,
+    syncedAt: number,
+  ): Skill {
+    return {
+      id: descriptor.skillId,
+      name: descriptor.name,
+      description: descriptor.description,
+      enabled: false,
+      isOfficial: true,
+      isBuiltIn: true,
+      updatedAt: syncedAt || Date.now(),
+      prompt: descriptor.promptTemplate || '',
+      skillPath: '',
+      version: descriptor.version,
+      sourceType: descriptor.sourceType,
+      readOnly: true,
+      backendSkillId: descriptor.skillId,
+      backendAgentIds: descriptor.backendAgentIds ?? [],
+      packageUrl: descriptor.packageUrl,
+      catalogVersion: descriptor.catalogVersion,
+      installedBy: 'qingshu-sync',
+      toolRefs: descriptor.toolRefs ?? [],
+      policyNote: descriptor.policyNote,
+      allowed: descriptor.allowed,
+    };
+  }
+
+  private mergeManagedCatalogSkills(
+    installedSkills: Skill[],
+    catalog: QingShuManagedCatalogSnapshot | null,
+    isLoggedIn: boolean,
+  ): Skill[] {
+    const descriptorById = new Map<string, QingShuManagedSkillDescriptor>();
+    if (catalog?.skills?.length) {
+      for (const descriptor of catalog.skills) {
+        descriptorById.set(descriptor.skillId, descriptor);
+      }
+    }
+
+    const mergedInstalledSkills = installedSkills.map((skill) => {
+      const descriptor = descriptorById.get(skill.backendSkillId || skill.id);
+      if (!descriptor) {
+        if (skill.sourceType === 'qingshu-managed') {
+          return {
+            ...skill,
+            allowed: true,
+            enabled: isLoggedIn ? skill.enabled : false,
+          };
+        }
+        return skill;
+      }
+
+      const isAllowed = descriptor.allowed === true;
+      return {
+        ...skill,
+        name: descriptor.name || skill.name,
+        description: descriptor.description || skill.description,
+        version: descriptor.version || skill.version,
+        prompt: descriptor.promptTemplate || skill.prompt,
+        sourceType: descriptor.sourceType,
+        readOnly: true,
+        backendSkillId: descriptor.skillId,
+        backendAgentIds: descriptor.backendAgentIds ?? skill.backendAgentIds,
+        packageUrl: descriptor.packageUrl,
+        catalogVersion: descriptor.catalogVersion,
+        installedBy: 'qingshu-sync',
+        toolRefs: descriptor.toolRefs ?? skill.toolRefs,
+        policyNote: descriptor.policyNote,
+        allowed: isAllowed,
+        enabled: isAllowed ? (isLoggedIn ? skill.enabled : false) : false,
+      };
+    });
+
+    if (!catalog?.skills?.length) {
+      return mergedInstalledSkills;
+    }
+
+    const existingManagedIds = new Set(
+      mergedInstalledSkills
+        .filter((skill) => skill.sourceType === 'qingshu-managed')
+        .map((skill) => skill.backendSkillId || skill.id),
+    );
+
+    const virtualManagedSkills = catalog.skills
+      .filter((descriptor) => !existingManagedIds.has(descriptor.skillId))
+      .filter((descriptor) => descriptor.allowed === false)
+      .map((descriptor) => this.toVirtualManagedSkill(descriptor, catalog.syncedAt));
+
+    return [...mergedInstalledSkills, ...virtualManagedSkills].sort((a, b) => {
+      if (a.sourceType === 'qingshu-managed' && b.sourceType !== 'qingshu-managed') {
+        return -1;
+      }
+      if (a.sourceType !== 'qingshu-managed' && b.sourceType === 'qingshu-managed') {
+        return 1;
+      }
+      return b.updatedAt - a.updatedAt;
+    });
+  }
+
   async init(): Promise<void> {
     if (this.initialized) return;
     await this.loadSkills();
@@ -50,7 +174,9 @@ class SkillService {
     try {
       const result = await window.electron.skills.list();
       if (result.success && result.skills) {
-        this.skills = result.skills;
+        const isLoggedIn = store.getState().auth.isLoggedIn;
+        const catalog = await this.loadManagedCatalog();
+        this.skills = this.mergeManagedCatalogSkills(result.skills, catalog, isLoggedIn);
       } else {
         this.skills = [];
       }
@@ -64,6 +190,16 @@ class SkillService {
 
   async setSkillEnabled(id: string, enabled: boolean): Promise<Skill[]> {
     try {
+      const targetSkill = this.skills.find((skill) => skill.id === id);
+      const isLoggedIn = store.getState().auth.isLoggedIn;
+      if (targetSkill?.sourceType === 'qingshu-managed' && !isLoggedIn) {
+        this.showManagedUnavailableToast();
+        return this.skills;
+      }
+      if (targetSkill?.sourceType === 'qingshu-managed' && targetSkill.allowed === false) {
+        this.showManagedUnavailableToast(targetSkill.policyNote || i18nService.t('managedForbiddenHint'));
+        return this.skills;
+      }
       const result = await window.electron.skills.setEnabled({ id, enabled });
       if (result.success && result.skills) {
         this.skills = result.skills;
@@ -107,6 +243,26 @@ class SkillService {
       const message = error instanceof Error ? error.message : 'Failed to download skill';
       console.error('Failed to download skill:', error);
       return { success: false, error: message };
+    }
+  }
+
+  async listWorkspaceTemporarySkills(installedSkills?: Skill[]): Promise<WorkspaceSkillInstall[]> {
+    try {
+      const result = await window.electron.skills.listWorkspaceInstalls();
+      if (!result.success || !result.installs) {
+        return [];
+      }
+
+      const installedSkillIds = new Set((installedSkills ?? this.skills).map((skill) => skill.id));
+      return result.installs
+        .map((install) => ({
+          ...install,
+          skillIds: install.skillIds.filter((skillId) => !installedSkillIds.has(skillId)),
+        }))
+        .filter((install) => install.skillIds.length > 0);
+    } catch (error) {
+      console.error('Failed to list workspace temporary skills:', error);
+      return [];
     }
   }
 

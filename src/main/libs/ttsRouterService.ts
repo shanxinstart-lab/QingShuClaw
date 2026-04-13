@@ -7,6 +7,7 @@ import {
   TtsStateType,
   type TtsAvailability,
   type TtsPrepareOptions,
+  type TtsQueryOptions,
   type TtsSpeakOptions,
   type TtsStateEvent,
   type TtsVoice,
@@ -55,16 +56,24 @@ export class TtsRouterService extends EventEmitter {
     return this.getConfig().engine ?? TtsEngine.MacOsNative;
   }
 
-  private async emitAvailabilityChanged(): Promise<void> {
-    const availability = await this.getAvailability();
-    this.emit('stateChanged', {
-      type: TtsStateType.AvailabilityChanged,
-      availability,
-    } satisfies TtsStateEvent);
+  private resolveEngineOverride(options?: TtsQueryOptions): TtsEngine {
+    return options?.engine ?? this.resolveConfiguredEngine();
   }
 
-  async getAvailability(): Promise<TtsAvailability> {
-    const configuredEngine = this.resolveConfiguredEngine();
+  private async emitAvailabilityChanged(): Promise<void> {
+    try {
+      const availability = await this.getAvailability();
+      this.emit('stateChanged', {
+        type: TtsStateType.AvailabilityChanged,
+        availability,
+      } satisfies TtsStateEvent);
+    } catch (error) {
+      console.error('[TtsRouterService] Failed to emit TTS availability change:', error);
+    }
+  }
+
+  async getAvailability(options?: TtsQueryOptions): Promise<TtsAvailability> {
+    const configuredEngine = this.resolveEngineOverride(options);
     const macAvailability = await this.macTtsService.getAvailability();
     const edgeAvailability = await this.edgeTtsService.getAvailability();
     return {
@@ -94,12 +103,13 @@ export class TtsRouterService extends EventEmitter {
       await this.emitAvailabilityChanged();
       return result;
     }
+    await this.edgeTtsService.shutdownWorker();
     await this.emitAvailabilityChanged();
     return { success: true };
   }
 
-  async getVoices(): Promise<TtsVoice[]> {
-    if (this.resolveConfiguredEngine() === TtsEngine.EdgeTts) {
+  async getVoices(options?: TtsQueryOptions): Promise<TtsVoice[]> {
+    if (this.resolveEngineOverride(options) === TtsEngine.EdgeTts) {
       return this.edgeTtsService.getVoices();
     }
     return this.macTtsService.getVoices();

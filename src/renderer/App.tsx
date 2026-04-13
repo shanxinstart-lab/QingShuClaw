@@ -5,6 +5,7 @@ import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
 import LoginWelcomeOverlay from './components/LoginWelcomeOverlay';
 import Toast from './components/Toast';
+import WakeActivationOverlay from './components/WakeActivationOverlay';
 import WindowTitleBar from './components/window/WindowTitleBar';
 import { CoworkView } from './components/cowork';
 import { SkillsView } from './components/skills';
@@ -20,7 +21,16 @@ import { themeService } from './services/theme';
 import { coworkService } from './services/cowork';
 import { authService } from './services/auth';
 import { scheduledTaskService } from './services/scheduledTask';
-import { checkForAppUpdate, type AppUpdateInfo, type AppUpdateDownloadProgress, UPDATE_POLL_INTERVAL_MS, UPDATE_HEARTBEAT_INTERVAL_MS } from './services/appUpdate';
+import {
+  checkForAppUpdate,
+  clearStoredAppUpdateInfo,
+  getStoredAppUpdateInfo,
+  getStoredUpdateLastCheckedAt,
+  setStoredAppUpdateInfo,
+  setStoredUpdateLastCheckedAt,
+  type AppUpdateInfo,
+  type AppUpdateDownloadProgress,
+} from './services/appUpdate';
 import { defaultConfig, getProviderDisplayName } from './config';
 import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
@@ -33,6 +43,18 @@ import AppUpdateBadge from './components/update/AppUpdateBadge';
 import AppUpdateModal from './components/update/AppUpdateModal';
 import PrivacyDialog from './components/PrivacyDialog';
 import { AppCustomEvent } from './constants/app';
+import {
+  nextWakeActivationOverlaySequence,
+  shouldShowWakeActivationOverlay,
+} from './components/wakeActivationOverlayHelpers';
+import {
+  getCachedBrandRuntimeConfig,
+  getDefaultBrandRuntimeConfig,
+  getPrivacyAgreementAcceptance,
+  refreshBrandRuntimeConfig,
+  savePrivacyAgreementAcceptance,
+  type BrandRuntimeConfig,
+} from './services/brandRuntime';
 
 const App: React.FC = () => {
   const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
@@ -44,6 +66,8 @@ const App: React.FC = () => {
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showLoginWelcome, setShowLoginWelcome] = useState(false);
+  const [showWakeActivationOverlay, setShowWakeActivationOverlay] = useState(false);
+  const [wakeActivationOverlaySequence, setWakeActivationOverlaySequence] = useState(0);
   const [, forceLanguageRefresh] = useState(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
@@ -52,9 +76,11 @@ const App: React.FC = () => {
   const [downloadProgress, setDownloadProgress] = useState<AppUpdateDownloadProgress | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [privacyAgreed, setPrivacyAgreed] = useState<boolean | null>(null);
+  const [brandRuntimeConfig, setBrandRuntimeConfig] = useState<BrandRuntimeConfig>(getDefaultBrandRuntimeConfig());
   const [enterpriseConfig, setEnterpriseConfig] = useState<{
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
+    autoAcceptPrivacy?: boolean;
   } | null>(null);
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
@@ -97,6 +123,30 @@ const App: React.FC = () => {
     });
   }, [electronApi]);
 
+  const syncPrivacyAgreementState = useCallback(
+    async (
+      runtimeConfig: BrandRuntimeConfig,
+      options?: { autoAccept?: boolean }
+    ) => {
+      if (!runtimeConfig.agreement.required) {
+        setPrivacyAgreed(true);
+        return true;
+      }
+
+      if (options?.autoAccept) {
+        await savePrivacyAgreementAcceptance(runtimeConfig.agreement.version);
+        setPrivacyAgreed(true);
+        return true;
+      }
+
+      const acceptance = await getPrivacyAgreementAcceptance();
+      const agreed = acceptance?.version === runtimeConfig.agreement.version;
+      setPrivacyAgreed(agreed);
+      return agreed;
+    },
+    []
+  );
+
   // 初始化应用
   useEffect(() => {
     if (!electronApi) {
@@ -129,6 +179,9 @@ const App: React.FC = () => {
         // Load enterprise config if present
         const entConfig = await electronApi.enterprise.getConfig();
         setEnterpriseConfig(entConfig);
+
+        const cachedBrandConfig = await getCachedBrandRuntimeConfig();
+        setBrandRuntimeConfig(cachedBrandConfig);
 
         // 初始化主题
         console.info('[App] initializeApp: themeService.initialize');
@@ -187,9 +240,23 @@ const App: React.FC = () => {
           dispatch(setSelectedModel(preferredModel));
         }
 
-        // 检查隐私协议是否已同意（必须在 setIsInitialized 之前）
-        const agreed = await electronApi.store.get('privacy_agreed');
-        setPrivacyAgreed(agreed === true);
+        if (entConfig?.disableUpdate || !cachedBrandConfig.update.enabled) {
+          setUpdateInfo(null);
+          await clearStoredAppUpdateInfo();
+        } else {
+          const cachedUpdateInfo = await getStoredAppUpdateInfo();
+          setUpdateInfo(cachedUpdateInfo);
+          if (cachedUpdateInfo?.forceUpdate) {
+            setShowUpdateModal(true);
+            setUpdateModalState('info');
+            setUpdateError(null);
+            setDownloadProgress(null);
+          }
+        }
+
+        await syncPrivacyAgreementState(cachedBrandConfig, {
+          autoAccept: entConfig?.autoAcceptPrivacy === true,
+        });
 
         setIsInitialized(true);
         console.info('[App] initializeApp: shell ready');
@@ -207,7 +274,7 @@ const App: React.FC = () => {
     };
 
     void initializeApp();
-  }, [dispatch, electronApi, platform, waitWithTimeout]);
+  }, [dispatch, electronApi, platform, syncPrivacyAgreementState, waitWithTimeout]);
 
   useEffect(() => {
     const unsubscribe = i18nService.subscribe(() => {
@@ -217,6 +284,57 @@ const App: React.FC = () => {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isInitialized) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const refreshRuntimeConfig = async () => {
+      try {
+        const latestRuntimeConfig = await refreshBrandRuntimeConfig();
+        if (cancelled) {
+          return;
+        }
+
+        setBrandRuntimeConfig(latestRuntimeConfig);
+
+        if (enterpriseConfig?.disableUpdate || !latestRuntimeConfig.update.enabled) {
+          setUpdateInfo(null);
+          setShowUpdateModal(false);
+          await clearStoredAppUpdateInfo();
+        } else {
+          const cachedUpdateInfo = await getStoredAppUpdateInfo();
+          setUpdateInfo(cachedUpdateInfo);
+          if (cachedUpdateInfo?.forceUpdate) {
+            setShowUpdateModal(true);
+            setUpdateModalState('info');
+            setUpdateError(null);
+            setDownloadProgress(null);
+          }
+        }
+
+        await syncPrivacyAgreementState(latestRuntimeConfig, {
+          autoAccept: enterpriseConfig?.autoAcceptPrivacy === true,
+        });
+      } catch (error) {
+        console.warn('[BrandRuntime] Failed to refresh runtime config:', error);
+      }
+    };
+
+    void refreshRuntimeConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    enterpriseConfig?.autoAcceptPrivacy,
+    enterpriseConfig?.disableUpdate,
+    isInitialized,
+    syncPrivacyAgreementState,
+  ]);
 
   // Network status monitoring
   useEffect(() => {
@@ -314,6 +432,11 @@ const App: React.FC = () => {
     }, 0);
   }, []);
 
+  const triggerWakeActivationOverlay = useCallback(() => {
+    setShowWakeActivationOverlay(true);
+    setWakeActivationOverlaySequence((current) => nextWakeActivationOverlaySequence(current));
+  }, []);
+
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
     if (toastTimerRef.current) {
@@ -329,23 +452,48 @@ const App: React.FC = () => {
     showToast(i18nService.t('featureInDevelopment'));
   }, [showToast]);
 
-  const runUpdateCheck = useCallback(async () => {
-    if (!electronApi) {
-      return;
-    }
-    try {
-      const currentVersion = await electronApi.appInfo.getVersion();
-      const nextUpdate = await checkForAppUpdate(currentVersion);
-      setUpdateInfo(nextUpdate);
-      if (!nextUpdate) {
-        setShowUpdateModal(false);
+  const runUpdateCheck = useCallback(
+    async (options?: { manual?: boolean }) => {
+      if (!electronApi) {
+        return null;
       }
-    } catch (error) {
-      console.error('Failed to check app update:', error);
-      setUpdateInfo(null);
-      setShowUpdateModal(false);
-    }
-  }, [electronApi]);
+
+      if (enterpriseConfig?.disableUpdate || !brandRuntimeConfig.update.enabled) {
+        setUpdateInfo(null);
+        setShowUpdateModal(false);
+        await clearStoredAppUpdateInfo();
+        return null;
+      }
+
+      const currentVersion = await electronApi.appInfo.getVersion();
+      const requestedAt = Date.now();
+      await setStoredUpdateLastCheckedAt(requestedAt);
+      const nextUpdate = await checkForAppUpdate(currentVersion, {
+        manual: options?.manual,
+        updateConfig: brandRuntimeConfig.update,
+      });
+
+      setUpdateInfo(nextUpdate);
+
+      if (nextUpdate) {
+        await setStoredAppUpdateInfo(nextUpdate);
+        if (nextUpdate.forceUpdate) {
+          setShowUpdateModal(true);
+          setUpdateModalState('info');
+          setUpdateError(null);
+          setDownloadProgress(null);
+        }
+      } else {
+        await clearStoredAppUpdateInfo();
+        if (!options?.manual && !updateInfo?.forceUpdate) {
+          setShowUpdateModal(false);
+        }
+      }
+
+      return nextUpdate;
+    },
+    [brandRuntimeConfig.update, electronApi, enterpriseConfig?.disableUpdate, updateInfo?.forceUpdate]
+  );
 
   const handleOpenUpdateModal = useCallback(() => {
     if (!updateInfo) return;
@@ -363,12 +511,28 @@ const App: React.FC = () => {
     setShowUpdateModal(true);
   }, []);
 
+  const handleManualCheckUpdate = useCallback(async (): Promise<'available' | 'upToDate' | 'error'> => {
+    try {
+      const nextUpdate = await runUpdateCheck({ manual: true });
+      if (nextUpdate) {
+        handleUpdateFound(nextUpdate);
+        return 'available';
+      }
+      return 'upToDate';
+    } catch (error) {
+      console.error('Failed to manually check app update:', error);
+      return 'error';
+    }
+  }, [handleUpdateFound, runUpdateCheck]);
+
   const handleConfirmUpdate = useCallback(async () => {
     if (!updateInfo) return;
 
     // If the URL is a fallback page (not a direct file download), open in browser
     if (updateInfo.url.includes('#') || updateInfo.url.endsWith('/download-list')) {
-      setShowUpdateModal(false);
+      if (!updateInfo.forceUpdate) {
+        setShowUpdateModal(false);
+      }
       if (!electronApi) {
         showToast(i18nService.t('updateOpenFailed'));
         return;
@@ -437,10 +601,13 @@ const App: React.FC = () => {
     if (!electronApi) {
       return;
     }
+    if (updateInfo?.forceUpdate) {
+      return;
+    }
     await electronApi.appUpdate.cancelDownload();
     setUpdateModalState('info');
     setDownloadProgress(null);
-  }, [electronApi]);
+  }, [electronApi, updateInfo?.forceUpdate]);
 
   const handleRetryUpdate = useCallback(() => {
     setUpdateModalState('info');
@@ -448,16 +615,28 @@ const App: React.FC = () => {
     setDownloadProgress(null);
   }, []);
 
-  const handlePrivacyAccept = useCallback(async () => {
-    if (!electronApi) {
+  useEffect(() => {
+    if (!updateInfo?.forceUpdate) {
       return;
     }
-    await electronApi.store.set('privacy_agreed', true);
+
+    setShowUpdateModal(true);
+    setUpdateModalState('info');
+    setUpdateError(null);
+    setDownloadProgress(null);
+  }, [updateInfo?.forceUpdate, updateInfo?.latestVersion]);
+
+  const handlePrivacyAccept = useCallback(async () => {
+    await savePrivacyAgreementAcceptance(brandRuntimeConfig.agreement.version);
     setPrivacyAgreed(true);
-  }, [electronApi]);
+  }, [brandRuntimeConfig.agreement.version]);
 
   const handlePrivacyReject = useCallback(() => {
     // 立刻隐藏窗口，让用户感觉立即关闭
+    electronApi?.window.close();
+  }, [electronApi]);
+
+  const handleExitApp = useCallback(() => {
     electronApi?.window.close();
   }, [electronApi]);
 
@@ -615,6 +794,9 @@ const App: React.FC = () => {
     const unsubscribe = electronApi.wakeInput.onDictationRequested((request) => {
       disarmWakeFollowUp();
       handleFocusCoworkInput(false);
+      if (shouldShowWakeActivationOverlay(request.source)) {
+        triggerWakeActivationOverlay();
+      }
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent(AppCustomEvent.StartWakeDictation, {
           detail: request,
@@ -622,23 +804,29 @@ const App: React.FC = () => {
       }, 0);
     });
     return unsubscribe;
-  }, [disarmWakeFollowUp, electronApi, handleFocusCoworkInput]);
+  }, [disarmWakeFollowUp, electronApi, handleFocusCoworkInput, triggerWakeActivationOverlay]);
 
   useEffect(() => {
     if (!isInitialized) return;
 
     // Enterprise mode: completely skip update detection
-    if (enterpriseConfig?.disableUpdate) return;
+    if (enterpriseConfig?.disableUpdate || !brandRuntimeConfig.update.enabled) return;
 
     let cancelled = false;
-    let lastCheckTime = 0;
 
     const maybeCheck = async () => {
       if (cancelled) return;
       const now = Date.now();
-      if (lastCheckTime > 0 && now - lastCheckTime < UPDATE_POLL_INTERVAL_MS) return;
-      lastCheckTime = now;
-      await runUpdateCheck();
+      const lastCheckTime = await getStoredUpdateLastCheckedAt();
+      if (lastCheckTime > 0 && now - lastCheckTime < brandRuntimeConfig.update.pollIntervalMs) {
+        return;
+      }
+
+      try {
+        await runUpdateCheck();
+      } catch (error) {
+        console.error('Failed to check app update:', error);
+      }
     };
 
     // 启动时立即检查
@@ -647,7 +835,7 @@ const App: React.FC = () => {
     // 心跳：每 30 分钟检测是否距上次检查已超过 12 小时
     const timer = window.setInterval(() => {
       void maybeCheck();
-    }, UPDATE_HEARTBEAT_INTERVAL_MS);
+    }, brandRuntimeConfig.update.heartbeatIntervalMs);
 
     // 窗口恢复可见时检测（覆盖休眠唤醒场景）
     const handleVisibilityChange = () => {
@@ -662,7 +850,14 @@ const App: React.FC = () => {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isInitialized, runUpdateCheck, enterpriseConfig]);
+  }, [
+    brandRuntimeConfig.update.enabled,
+    brandRuntimeConfig.update.heartbeatIntervalMs,
+    brandRuntimeConfig.update.pollIntervalMs,
+    enterpriseConfig?.disableUpdate,
+    isInitialized,
+    runUpdateCheck,
+  ]);
 
   // 根据场景选择使用哪个权限组件
   const permissionModal = useMemo(() => {
@@ -694,7 +889,8 @@ const App: React.FC = () => {
   }, [pendingPermission, handlePermissionResponse]);
 
   const isOverlayActive = showSettings || showUpdateModal || pendingPermissions.length > 0;
-  const updateBadge = updateInfo ? (
+  const updateChecksManaged = Boolean(enterpriseConfig?.disableUpdate) || !brandRuntimeConfig.update.enabled;
+  const updateBadge = !updateChecksManaged && updateInfo ? (
     <AppUpdateBadge
       latestVersion={updateInfo.latestVersion}
       onClick={handleOpenUpdateModal}
@@ -747,7 +943,8 @@ const App: React.FC = () => {
               onClose={handleCloseSettings}
               initialTab={settingsOptions.initialTab}
               notice={settingsOptions.notice}
-              onUpdateFound={handleUpdateFound}
+              onManualCheckUpdate={handleManualCheckUpdate}
+              updateCheckManaged={updateChecksManaged}
               enterpriseConfig={enterpriseConfig}
             />
           )}
@@ -760,6 +957,12 @@ const App: React.FC = () => {
     <div className="h-screen overflow-hidden flex flex-col bg-surface-raised">
       {showLoginWelcome && (
         <LoginWelcomeOverlay onClose={() => setShowLoginWelcome(false)} />
+      )}
+      {showWakeActivationOverlay && (
+        <WakeActivationOverlay
+          key={wakeActivationOverlaySequence}
+          onClose={() => setShowWakeActivationOverlay(false)}
+        />
       )}
       {toastMessage && (
         <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
@@ -833,7 +1036,8 @@ const App: React.FC = () => {
           onClose={handleCloseSettings}
           initialTab={settingsOptions.initialTab}
           notice={settingsOptions.notice}
-          onUpdateFound={handleUpdateFound}
+          onManualCheckUpdate={handleManualCheckUpdate}
+          updateCheckManaged={updateChecksManaged}
           enterpriseConfig={enterpriseConfig}
         />
       )}
@@ -841,7 +1045,7 @@ const App: React.FC = () => {
         <AppUpdateModal
           updateInfo={updateInfo}
           onCancel={() => {
-            if (updateModalState === 'info' || updateModalState === 'error') {
+            if (!updateInfo.forceUpdate && (updateModalState === 'info' || updateModalState === 'error')) {
               setShowUpdateModal(false);
               setUpdateModalState('info');
               setUpdateError(null);
@@ -854,11 +1058,13 @@ const App: React.FC = () => {
           errorMessage={updateError}
           onCancelDownload={handleCancelDownload}
           onRetry={handleRetryUpdate}
+          onExitApp={handleExitApp}
         />
       )}
       {permissionModal}
       {privacyAgreed === false && (
         <PrivacyDialog
+          agreement={brandRuntimeConfig.agreement}
           onAccept={handlePrivacyAccept}
           onReject={handlePrivacyReject}
         />

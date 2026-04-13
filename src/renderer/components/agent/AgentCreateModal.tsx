@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { agentService } from '../../services/agent';
 import { imService } from '../../services/im';
 import { i18nService } from '../../services/i18n';
@@ -6,7 +6,18 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import type { IMPlatform, IMGatewayConfig } from '../../types/im';
 import AgentSkillSelector from './AgentSkillSelector';
+import AgentToolBundleCompatibilityHint from './AgentToolBundleCompatibilityHint';
+import AgentToolBundleSelector from './AgentToolBundleSelector';
+import AgentToolBundleDebugGuide from './AgentToolBundleDebugGuide';
+import AgentToolBundleDebugSelector from './AgentToolBundleDebugSelector';
+import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import EmojiPicker from './EmojiPicker';
+import { resolveAgentBundleSaveFlow } from './agentBundleSaveFlow';
+import {
+  buildAgentBundleSaveWarningState,
+} from './agentBundleSaveGuard';
+import { buildPersistedCreateAgentRequest } from './agentPersistedDraft';
+import { loadQingShuAgentGovernanceSummary } from '../../services/qingshuGovernanceSummary';
 
 type CreateTab = 'basic' | 'skills' | 'im';
 
@@ -29,12 +40,17 @@ interface AgentCreateModalProps {
 }
 
 const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) => {
+  const showGovernanceDebug = import.meta.env.DEV;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
   const [icon, setIcon] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
+  const [toolBundleIds, setToolBundleIds] = useState<string[]>([]);
+  const [debugToolBundleIds, setDebugToolBundleIds] = useState<string[]>([]);
+  const [saveWarningSignature, setSaveWarningSignature] = useState<string | null>(null);
+  const [saveWarningMissingBundles, setSaveWarningMissingBundles] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [activeTab, setActiveTab] = useState<CreateTab>('basic');
 
@@ -49,6 +65,25 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     });
   }, [isOpen]);
 
+  useEffect(() => {
+    setSaveWarningSignature(null);
+    setSaveWarningMissingBundles([]);
+  }, [skillIds, toolBundleIds]);
+
+  const saveWarningState = useMemo(
+    () => buildAgentBundleSaveWarningState(saveWarningMissingBundles),
+    [saveWarningMissingBundles],
+  );
+  const saveWarningMoreText = saveWarningState && saveWarningState.hiddenBundleCount > 0
+    ? i18nService.t('agentToolBundlesSaveWarningMore')
+      .replace('{count}', String(saveWarningState.hiddenBundleCount))
+    : '';
+  const saveButtonLabel = creating
+    ? (i18nService.t('creating') || 'Creating...')
+    : saveWarningState
+      ? (i18nService.t('agentToolBundlesConfirmSave') || 'Save Again')
+      : (i18nService.t('create') || 'Create');
+
   if (!isOpen) return null;
 
   const resetForm = () => {
@@ -58,6 +93,10 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setIdentity('');
     setIcon('');
     setSkillIds([]);
+    setToolBundleIds([]);
+    setDebugToolBundleIds([]);
+    setSaveWarningSignature(null);
+    setSaveWarningMissingBundles([]);
     setActiveTab('basic');
     setBoundPlatforms(new Set());
   };
@@ -66,14 +105,30 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     if (!name.trim()) return;
     setCreating(true);
     try {
-      const agent = await agentService.createAgent({
-        name: name.trim(),
-        description: description.trim(),
-        systemPrompt: systemPrompt.trim(),
-        identity: identity.trim(),
-        icon: icon.trim() || undefined,
+      const summary = await loadQingShuAgentGovernanceSummary(skillIds, toolBundleIds);
+      const saveFlow = resolveAgentBundleSaveFlow({
         skillIds,
+        toolBundleIds,
+        missingBundles: summary.missingBundles,
+        acknowledgedSignature: saveWarningSignature,
       });
+      setSaveWarningSignature(saveFlow.nextAcknowledgedSignature);
+      setSaveWarningMissingBundles(saveFlow.nextMissingBundles);
+      if (!saveFlow.allowSave) {
+        setActiveTab('skills');
+        return;
+      }
+
+      const agent = await agentService.createAgent(buildPersistedCreateAgentRequest({
+        name,
+        description,
+        systemPrompt,
+        identity,
+        icon,
+        skillIds,
+        toolBundleIds,
+        debugToolBundleIds,
+      }));
       if (agent) {
         // Save IM bindings after agent is created
         if (boundPlatforms.size > 0 && imConfig) {
@@ -216,7 +271,38 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
           )}
 
           {activeTab === 'skills' && (
-            <AgentSkillSelector selectedSkillIds={skillIds} onChange={setSkillIds} />
+            <>
+              <AgentToolBundleSelector
+                selectedBundleIds={toolBundleIds}
+                onChange={(nextBundleIds) => {
+                  setToolBundleIds(nextBundleIds);
+                  if (showGovernanceDebug) {
+                    setDebugToolBundleIds(nextBundleIds);
+                  }
+                }}
+              />
+              <AgentToolBundleCompatibilityHint
+                skillIds={skillIds}
+                toolBundleIds={toolBundleIds}
+                usesAllEnabledSkills={skillIds.length === 0}
+              />
+              {showGovernanceDebug ? (
+                <>
+                  <AgentToolBundleDebugGuide />
+                  <AgentToolBundleReadOnlyPanel toolBundleIds={[]} />
+                  <AgentToolBundleDebugSelector
+                    selectedBundleIds={debugToolBundleIds}
+                    baselineBundleIds={toolBundleIds}
+                    onChange={setDebugToolBundleIds}
+                  />
+                </>
+              ) : null}
+              <AgentSkillSelector
+                selectedSkillIds={skillIds}
+                toolBundleIds={showGovernanceDebug ? debugToolBundleIds : toolBundleIds}
+                onChange={setSkillIds}
+              />
+            </>
           )}
 
           {activeTab === 'im' && (
@@ -283,22 +369,39 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-border">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-          >
-            {i18nService.t('cancel') || 'Cancel'}
-          </button>
-          <button
-            type="button"
-            onClick={handleCreate}
-            disabled={!name.trim() || creating}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {creating ? (i18nService.t('creating') || 'Creating...') : (i18nService.t('create') || 'Create')}
-          </button>
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border">
+          <div className="min-h-[1rem]">
+            {saveWarningState ? (
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                <div className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                  {i18nService.t('agentToolBundlesSaveWarningTitle')}
+                </div>
+                <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                  {i18nService.t('agentToolBundlesSaveWarningBody')
+                    .replace('{count}', String(saveWarningState.missingBundles.length))
+                    .replace('{bundles}', saveWarningState.previewBundles.join(', '))
+                    .replace('{moreText}', saveWarningMoreText)}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+            >
+              {i18nService.t('cancel') || 'Cancel'}
+            </button>
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={!name.trim() || creating}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {saveButtonLabel}
+            </button>
+          </div>
         </div>
       </div>
     </div>

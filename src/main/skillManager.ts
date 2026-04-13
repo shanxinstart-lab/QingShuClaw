@@ -12,6 +12,15 @@ import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
 import { scanSkillSecurity, scanMultipleSkillDirs, mergeReports } from './libs/skillSecurity/skillSecurityScanner';
 import type { SkillSecurityReport, SecurityReportAction } from './libs/skillSecurity/skillSecurityTypes';
 import { t } from './i18n';
+import {
+  QingShuManagedInstaller,
+  QingShuObjectSourceType,
+} from '../shared/qingshuManaged/constants';
+import type {
+  QingShuManagedSkillDescriptor,
+  QingShuManagedSkillMeta,
+  QingShuSkillSourceMeta,
+} from '../shared/qingshuManaged/types';
 
 /**
  * Resolve the user's login shell PATH on macOS/Linux.
@@ -215,6 +224,16 @@ export type SkillRecord = {
   prompt: string;
   skillPath: string;
   version?: string;
+  sourceType?: string;
+  readOnly?: boolean;
+  backendSkillId?: string;
+  backendAgentIds?: string[];
+  packageUrl?: string;
+  packageChecksum?: string;
+  catalogVersion?: string;
+  installedBy?: string;
+  toolRefs?: string[];
+  policyNote?: string;
 };
 
 type SkillStateMap = Record<string, { enabled: boolean }>;
@@ -249,6 +268,7 @@ type SkillsConfig = {
 
 const SKILLS_DIR_NAME = 'SKILLs';
 const SKILL_FILE_NAME = 'SKILL.md';
+const SKILL_META_FILE_NAME = '_meta.json';
 const SKILLS_CONFIG_FILE = 'skills.config.json';
 const SKILL_STATE_KEY = 'skills_state';
 const WATCH_DEBOUNCE_MS = 250;
@@ -319,6 +339,25 @@ const compareVersions = (a: string, b: string): number => {
   }
   return 0;
 };
+
+type ManagedSkillSyncResult = {
+  success: boolean;
+  action?: 'installed' | 'upgraded' | 'unchanged';
+  skill?: SkillRecord;
+  error?: string;
+};
+
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter((item) => item.length > 0);
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const resolveWithin = (root: string, target: string): string => {
   const resolvedRoot = path.resolve(root);
@@ -937,10 +976,17 @@ const isRemoteZipUrl = (source: string): boolean => {
   }
 };
 
-const downloadZipUrl = async (zipUrl: string, tempRoot: string): Promise<string> => {
+const downloadZipUrl = async (
+  zipUrl: string,
+  tempRoot: string,
+  headers?: HeadersInit,
+): Promise<string> => {
   const response = await session.defaultSession.fetch(zipUrl, {
     method: 'GET',
-    headers: { 'User-Agent': 'LobsterAI Skill Downloader' },
+    headers: {
+      'User-Agent': 'LobsterAI Skill Downloader',
+      ...(headers || {}),
+    },
   });
 
   if (!response.ok) {
@@ -1358,6 +1404,10 @@ export class SkillManager {
   }
 
   setSkillEnabled(id: string, enabled: boolean): SkillRecord[] {
+    const skill = this.listSkills().find((item) => item.id === id);
+    if (skill?.readOnly) {
+      throw new Error('Read-only skills cannot be enabled or disabled locally');
+    }
     const state = this.loadSkillStateMap();
     state[id] = { enabled };
     this.saveSkillStateMap(state);
@@ -1369,6 +1419,10 @@ export class SkillManager {
     const root = this.ensureSkillsRoot();
     if (id !== path.basename(id)) {
       throw new Error('Invalid skill id');
+    }
+    const existingSkill = this.listSkills().find((skill) => skill.id === id);
+    if (existingSkill?.readOnly) {
+      throw new Error('Read-only skills cannot be deleted locally');
     }
     if (this.isBuiltInSkillId(id)) {
       throw new Error('Built-in skills cannot be deleted');
@@ -1836,6 +1890,117 @@ export class SkillManager {
     return { success: true, skills: this.listSkills() };
   }
 
+  getSkillById(skillId: string): SkillRecord | null {
+    return this.listSkills().find((skill) => skill.id === skillId) ?? null;
+  }
+
+  applyManagedSkillAccess(descriptor: QingShuManagedSkillDescriptor): SkillRecord | null {
+    const existingSkill = this.getSkillById(descriptor.skillId);
+    if (!existingSkill) {
+      return null;
+    }
+    if (existingSkill.sourceType !== QingShuObjectSourceType.QingShuManaged) {
+      throw new Error(`Skill id "${descriptor.skillId}" is already used by a local skill`);
+    }
+
+    const targetSkillDir = path.dirname(existingSkill.skillPath);
+    this.writeSkillMeta(targetSkillDir, this.buildManagedSkillMeta(descriptor));
+    this.setSkillEnabledState(
+      descriptor.skillId,
+      descriptor.allowed === true && descriptor.enabled === true,
+    );
+    return this.getSkillById(descriptor.skillId);
+  }
+
+  async syncManagedSkillPackage(
+    descriptor: QingShuManagedSkillDescriptor,
+  ): Promise<ManagedSkillSyncResult> {
+    let cleanupPath: string | null = null;
+    try {
+      if (!descriptor.packageUrl?.trim()) {
+        return { success: false, error: 'Managed skill package URL is required' };
+      }
+
+      const existingSkill = this.getSkillById(descriptor.skillId);
+      if (
+        existingSkill
+        && existingSkill.sourceType !== QingShuObjectSourceType.QingShuManaged
+      ) {
+        return {
+          success: false,
+          error: `Skill id "${descriptor.skillId}" is already used by a local skill`,
+        };
+      }
+
+      const root = this.ensureSkillsRoot();
+      const tempRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'lobsterai-managed-skill-'));
+      cleanupPath = tempRoot;
+
+      const localSource = await downloadZipUrl(
+        descriptor.packageUrl,
+        tempRoot,
+        this.buildManagedDownloadHeaders(descriptor.packageUrl),
+      );
+      const skillDirs = collectSkillDirsFromSource(localSource);
+      if (skillDirs.length === 0) {
+        return { success: false, error: t('skillErrNoSkillMd') };
+      }
+
+      const matchingSkillDir = skillDirs.find(
+        (dir) => normalizeFolderName(path.basename(dir)) === descriptor.skillId,
+      ) || skillDirs[0];
+      const targetDir = resolveWithin(root, descriptor.skillId);
+      const targetSkillDir = existingSkill ? path.dirname(existingSkill.skillPath) : targetDir;
+      const sourceVersion = descriptor.version || this.getSkillVersion(matchingSkillDir) || '0.0.0';
+      const sourcePackageChecksum = descriptor.packageChecksum?.trim();
+      const sourceCatalogVersion = descriptor.catalogVersion?.trim();
+
+      let action: ManagedSkillSyncResult['action'] = 'installed';
+      if (existingSkill) {
+        const currentVersion = existingSkill.version || '0.0.0';
+        const currentPackageChecksum = existingSkill.packageChecksum?.trim();
+        const currentCatalogVersion = existingSkill.catalogVersion?.trim();
+        const shouldUpgrade = compareVersions(sourceVersion, currentVersion) > 0
+          || (!!sourcePackageChecksum && sourcePackageChecksum !== currentPackageChecksum)
+          || (!!sourceCatalogVersion && sourceCatalogVersion !== currentCatalogVersion);
+        if (shouldUpgrade) {
+          this.performSkillUpgrade(matchingSkillDir, targetSkillDir);
+          action = 'upgraded';
+        } else {
+          action = 'unchanged';
+        }
+      } else {
+        if (fs.existsSync(targetDir)) {
+          return {
+            success: false,
+            error: `Target skill directory already exists: ${targetDir}`,
+          };
+        }
+        cpRecursiveSync(matchingSkillDir, targetDir);
+        action = 'installed';
+      }
+
+      this.writeSkillMeta(targetSkillDir, this.buildManagedSkillMeta(descriptor));
+      this.setSkillEnabledState(descriptor.skillId, descriptor.enabled);
+      cleanupPathSafely(cleanupPath);
+      cleanupPath = null;
+      this.startWatching();
+      this.notifySkillsChanged();
+
+      return {
+        success: true,
+        action,
+        skill: this.getSkillById(descriptor.skillId) ?? undefined,
+      };
+    } catch (error) {
+      cleanupPathSafely(cleanupPath);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to sync managed skill package',
+      };
+    }
+  }
+
   startWatching(): void {
     this.stopWatching();
     const primaryRoot = this.ensureSkillsRoot();
@@ -1920,18 +2085,42 @@ export class SkillManager {
     try {
       const raw = fs.readFileSync(skillFile, 'utf8');
       const { frontmatter, content } = parseFrontmatter(raw);
+      const skillMeta = this.readSkillMeta(dir);
       const name = (String(frontmatter.name || '') || path.basename(dir)).trim() || path.basename(dir);
       const description = (String(frontmatter.description || '') || extractDescription(content) || name).trim();
       const isOfficial = isTruthy(frontmatter.official) || isTruthy(frontmatter.isOfficial);
       const meta = frontmatter.metadata as Record<string, unknown> | undefined;
-      const v = frontmatter.version ?? meta?.version;
+      const v = frontmatter.version ?? skillMeta.version ?? meta?.version;
       const version = typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined;
       const updatedAt = fs.statSync(skillFile).mtimeMs;
       const id = path.basename(dir);
       const prompt = content.trim();
       const defaultEnabled = defaults[id]?.enabled ?? true;
       const enabled = state[id]?.enabled ?? defaultEnabled;
-      return { id, name, description, enabled, isOfficial, isBuiltIn, updatedAt, prompt, skillPath: skillFile, version };
+      const sourceType = skillMeta.sourceType
+        || (isBuiltIn ? QingShuObjectSourceType.Preset : QingShuObjectSourceType.LocalCustom);
+      return {
+        id,
+        name,
+        description,
+        enabled,
+        isOfficial,
+        isBuiltIn,
+        updatedAt,
+        prompt,
+        skillPath: skillFile,
+        version,
+        sourceType,
+        readOnly: skillMeta.readOnly === true,
+        backendSkillId: skillMeta.backendSkillId,
+        backendAgentIds: skillMeta.backendAgentIds,
+        packageUrl: skillMeta.packageUrl,
+        packageChecksum: skillMeta.packageChecksum,
+        catalogVersion: skillMeta.catalogVersion,
+        installedBy: skillMeta.installedBy,
+        toolRefs: skillMeta.toolRefs,
+        policyNote: skillMeta.policyNote,
+      };
     } catch (error) {
       console.warn('[skills] Failed to parse skill:', dir, error);
       return null;
@@ -1966,6 +2155,98 @@ export class SkillManager {
 
   private saveSkillStateMap(map: SkillStateMap): void {
     this.getStore().set(SKILL_STATE_KEY, map);
+  }
+
+  private setSkillEnabledState(id: string, enabled: boolean): void {
+    const state = this.loadSkillStateMap();
+    state[id] = { enabled };
+    this.saveSkillStateMap(state);
+  }
+
+  private buildManagedSkillMeta(
+    descriptor: QingShuManagedSkillDescriptor,
+  ): QingShuManagedSkillMeta {
+    return {
+      sourceType: QingShuObjectSourceType.QingShuManaged,
+      readOnly: true,
+      backendSkillId: descriptor.skillId,
+      backendAgentIds: descriptor.backendAgentIds ?? [],
+      packageUrl: descriptor.packageUrl,
+      version: descriptor.version,
+      packageChecksum: descriptor.packageChecksum,
+      catalogVersion: descriptor.catalogVersion,
+      installedBy: QingShuManagedInstaller.QingShuSync,
+      toolRefs: descriptor.toolRefs ?? [],
+      policyNote: descriptor.policyNote,
+    };
+  }
+
+  private buildManagedDownloadHeaders(packageUrl: string): HeadersInit | undefined {
+    if (!packageUrl.includes('/api/qingshu-claw/managed/')) {
+      return undefined;
+    }
+    const authTokens = this.getStore().get<{ accessToken?: string }>('auth_tokens');
+    const accessToken = authTokens?.accessToken?.trim();
+    if (!accessToken) {
+      return undefined;
+    }
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      auth: `Bearer ${accessToken}`,
+    };
+  }
+
+  private readSkillMeta(dir: string): QingShuSkillSourceMeta {
+    const metaPath = path.join(dir, SKILL_META_FILE_NAME);
+    if (!fs.existsSync(metaPath)) {
+      return {};
+    }
+    try {
+      const raw = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as unknown;
+      if (!isRecord(raw)) {
+        return {};
+      }
+      const sourceType = raw.sourceType === QingShuObjectSourceType.QingShuManaged
+        || raw.sourceType === QingShuObjectSourceType.LocalCustom
+        || raw.sourceType === QingShuObjectSourceType.Preset
+        ? raw.sourceType
+        : undefined;
+      const installedBy = raw.installedBy === QingShuManagedInstaller.QingShuSync
+        ? raw.installedBy
+        : undefined;
+      return {
+        sourceType,
+        readOnly: raw.readOnly === true,
+        backendSkillId: typeof raw.backendSkillId === 'string' ? raw.backendSkillId : undefined,
+        backendAgentIds: normalizeStringArray(raw.backendAgentIds),
+        packageUrl: typeof raw.packageUrl === 'string' ? raw.packageUrl : undefined,
+        version: typeof raw.version === 'string' ? raw.version : undefined,
+        packageChecksum: typeof raw.packageChecksum === 'string' ? raw.packageChecksum : undefined,
+        catalogVersion: typeof raw.catalogVersion === 'string' ? raw.catalogVersion : undefined,
+        installedBy,
+        toolRefs: normalizeStringArray(raw.toolRefs),
+        policyNote: typeof raw.policyNote === 'string' ? raw.policyNote : undefined,
+      };
+    } catch (error) {
+      console.warn('[skills] Failed to read skill meta:', metaPath, error);
+      return {};
+    }
+  }
+
+  private writeSkillMeta(dir: string, meta: QingShuSkillSourceMeta): void {
+    fs.writeFileSync(
+      path.join(dir, SKILL_META_FILE_NAME),
+      JSON.stringify(
+        {
+          ...meta,
+          backendAgentIds: meta.backendAgentIds ?? [],
+          toolRefs: meta.toolRefs ?? [],
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
   }
 
   private loadSkillsDefaults(roots: string[]): Record<string, SkillDefaultConfig> {

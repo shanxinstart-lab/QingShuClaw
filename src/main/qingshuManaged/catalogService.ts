@@ -1,0 +1,443 @@
+import type { AuthAdapter } from '../auth/adapter';
+import type { Agent } from '../coworkStore';
+import type { McpServerManager, McpToolManifestEntry } from '../libs/mcpServerManager';
+import type { SkillManager } from '../skillManager';
+import {
+  QingShuManagedToolRuntime,
+  QingShuObjectSourceType,
+} from '../../shared/qingshuManaged/constants';
+import type {
+  QingShuManagedAgentDescriptor,
+  QingShuManagedCatalogSnapshot,
+  QingShuManagedSkillDescriptor,
+  QingShuManagedToolDescriptor,
+} from '../../shared/qingshuManaged/types';
+
+type FetchFn = (url: string, options?: RequestInit) => Promise<Response>;
+
+type QingShuManagedCatalogServiceDeps = {
+  fetchFn: FetchFn;
+  getAuthAdapter: () => AuthAdapter;
+  resolveApiBaseUrl: () => string | null;
+  skillManager: SkillManager;
+  store?: {
+    get<T = unknown>(key: string): T | undefined;
+    set<T = unknown>(key: string, value: T): void;
+  };
+  onCatalogChanged?: () => void;
+};
+
+type QtbResult<T> = {
+  code: number;
+  msg?: string;
+  data?: T;
+};
+
+type ManagedToolInvokeResponse = {
+  toolName: string;
+  success: boolean;
+  summary?: string;
+  data?: unknown;
+  errorMessage?: string;
+};
+
+const MANAGED_AGENT_ID_PREFIX = 'qingshu-managed:';
+const QINGSHU_MANAGED_CATALOG_SNAPSHOT_KEY = 'qingshuManaged.catalogSnapshot.v1';
+const QINGSHU_MANAGED_AGENT_EXTRA_SKILL_IDS_KEY = 'qingshuManaged.agentExtraSkillIds.v1';
+
+const emptySnapshot = (): QingShuManagedCatalogSnapshot => ({
+  catalogVersion: '',
+  syncedAt: 0,
+  agents: [],
+  skills: [],
+  tools: [],
+});
+
+const toManagedAgentId = (backendAgentId: string): string =>
+  `${MANAGED_AGENT_ID_PREFIX}${backendAgentId}`;
+
+const fromManagedAgentId = (agentId: string): string | null =>
+  agentId.startsWith(MANAGED_AGENT_ID_PREFIX)
+    ? agentId.slice(MANAGED_AGENT_ID_PREFIX.length)
+    : null;
+
+const buildAuthHeaders = (accessToken: string, headers?: HeadersInit): Headers => {
+  const result = new Headers(headers);
+  result.set('Authorization', `Bearer ${accessToken}`);
+  result.set('auth', `Bearer ${accessToken}`);
+  return result;
+};
+
+const stringifyToolPayload = (payload: unknown): string => {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  return JSON.stringify(payload ?? {}, null, 2);
+};
+
+const clipText = (value: string, maxLength: number): string =>
+  value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
+
+const buildManagedToolAlias = (toolName: string): string =>
+  `mcp_${QingShuManagedToolRuntime.ServerName.replace(/[^a-z0-9]+/gi, '_')}_${toolName.replace(/[^a-z0-9]+/gi, '_')}`
+    .toLowerCase();
+
+const summarizeToolArgs = (args: Record<string, unknown>): string =>
+  clipText(stringifyToolPayload(args), 512);
+
+export class QingShuManagedCatalogService {
+  private snapshot: QingShuManagedCatalogSnapshot;
+
+  constructor(private readonly deps: QingShuManagedCatalogServiceDeps) {
+    this.snapshot = this.loadPersistedSnapshot();
+  }
+
+  getSnapshot(): QingShuManagedCatalogSnapshot {
+    return {
+      ...this.snapshot,
+      agents: this.snapshot.agents.map((agent) => ({ ...agent })),
+      skills: this.snapshot.skills.map((skill) => ({ ...skill })),
+      tools: this.snapshot.tools.map((tool) => ({ ...tool })),
+    };
+  }
+
+  reset(): void {
+    this.snapshot = emptySnapshot();
+    this.persistSnapshot();
+    this.deps.onCatalogChanged?.();
+  }
+
+  async syncCatalog(): Promise<{ success: boolean; snapshot?: QingShuManagedCatalogSnapshot; error?: string }> {
+    try {
+      const accessToken = await this.deps.getAuthAdapter().getAccessToken();
+      if (!accessToken || !this.deps.resolveApiBaseUrl()) {
+        return { success: true, snapshot: this.getSnapshot() };
+      }
+
+      const agents = await this.fetchResult<QingShuManagedAgentDescriptor[]>(
+        '/api/qingshu-claw/managed/agents',
+      );
+      const skillMap = new Map<string, QingShuManagedSkillDescriptor>();
+      const toolMap = new Map<string, QingShuManagedToolDescriptor>();
+
+      for (const agent of agents) {
+        const agentId = encodeURIComponent(agent.agentId);
+        const [skills, tools] = await Promise.all([
+          this.fetchResult<QingShuManagedSkillDescriptor[]>(
+            `/api/qingshu-claw/managed/agents/${agentId}/skills`,
+          ),
+          this.fetchResult<QingShuManagedToolDescriptor[]>(
+            `/api/qingshu-claw/managed/agents/${agentId}/tools`,
+          ),
+        ]);
+
+        for (const skill of skills) {
+          skillMap.set(skill.skillId, skill);
+          try {
+            this.deps.skillManager.applyManagedSkillAccess(skill);
+          } catch (error) {
+            console.warn(
+              `[QingShuManaged] failed to apply managed skill access for "${skill.skillId}": ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+          if (skill.allowed) {
+            const syncResult = await this.deps.skillManager.syncManagedSkillPackage(skill);
+            if (!syncResult.success) {
+              console.warn(
+                `[QingShuManaged] failed to sync managed skill "${skill.skillId}": ${syncResult.error}`,
+              );
+            }
+          }
+        }
+
+        for (const tool of tools) {
+          toolMap.set(tool.toolName, tool);
+        }
+      }
+
+      const catalogVersion = [
+        ...agents.map((agent) => agent.catalogVersion || ''),
+        ...Array.from(skillMap.values()).map((skill) => skill.catalogVersion || ''),
+        ...Array.from(toolMap.values()).map((tool) => tool.catalogVersion || ''),
+      ]
+        .filter((value) => value.length > 0)
+        .sort()
+        .pop() || String(Date.now());
+
+      this.snapshot = {
+        catalogVersion,
+        syncedAt: Date.now(),
+        agents,
+        skills: Array.from(skillMap.values()),
+        tools: Array.from(toolMap.values()),
+      };
+      this.persistSnapshot();
+      this.deps.onCatalogChanged?.();
+      return { success: true, snapshot: this.getSnapshot() };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to sync QingShu managed catalog',
+      };
+    }
+  }
+
+  listManagedAgents(): Agent[] {
+    const availableExtraSkillIds = new Set(
+      this.deps.skillManager
+        .listSkills()
+        .filter((skill) =>
+          skill.enabled
+          && skill.sourceType !== QingShuObjectSourceType.QingShuManaged,
+        )
+        .map((skill) => skill.id),
+    );
+
+    return this.snapshot.agents.map((agent) => {
+      const extraSkillIds = this.getManagedAgentExtraSkillIds(toManagedAgentId(agent.agentId))
+        .filter((skillId) => availableExtraSkillIds.has(skillId));
+      const mergedSkillIds = Array.from(new Set([...(agent.skillIds ?? []), ...extraSkillIds]));
+      return {
+        id: toManagedAgentId(agent.agentId),
+        name: agent.name,
+        description: agent.description,
+        systemPrompt: agent.systemPrompt?.trim() || '',
+        identity: agent.identity?.trim() || '',
+        model: '',
+        icon: '🦞',
+        skillIds: mergedSkillIds,
+        toolBundleIds: [] as string[],
+        enabled: agent.enabled && agent.allowed,
+        isDefault: false,
+        source: 'managed',
+        sourceType: QingShuObjectSourceType.QingShuManaged,
+        readOnly: true,
+        allowed: agent.allowed,
+        backendAgentId: agent.agentId,
+        managedToolNames: agent.toolNames,
+        managedBaseSkillIds: agent.skillIds ?? [],
+        managedExtraSkillIds: extraSkillIds,
+        policyNote: agent.policyNote,
+        presetId: '',
+        createdAt: this.snapshot.syncedAt,
+        updatedAt: this.snapshot.syncedAt,
+      };
+    });
+  }
+
+  getManagedAgent(agentId: string): Agent | null {
+    return this.listManagedAgents().find((agent) => agent.id === agentId) ?? null;
+  }
+
+  getManagedAgentExtraSkillIds(agentId: string): string[] {
+    const backendAgentId = fromManagedAgentId(agentId);
+    if (!backendAgentId || !this.deps.store) {
+      return [];
+    }
+
+    const raw = this.deps.store.get<Record<string, unknown>>(QINGSHU_MANAGED_AGENT_EXTRA_SKILL_IDS_KEY);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return [];
+    }
+
+    const value = raw[backendAgentId];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  setManagedAgentExtraSkillIds(agentId: string, skillIds: string[]): Agent | null {
+    const backendAgentId = fromManagedAgentId(agentId);
+    if (!backendAgentId || !this.deps.store) {
+      return null;
+    }
+
+    const normalizedSkillIds = Array.from(new Set(
+      skillIds
+        .map((skillId) => skillId.trim())
+        .filter(Boolean),
+    ));
+
+    const raw = this.deps.store.get<Record<string, unknown>>(QINGSHU_MANAGED_AGENT_EXTRA_SKILL_IDS_KEY);
+    const nextMap: Record<string, string[]> = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? Object.fromEntries(
+        Object.entries(raw)
+          .filter(([, value]) => Array.isArray(value))
+          .map(([key, value]) => [
+            key,
+            (value as unknown[])
+              .filter((item): item is string => typeof item === 'string')
+              .map((item) => item.trim())
+              .filter(Boolean),
+          ]),
+      )
+      : {};
+
+    if (normalizedSkillIds.length > 0) {
+      nextMap[backendAgentId] = normalizedSkillIds;
+    } else {
+      delete nextMap[backendAgentId];
+    }
+
+    this.deps.store.set(QINGSHU_MANAGED_AGENT_EXTRA_SKILL_IDS_KEY, nextMap);
+    return this.getManagedAgent(agentId);
+  }
+
+  getManagedToolsForAgent(agentId: string): QingShuManagedToolDescriptor[] {
+    const backendAgentId = fromManagedAgentId(agentId);
+    if (!backendAgentId) {
+      return [];
+    }
+    const agent = this.snapshot.agents.find((item) => item.agentId === backendAgentId);
+    if (!agent) {
+      return [];
+    }
+    const toolNames = new Set(agent.toolNames);
+    return this.snapshot.tools.filter((tool) => toolNames.has(tool.toolName));
+  }
+
+  registerLocalToolRuntime(mcpServerManager: McpServerManager): void {
+    const tools: McpToolManifestEntry[] = this.snapshot.tools
+      .filter((tool) => tool.allowed)
+      .map((tool) => {
+        const toolAlias = buildManagedToolAlias(tool.toolName);
+        const backendPath = `/api/qingshu-claw/managed/tools/${encodeURIComponent(tool.toolName)}/invoke`;
+        console.log(
+          `[QingShuManaged] registered MCP tool "${toolAlias}" for server "${QingShuManagedToolRuntime.ServerName}" ` +
+          `mapping to managed tool "${tool.toolName}" via "${backendPath}"`,
+        );
+        return {
+          server: QingShuManagedToolRuntime.ServerName,
+          name: tool.toolName,
+          description: `${tool.description} [MCP alias: ${toolAlias}]`,
+          inputSchema: tool.inputSchema ?? {},
+        };
+      });
+
+    mcpServerManager.registerLocalServer({
+      name: QingShuManagedToolRuntime.ServerName,
+      tools,
+      callTool: async (toolName, args) => this.invokeManagedTool(toolName, args),
+    });
+  }
+
+  private async invokeManagedTool(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }> {
+    const toolAlias = buildManagedToolAlias(toolName);
+    const backendPath = `/api/qingshu-claw/managed/tools/${encodeURIComponent(toolName)}/invoke`;
+    console.log(
+      `[QingShuManaged] invoking MCP tool "${toolAlias}" mapped to "${toolName}" with args ${summarizeToolArgs(args)}`,
+    );
+    try {
+      const body = await this.fetchResult<ManagedToolInvokeResponse>(
+        backendPath,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            arguments: args,
+          }),
+        },
+      );
+
+      const summaryText = body.summary?.trim()
+        || (body.success ? 'Managed tool invocation succeeded' : body.errorMessage?.trim())
+        || 'Managed tool invocation finished';
+      console.log(
+        `[QingShuManaged] MCP tool "${toolAlias}" completed with success=${body.success === true} summary="${clipText(summaryText, 240)}"`,
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: stringifyToolPayload(body.data ?? body.summary ?? body.errorMessage ?? {}),
+          },
+        ],
+        isError: body.success !== true,
+      };
+    } catch (error) {
+      console.error(
+        `[QingShuManaged] MCP tool "${toolAlias}" mapped to "${toolName}" failed via "${backendPath}":`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  private async fetchResult<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await this.fetchWithAuth(path, init);
+    const body = await response.json().catch((): QtbResult<T> | null => null);
+    if (!response.ok || !body || body.code !== 200) {
+      throw new Error(body?.msg || `QingShu managed request failed: ${response.status}`);
+    }
+    return body.data as T;
+  }
+
+  private async fetchWithAuth(path: string, init?: RequestInit): Promise<Response> {
+    const baseUrl = this.deps.resolveApiBaseUrl();
+    if (!baseUrl) {
+      throw new Error('QTB auth API base URL is not configured');
+    }
+
+    const adapter = this.deps.getAuthAdapter();
+    const accessToken = await adapter.getAccessToken();
+    if (!accessToken) {
+      throw new Error('QingShu auth token is not available');
+    }
+
+    const execute = async (token: string): Promise<Response> =>
+      this.deps.fetchFn(`${baseUrl}${path}`, {
+        ...init,
+        headers: buildAuthHeaders(token, init?.headers),
+      });
+
+    console.debug(`[QingShuManaged] sending authenticated request to "${path}"`);
+    let response = await execute(accessToken);
+    if (response.status !== 401) {
+      console.debug(`[QingShuManaged] request to "${path}" returned status=${response.status}`);
+      return response;
+    }
+
+    console.warn(`[QingShuManaged] request to "${path}" returned 401, attempting token refresh`);
+    const refreshed = await adapter.refreshToken();
+    if (!refreshed.success || !refreshed.accessToken) {
+      console.warn(`[QingShuManaged] token refresh failed for "${path}", keeping original 401 response`);
+      return response;
+    }
+
+    response = await execute(refreshed.accessToken);
+    console.debug(`[QingShuManaged] retry request to "${path}" returned status=${response.status}`);
+    return response;
+  }
+
+  private loadPersistedSnapshot(): QingShuManagedCatalogSnapshot {
+    const raw = this.deps.store?.get<QingShuManagedCatalogSnapshot>(QINGSHU_MANAGED_CATALOG_SNAPSHOT_KEY);
+    if (!raw) {
+      return emptySnapshot();
+    }
+
+    return {
+      catalogVersion: typeof raw.catalogVersion === 'string' ? raw.catalogVersion : '',
+      syncedAt: typeof raw.syncedAt === 'number' ? raw.syncedAt : 0,
+      agents: Array.isArray(raw.agents) ? raw.agents : [],
+      skills: Array.isArray(raw.skills) ? raw.skills : [],
+      tools: Array.isArray(raw.tools) ? raw.tools : [],
+    };
+  }
+
+  private persistSnapshot(): void {
+    this.deps.store?.set(QINGSHU_MANAGED_CATALOG_SNAPSHOT_KEY, this.snapshot);
+  }
+}

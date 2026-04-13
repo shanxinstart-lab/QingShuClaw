@@ -5,6 +5,9 @@ import {
 
 type GatewayHistoryRole = 'user' | 'assistant' | 'system';
 
+const CURRENT_USER_REQUEST_MARKER = '[Current user request]';
+const METADATA_PREFIX_RE = /^Sender \(untrusted metadata\):\s*```json\s*\{[^}]*}\s*```\s*/s;
+
 export interface GatewayHistoryEntry {
   role: GatewayHistoryRole;
   text: string;
@@ -76,6 +79,25 @@ export const extractGatewayMessageText = (message: unknown): string => {
   return '';
 };
 
+export const normalizeGatewayHistoryText = (
+  role: GatewayHistoryRole,
+  text: string,
+): string => {
+  const normalized = text.trim().replace(METADATA_PREFIX_RE, '').trim();
+  if (role !== 'user') {
+    return normalized;
+  }
+
+  const requestMarkerIndex = normalized.lastIndexOf(CURRENT_USER_REQUEST_MARKER);
+  if (requestMarkerIndex === -1) {
+    return normalized;
+  }
+
+  return normalized
+    .slice(requestMarkerIndex + CURRENT_USER_REQUEST_MARKER.length)
+    .trim();
+};
+
 export const buildScheduledReminderSystemMessage = (text: string): string | null => {
   const parsed = parseScheduledReminderPrompt(text);
   if (!parsed) {
@@ -95,7 +117,7 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
     return null;
   }
 
-  const text = extractGatewayMessageText(message).trim();
+  const text = normalizeGatewayHistoryText(role, extractGatewayMessageText(message));
   if (!text) {
     return null;
   }
