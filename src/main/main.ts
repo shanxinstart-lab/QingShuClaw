@@ -1019,15 +1019,13 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
 const syncOpenClawConfig = async (
   options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
 ): Promise<{ success: boolean; changed: boolean; status?: OpenClawEngineStatus; error?: string }> => {
-  console.log(`[OpenClaw] syncOpenClawConfig: called (reason: ${options.reason}, restart gateway if running: ${options.restartGatewayIfRunning ? 'yes' : 'no'})`);
-  // Always write openclaw.json immediately. OpenClaw's built-in file-watcher
-  // will detect the change and gracefully reload (waiting for active tasks to
-  // complete before restarting, up to a 30s drain timeout).  Previous versions
-  // deferred the file write when active workloads existed, but that caused
-  // stale config (e.g. model switches not taking effect for new sessions).
+  const D = '[GW-RESTART-DIAG]';
+  console.log(`${D} ──── syncOpenClawConfig START reason=${options.reason} restartIfRunning=${!!options.restartGatewayIfRunning}`);
 
   const syncResult = getOpenClawConfigSync().sync(options.reason);
+  console.log(`${D} sync() ok=${syncResult.ok} changed=${syncResult.changed} bindingsChanged=${!!syncResult.bindingsChanged}`);
   if (!syncResult.ok) {
+    console.log(`${D} sync FAILED: ${syncResult.error}`);
     const status = getOpenClawEngineManager().setExternalError(
       `OpenClaw config sync failed: ${syncResult.error || 'unknown error'}`,
     );
@@ -1039,29 +1037,47 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // After every successful config sync, merge enterprise openclaw.json
-  // fields into the generated runtime config. Enterprise values win.
   try {
     mergeEnterpriseOpenclawConfig(getOpenClawEngineManager().getConfigPath());
   } catch { /* non-critical */ }
 
-  // Update secret env vars so the gateway process receives the latest
-  // plaintext credentials via environment variables (openclaw.json only
-  // contains ${VAR} placeholders, never plaintext secrets).
   const nextSecretEnvVars = getOpenClawConfigSync().collectSecretEnvVars();
   const prevSecretEnvVars = getOpenClawEngineManager().getSecretEnvVars();
   const secretEnvVarsChanged = JSON.stringify(nextSecretEnvVars) !== JSON.stringify(prevSecretEnvVars);
   getOpenClawEngineManager().setSecretEnvVars(nextSecretEnvVars);
 
-  // When secret env vars change, the running gateway must be restarted even if
-  // the caller didn't request it — the ${VAR} placeholders in openclaw.json
-  // resolve from the process environment which is fixed at spawn time.
-  // When agent bindings change, a hard restart is also needed because channel
-  // plugins capture their config at startup and don't hot-reload bindings.
+  // Diagnostic: print which env vars changed
+  if (secretEnvVarsChanged) {
+    const allKeys = new Set([...Object.keys(prevSecretEnvVars), ...Object.keys(nextSecretEnvVars)]);
+    const added: string[] = [];
+    const removed: string[] = [];
+    const modified: string[] = [];
+    for (const k of allKeys) {
+      const prev = prevSecretEnvVars[k];
+      const next = nextSecretEnvVars[k];
+      if (prev === next) continue;
+      if (prev === undefined) { added.push(k); }
+      else if (next === undefined) { removed.push(k); }
+      else { modified.push(k); }
+    }
+    console.log(`${D} SECRET ENV VARS CHANGED!`);
+    if (added.length) console.log(`${D}   added: ${added.join(', ')}`);
+    if (removed.length) console.log(`${D}   removed: ${removed.join(', ')}`);
+    for (const k of modified) {
+      const p = (prevSecretEnvVars[k] || '').slice(0, 12);
+      const n = (nextSecretEnvVars[k] || '').slice(0, 12);
+      console.log(`${D}   modified: ${k} prev=${p}… next=${n}…`);
+    }
+  } else {
+    console.log(`${D} secretEnvVars unchanged (${Object.keys(nextSecretEnvVars).length} keys)`);
+  }
+
   const needsHardRestart = secretEnvVarsChanged || syncResult.bindingsChanged || (syncResult.changed && options.restartGatewayIfRunning);
 
+  console.log(`${D} needsHardRestart=${needsHardRestart} (envChanged=${secretEnvVarsChanged} bindingsChanged=${!!syncResult.bindingsChanged} configChanged=${syncResult.changed} restartFlag=${!!options.restartGatewayIfRunning})`);
+
   if (!needsHardRestart) {
-    // Config file was written; OpenClaw's file-watcher will handle the reload.
+    console.log(`${D} ──── NO RESTART, hot-reload only. reason=${options.reason}`);
     return {
       success: true,
       changed: syncResult.changed,
@@ -1071,6 +1087,7 @@ const syncOpenClawConfig = async (
   const manager = getOpenClawEngineManager();
   const status = manager.getStatus();
   if (status.phase !== 'running') {
+    console.log(`${D} ──── RESTART NEEDED but gateway not running (phase=${status.phase}), skipping. reason=${options.reason}`);
     return {
       success: true,
       changed: true,
@@ -1078,10 +1095,8 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // Hard restart required (e.g. secret env vars changed) but active workloads
-  // exist — defer the restart to avoid killing in-flight sessions.
   if (hasActiveGatewayWorkloads()) {
-    console.log(`[OpenClaw] syncOpenClawConfig: deferring hard restart because active workloads exist (reason: ${options.reason})`);
+    console.log(`${D} ──── RESTART DEFERRED (active workloads). reason=${options.reason}`);
     scheduleDeferredGatewayRestart(options.reason);
     return {
       success: true,
@@ -1090,11 +1105,8 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // Tear down the runtime adapter's WebSocket client BEFORE killing the gateway process.
-  // This prevents a race where the old client's async `onClose` fires after a new client
-  // has already been created, destroying the new connection.
+  console.log(`${D} ──── HARD RESTART EXECUTING. reason=${options.reason}`);
   if (openClawRuntimeAdapter) {
-    console.log(`[OpenClaw] syncOpenClawConfig: pre-emptively disconnecting runtime adapter before gateway restart (reason: ${options.reason})`);
     openClawRuntimeAdapter.disconnectGatewayClient();
   }
 

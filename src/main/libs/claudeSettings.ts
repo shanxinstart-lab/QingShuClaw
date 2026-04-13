@@ -518,6 +518,9 @@ export function resolveAllProviderApiKeys(): Record<string, string> {
       result[envName] = apiKey || 'sk-lobsterai-local';
     }
 
+    const D = '[GW-RESTART-DIAG]';
+    console.log(`${D} resolveAllProviderApiKeys: hasServer=${!!result.SERVER} providers=[${Object.keys(result).filter(k => k !== 'SERVER').join(',')}]`);
+
     return result;
   }
   

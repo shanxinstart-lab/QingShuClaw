@@ -885,12 +885,18 @@ export class OpenClawConfigSync {
     // restarts — creating a restart loop.
     // See: openclaw/openclaw#58678, #33310
     let existingGateway: Record<string, unknown> = {};
+    let existingPlugins: Record<string, unknown> = {};
     try {
       const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       existingGateway = (existing.gateway ?? {}) as Record<string, unknown>;
+      existingPlugins = (existing.plugins ?? {}) as Record<string, unknown>;
     } catch {
       // First run or corrupt file — nothing to preserve.
     }
+    const existingPluginEntries = (existingPlugins.entries ?? {}) as Record<string, unknown>;
+    console.log('[GW-RESTART-DIAG] existingGateway keys:', Object.keys(existingGateway).sort().join(',') || '(empty)');
+    console.log('[GW-RESTART-DIAG] existingPlugins keys:', Object.keys(existingPlugins).sort().join(',') || '(empty)');
+    console.log('[GW-RESTART-DIAG] existingPluginEntries keys:', Object.keys(existingPluginEntries).sort().join(',') || '(empty)');
 
     // Detect if any provider uses Qwen/Aliyun DashScope URLs — OpenClaw auto-injects
     // qwen-portal-auth plugin for these, so we must declare it to prevent config diff loops.
@@ -1420,6 +1426,35 @@ export class OpenClawConfigSync {
     const configChanged = currentContent !== nextContent;
 
     if (configChanged) {
+      // Diagnostic: diff gateway and plugins sections to identify what triggers OpenClaw restart
+      try {
+        const currentObj = currentContent ? JSON.parse(currentContent) : {};
+        const nextObj = JSON.parse(nextContent);
+        const curGw = JSON.stringify(currentObj.gateway ?? {});
+        const nxtGw = JSON.stringify(nextObj.gateway ?? {});
+        const curPl = JSON.stringify(currentObj.plugins ?? {});
+        const nxtPl = JSON.stringify(nextObj.plugins ?? {});
+        if (curGw !== nxtGw) {
+          console.log('[GW-RESTART-DIAG] gateway DIFF:');
+          console.log('[GW-RESTART-DIAG]   old gateway keys:', Object.keys(currentObj.gateway ?? {}).sort().join(','));
+          console.log('[GW-RESTART-DIAG]   new gateway keys:', Object.keys(nextObj.gateway ?? {}).sort().join(','));
+          console.log('[GW-RESTART-DIAG]   old gateway:', curGw.slice(0, 500));
+          console.log('[GW-RESTART-DIAG]   new gateway:', nxtGw.slice(0, 500));
+        } else {
+          console.log('[GW-RESTART-DIAG] gateway section UNCHANGED');
+        }
+        if (curPl !== nxtPl) {
+          console.log('[GW-RESTART-DIAG] plugins DIFF:');
+          console.log('[GW-RESTART-DIAG]   old plugin entry keys:', Object.keys((currentObj.plugins?.entries) ?? {}).sort().join(','));
+          console.log('[GW-RESTART-DIAG]   new plugin entry keys:', Object.keys((nextObj.plugins?.entries) ?? {}).sort().join(','));
+        } else {
+          console.log('[GW-RESTART-DIAG] plugins section UNCHANGED');
+        }
+        // Check which top-level keys actually changed
+        const allKeys = new Set([...Object.keys(currentObj), ...Object.keys(nextObj)]);
+        const changedKeys = [...allKeys].filter(k => JSON.stringify(currentObj[k]) !== JSON.stringify(nextObj[k]));
+        console.log('[GW-RESTART-DIAG] top-level changed keys:', changedKeys.join(',') || '(none)');
+      } catch { /* ignore parse errors in diag */ }
       try {
         ensureDir(path.dirname(configPath));
         const tmpPath = `${configPath}.tmp-${Date.now()}`;
@@ -1570,6 +1605,13 @@ export class OpenClawConfigSync {
     if (nimConfig?.enabled && nimConfig.token) {
       env.LOBSTER_NIM_TOKEN = nimConfig.token;
     }
+
+    const D = '[GW-RESTART-DIAG]';
+    const keysSummary = Object.keys(env).sort().map(k => {
+      const v = env[k];
+      return `${k}=${v.length > 16 ? v.slice(0, 12) + '…(' + v.length + ')' : v}`;
+    });
+    console.log(`${D} collectSecretEnvVars: ${Object.keys(env).length} keys: ${keysSummary.join(', ')}`);
 
     return env;
   }
