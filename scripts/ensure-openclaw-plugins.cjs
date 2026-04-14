@@ -42,6 +42,47 @@ function copyDirRecursive(src, dest) {
   fs.cpSync(src, dest, { recursive: true, force: true });
 }
 
+/**
+ * Fix broken symlinks in node_modules/.bin/ directories.
+ *
+ * npm creates absolute symlinks during `openclaw plugins install` that point
+ * into the temporary staging directory.  After copying out of staging those
+ * symlinks are broken.  This rewrites each one to a correct relative path
+ * based on the symlink target structure (../pkgName/relative/to/bin).
+ */
+function fixBinSymlinks(baseDir) {
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isSymbolicLink()) {
+        const binDir = path.dirname(full);
+        if (path.basename(binDir) !== '.bin') continue;
+        const target = fs.readlinkSync(full);
+        if (!path.isAbsolute(target)) continue;
+        // Extract the path relative to node_modules/ from the absolute target.
+        // e.g. "/tmp/.../extensions/moltbot-popo/node_modules/qrcode/bin/qrcode"
+        //   -> "qrcode/bin/qrcode"
+        const nmSegment = '/node_modules/';
+        const nmIdx = target.lastIndexOf(nmSegment);
+        if (nmIdx === -1) continue;
+        const relToNm = target.slice(nmIdx + nmSegment.length); // "qrcode/bin/qrcode"
+        const newTarget = path.join('..', relToNm);              // "../qrcode/bin/qrcode"
+        try {
+          fs.unlinkSync(full);
+          fs.symlinkSync(newTarget, full);
+        } catch {
+          // best-effort; signing can still proceed if the symlink is removed
+        }
+      }
+    }
+  };
+  walk(baseDir);
+}
+
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -253,6 +294,7 @@ for (const plugin of plugins) {
         }
         ensureDir(path.dirname(cacheDir));
         copyDirRecursive(actualDir, cacheDir);
+        fixBinSymlinks(cacheDir);
       } else {
         // Replace cache dir with new content
         if (fs.existsSync(cacheDir)) {
@@ -260,6 +302,7 @@ for (const plugin of plugins) {
         }
         ensureDir(path.dirname(cacheDir));
         copyDirRecursive(installedDir, cacheDir);
+        fixBinSymlinks(cacheDir);
       }
 
       // Write install info for cache validation

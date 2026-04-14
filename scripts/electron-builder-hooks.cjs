@@ -332,72 +332,39 @@ function applyMacIconFix(appPath) {
 }
 
 /**
- * Remove broken symlinks from a directory recursively.
- * This fixes macOS code signing failures caused by dangling symlinks in node_modules/.bin
+ * Remove all node_modules/.bin directories from the cfmind tree.
+ *
+ * macOS codesign rejects symlinks inside app bundles (even valid relative ones).
+ * .bin/ directories contain only CLI wrapper symlinks that are never used at
+ * runtime, so removing them entirely is safe and fixes signing.
  */
-function removeBrokenSymlinks(dir) {
-  if (!existsSync(dir)) return 0;
+function removeAllBinDirsInCfmind(appOutDir) {
+  const cfmindDir = path.join(appOutDir, 'Contents', 'Resources', 'cfmind');
 
-  let removedCount = 0;
-  const entries = readdirSync(dir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-
-    try {
-      if (entry.isSymbolicLink()) {
-        // Check if symlink target exists
-        try {
-          statSync(fullPath); // follows symlink
-        } catch {
-          // Symlink is broken - remove it
-          rmSync(fullPath, { force: true });
-          removedCount++;
-        }
-      } else if (entry.isDirectory()) {
-        removedCount += removeBrokenSymlinks(fullPath);
-      }
-    } catch (err) {
-      // Skip entries we can't access
-    }
-  }
-
-  return removedCount;
-}
-
-/**
- * Clean up broken symlinks in cfmind/extensions to prevent macOS signing failures.
- */
-function cleanupBrokenSymlinksInExtensions(appOutDir) {
-  const extensionsDir = path.join(appOutDir, 'Contents', 'Resources', 'cfmind', 'extensions');
-
-  if (!existsSync(extensionsDir)) {
+  if (!existsSync(cfmindDir)) {
     return;
   }
 
-  console.log('[electron-builder-hooks] Cleaning up broken symlinks in cfmind/extensions...');
+  console.log('[electron-builder-hooks] Removing node_modules/.bin directories from cfmind...');
 
-  let totalRemoved = 0;
-  const extensionEntries = readdirSync(extensionsDir, { withFileTypes: true });
-
-  for (const entry of extensionEntries) {
-    if (!entry.isDirectory()) continue;
-
-    const nodeModulesBin = path.join(extensionsDir, entry.name, 'node_modules', '.bin');
-    if (existsSync(nodeModulesBin)) {
-      const removed = removeBrokenSymlinks(nodeModulesBin);
-      if (removed > 0) {
-        console.log(`[electron-builder-hooks]   ${entry.name}: removed ${removed} broken symlink(s)`);
-        totalRemoved += removed;
+  let removedCount = 0;
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (!entry.isDirectory()) continue;
+      if (entry.name === '.bin' && path.basename(path.dirname(full)) === 'node_modules') {
+        rmSync(full, { recursive: true, force: true });
+        removedCount++;
+        continue;
       }
+      walk(full);
     }
-  }
+  };
+  walk(cfmindDir);
 
-  if (totalRemoved > 0) {
-    console.log(`[electron-builder-hooks] ✓ Removed ${totalRemoved} broken symlink(s) total`);
-  } else {
-    console.log('[electron-builder-hooks] ✓ No broken symlinks found');
-  }
+  console.log(`[electron-builder-hooks] ✓ Removed ${removedCount} .bin director${removedCount === 1 ? 'y' : 'ies'} from cfmind`);
 }
 
 /**
@@ -551,8 +518,8 @@ async function afterPack(context) {
     const appPath = path.join(context.appOutDir, `${appName}.app`);
 
     if (existsSync(appPath)) {
-      // Clean up broken symlinks before signing to prevent ENOENT errors
-      cleanupBrokenSymlinksInExtensions(appPath);
+      // Remove all .bin directories (symlinks) before signing to prevent codesign failures
+      removeAllBinDirsInCfmind(appPath);
       applyMacIconFix(appPath);
     } else {
       console.warn(`[electron-builder-hooks] App not found at ${appPath}, skipping icon fix`);
