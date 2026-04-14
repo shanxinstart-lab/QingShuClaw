@@ -24,6 +24,8 @@ export interface AppConfig {
   language: 'zh' | 'en';
   // 是否使用系统代理
   useSystemProxy: boolean;
+  // 是否启用 SQLite 自动备份与恢复
+  sqliteAutoBackupEnabled?: boolean;
   // 语言初始化标记 (用于判断是否是首次启动)
   language_initialized?: boolean;
   // 应用配置
@@ -77,6 +79,7 @@ export const defaultConfig: AppConfig = {
   theme: 'system',
   language: 'zh',
   useSystemProxy: false,
+  sqliteAutoBackupEnabled: false,
   app: {
     port: 3000,
     isDevelopment: process.env.NODE_ENV === 'development',

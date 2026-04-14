@@ -77,6 +77,7 @@ import {
 } from './libs/openclawMemoryFile';
 import { startOpenClawTokenProxy, stopOpenClawTokenProxy } from './libs/openclawTokenProxy';
 import { ensurePythonRuntimeReady } from './libs/pythonRuntime';
+import { SqliteBackupManager } from './libs/sqliteBackup/sqliteBackupManager';
 import {
   applySystemProxyEnv,
   resolveSystemProxyUrl,
@@ -735,6 +736,7 @@ let mcpBridgeSecret: string = require('crypto').randomUUID();
 let mcpBridgeStartPromise: Promise<McpBridgeConfig | null> | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
+let sqliteBackupManager: SqliteBackupManager | null = null;
 let openClawEngineManager: OpenClawEngineManager | null = null;
 let openClawConfigSync: OpenClawConfigSync | null = null;
 let openClawBootstrapPromise: Promise<OpenClawEngineStatus> | null = null;
@@ -764,10 +766,10 @@ const initStore = async (): Promise<SqliteStore> => {
       throw new Error('Store accessed before app is ready.');
     }
     // better-sqlite3 opens the database synchronously, so Promise.resolve() resolves
-    // immediately. The timeout acts as a safety net for future async changes or
-    // unexpected OS-level blocking (e.g., file lock on startup).
+    // immediately. The timeout acts as a safety net for unexpected OS-level
+    // blocking during store initialization and recovery.
     storeInitPromise = Promise.race([
-      Promise.resolve(SqliteStore.create(app.getPath('userData'))),
+      SqliteStore.create(app.getPath('userData')),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Store initialization timed out after 15s')), 15_000)
       ),
@@ -1754,10 +1756,17 @@ type AppConfigSettings = {
   theme?: string;
   language?: string;
   useSystemProxy?: boolean;
+  sqliteAutoBackupEnabled?: boolean;
 };
 
 const getUseSystemProxyFromConfig = (config?: { useSystemProxy?: boolean }): boolean => {
   return config?.useSystemProxy === true;
+};
+
+const getSqliteAutoBackupEnabledFromConfig = (
+  config?: { sqliteAutoBackupEnabled?: boolean },
+): boolean => {
+  return config?.sqliteAutoBackupEnabled === true;
 };
 
 const resolveThemeFromConfig = (config?: AppConfigSettings): 'light' | 'dark' => {
@@ -4981,6 +4990,8 @@ if (!gotTheLock) {
       // CronJobService may not have been initialized — safe to ignore.
     }
 
+    sqliteBackupManager?.stopPeriodicBackupLoop();
+
     // Close the SQLite database to flush the WAL and release the file lock.
     try {
       getStore().close();
@@ -5060,6 +5071,22 @@ if (!gotTheLock) {
     store = await initStore();
     console.log('[Main] initApp: store initialized');
     refreshEndpointsTestMode(store);
+    sqliteBackupManager = new SqliteBackupManager(app.getPath('userData'));
+
+    const startSqliteBackupLoop = async (): Promise<void> => {
+      if (!sqliteBackupManager) return;
+      await sqliteBackupManager.startPeriodicBackupLoop(() => getStore().getDatabase());
+    };
+
+    const stopSqliteBackupLoop = (): void => {
+      sqliteBackupManager?.stopPeriodicBackupLoop();
+    };
+
+    if (getSqliteAutoBackupEnabledFromConfig(getStore().get<AppConfigSettings>('app_config'))) {
+      await startSqliteBackupLoop().catch((error) => {
+        console.error('[SqliteBackup] Failed to start periodic backup loop:', error);
+      });
+    }
 
     // Defensive recovery: app may be force-closed during execution and leave
     // stale running flags in DB. Normalize them on startup.
@@ -5419,6 +5446,9 @@ if (!gotTheLock) {
 
     let lastLanguage = getStore().get<AppConfigSettings>('app_config')?.language;
     let lastUseSystemProxy = getUseSystemProxyFromConfig(getStore().get<AppConfigSettings>('app_config'));
+    let lastSqliteAutoBackupEnabled = getSqliteAutoBackupEnabledFromConfig(
+      getStore().get<AppConfigSettings>('app_config'),
+    );
     getStore().onDidChange<AppConfigSettings>('app_config', (newConfig, oldConfig) => {
       updateTitleBarOverlay();
       // 仅在语言变更时刷新托盘菜单文本
@@ -5441,6 +5471,21 @@ if (!gotTheLock) {
         });
       }
       lastUseSystemProxy = currentUseSystemProxy;
+
+      const previousSqliteAutoBackupEnabled = oldConfig
+        ? getSqliteAutoBackupEnabledFromConfig(oldConfig)
+        : lastSqliteAutoBackupEnabled;
+      const currentSqliteAutoBackupEnabled = getSqliteAutoBackupEnabledFromConfig(newConfig);
+      if (currentSqliteAutoBackupEnabled !== previousSqliteAutoBackupEnabled) {
+        if (currentSqliteAutoBackupEnabled) {
+          void startSqliteBackupLoop().catch((error) => {
+            console.error('[SqliteBackup] Failed to enable periodic backup loop:', error);
+          });
+        } else {
+          stopSqliteBackupLoop();
+        }
+      }
+      lastSqliteAutoBackupEnabled = currentSqliteAutoBackupEnabled;
     });
 
     // 在 macOS 上，当点击 dock 图标时显示已有窗口或重新创建

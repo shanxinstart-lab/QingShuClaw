@@ -528,6 +528,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [language, setLanguage] = useState<LanguageType>('zh');
   const [autoLaunch, setAutoLaunchState] = useState(false);
   const [useSystemProxy, setUseSystemProxy] = useState(false);
+  const [sqliteAutoBackupEnabled, setSqliteAutoBackupEnabled] = useState(false);
   const [isUpdatingAutoLaunch, setIsUpdatingAutoLaunch] = useState(false);
   const [preventSleep, setPreventSleepState] = useState(false);
   const [isUpdatingPreventSleep, setIsUpdatingPreventSleep] = useState(false);
@@ -794,6 +795,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       setTheme(config.theme);
       setLanguage(config.language);
       setUseSystemProxy(config.useSystemProxy ?? false);
+      setSqliteAutoBackupEnabled(config.sqliteAutoBackupEnabled === true);
       const savedTestMode = config.app?.testMode ?? false;
       setTestMode(savedTestMode);
       if (savedTestMode) setTestModeUnlocked(true);
@@ -1682,6 +1684,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         theme,
         language,
         useSystemProxy,
+        sqliteAutoBackupEnabled,
         shortcuts,
         app: {
           ...configService.getConfig().app,
@@ -2564,6 +2567,36 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
                       useSystemProxy ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </label>
+            </div>
+
+            <div>
+              <h4 className="text-sm font-medium text-foreground mb-3">
+                {i18nService.t('sqliteAutoBackupEnabled')}
+              </h4>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-sm text-secondary">
+                  {i18nService.t('sqliteAutoBackupEnabledDescription')}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={sqliteAutoBackupEnabled}
+                  onClick={() => {
+                    setSqliteAutoBackupEnabled((prev) => !prev);
+                  }}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                    sqliteAutoBackupEnabled
+                      ? 'bg-primary'
+                      : 'bg-gray-300 dark:bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      sqliteAutoBackupEnabled ? 'translate-x-6' : 'translate-x-1'
                     }`}
                   />
                 </button>
