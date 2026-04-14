@@ -6,7 +6,7 @@ import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt
 import { OpenClawApi as OpenClawApiConst, OpenClawProviderId, ProviderName } from '../../shared/providers';
 import type { Agent, CoworkConfig, CoworkExecutionMode } from '../coworkStore';
 import type { DiscordOpenClawConfig, IMSettings, TelegramOpenClawConfig } from '../im/types';
-import type { DingTalkInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig, NimConfig, PopoOpenClawConfig, QQInstanceConfig, WecomOpenClawConfig, WeixinOpenClawConfig } from '../im/types';
+import type { DingTalkInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig, NimConfig, PopoOpenClawConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
 import { OpenClawSessionKeepAlive } from '../openclawSessionPolicy/constants';
 import { buildOpenClawSessionConfig } from '../openclawSessionPolicy/store';
 import { getAllServerModelMetadata, resolveAllEnabledProviderConfigs, resolveAllProviderApiKeys, resolveRawApiConfig } from './claudeSettings';
@@ -689,7 +689,7 @@ type OpenClawConfigSyncDeps = {
   getDingTalkInstances: () => DingTalkInstanceConfig[];
   getFeishuInstances: () => FeishuInstanceConfig[];
   getQQInstances: () => QQInstanceConfig[];
-  getWecomConfig: () => WecomOpenClawConfig | null;
+  getWecomInstances: () => WecomInstanceConfig[];
   getPopoConfig: () => PopoOpenClawConfig | null;
   getNimConfig: () => NimConfig | null;
   getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
@@ -711,7 +711,7 @@ export class OpenClawConfigSync {
   private readonly getDingTalkInstances: () => DingTalkInstanceConfig[];
   private readonly getFeishuInstances: () => FeishuInstanceConfig[];
   private readonly getQQInstances: () => QQInstanceConfig[];
-  private readonly getWecomConfig: () => WecomOpenClawConfig | null;
+  private readonly getWecomInstances: () => WecomInstanceConfig[];
   private readonly getPopoConfig: () => PopoOpenClawConfig | null;
   private readonly getNimConfig: () => NimConfig | null;
   private readonly getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
@@ -734,7 +734,7 @@ export class OpenClawConfigSync {
     this.getDingTalkInstances = deps.getDingTalkInstances;
     this.getFeishuInstances = deps.getFeishuInstances;
     this.getQQInstances = deps.getQQInstances;
-    this.getWecomConfig = deps.getWecomConfig;
+    this.getWecomInstances = deps.getWecomInstances;
     this.getPopoConfig = deps.getPopoConfig;
     this.getNimConfig = deps.getNimConfig;
     this.getNeteaseBeeChanConfig = deps.getNeteaseBeeChanConfig;
@@ -908,7 +908,7 @@ export class OpenClawConfigSync {
 
     const qqInstances = this.getQQInstances();
 
-    const wecomConfig = this.getWecomConfig();
+    const wecomInstances = this.getWecomInstances();
 
     const popoConfig = this.getPopoConfig();
 
@@ -1014,7 +1014,7 @@ export class OpenClawConfigSync {
                 if (id === 'dingtalk') return dingTalkInstances.some(i => i.enabled && i.clientId);
                 if (id === 'openclaw-lark') return feishuInstances.some(i => i.enabled && i.appId);
                 if (id === 'openclaw-qqbot') return qqInstances.some(i => i.enabled && i.appId);
-                if (id === 'wecom-openclaw-plugin') return !!(wecomConfig?.enabled && wecomConfig.botId);
+                if (id === 'wecom-openclaw-plugin') return wecomInstances.some(i => i.enabled && i.botId);
                 if (id === 'moltbot-popo') return !!(popoConfig?.enabled && popoConfig.appKey);
                 if (id === 'nim') return !!(nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token);
                 if (id === 'openclaw-netease-bee') return !!(neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret);
@@ -1297,27 +1297,34 @@ export class OpenClawConfigSync {
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), qqbot: { accounts } };
     }
 
-    // Sync WeCom OpenClaw channel config (via wecom-openclaw-plugin)
-    if (wecomConfig?.enabled && wecomConfig.botId) {
-      const wecomChannel: Record<string, unknown> = {
-        enabled: true,
-        botId: wecomConfig.botId,
-        secret: '${LOBSTER_WECOM_SECRET}',
-        dmPolicy: wecomConfig.dmPolicy || 'open',
-        allowFrom: (() => {
-          const ids = wecomConfig.allowFrom?.length ? [...wecomConfig.allowFrom] : [];
-          if (wecomConfig.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groupPolicy: wecomConfig.groupPolicy || 'open',
-        groupAllowFrom: (() => {
-          const ids = wecomConfig.groupAllowFrom?.length ? [...wecomConfig.groupAllowFrom] : [];
-          if (wecomConfig.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        sendThinkingMessage: wecomConfig.sendThinkingMessage ?? true,
-      };
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: wecomChannel };
+    // Sync WeCom OpenClaw channel config (via wecom-openclaw-plugin) — multi-instance via accounts
+    const enabledWecomInstances = wecomInstances.filter(i => i.enabled && i.botId);
+    if (enabledWecomInstances.length > 0) {
+      const accounts: Record<string, unknown> = {};
+      for (let idx = 0; idx < enabledWecomInstances.length; idx++) {
+        const inst = enabledWecomInstances[idx];
+        const secretVar = idx === 0 ? 'LOBSTER_WECOM_SECRET' : `LOBSTER_WECOM_SECRET_${idx}`;
+        accounts[inst.instanceId.slice(0, 8)] = {
+          enabled: true,
+          name: inst.instanceName,
+          botId: inst.botId,
+          secret: `\${${secretVar}}`,
+          dmPolicy: inst.dmPolicy || 'open',
+          allowFrom: (() => {
+            const ids = inst.allowFrom?.length ? [...inst.allowFrom] : [];
+            if (inst.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groupPolicy: inst.groupPolicy || 'open',
+          groupAllowFrom: (() => {
+            const ids = inst.groupAllowFrom?.length ? [...inst.groupAllowFrom] : [];
+            if (inst.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          sendThinkingMessage: inst.sendThinkingMessage ?? true,
+        };
+      }
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: { accounts } };
     }
 
     // Sync POPO OpenClaw channel config (via moltbot-popo plugin)
@@ -1576,10 +1583,15 @@ export class OpenClawConfigSync {
       }
     }
 
-    // WeCom
-    const wecomConfig = this.getWecomConfig();
-    if (wecomConfig?.enabled && wecomConfig.secret) {
-      env.LOBSTER_WECOM_SECRET = wecomConfig.secret;
+    // WeCom — per-instance secrets (must match sync() indexing: enabled instances only)
+    const wecomInstances = this.getWecomInstances();
+    const enabledWecom = wecomInstances.filter(i => i.enabled && i.secret);
+    for (let idx = 0; idx < enabledWecom.length; idx++) {
+      if (idx === 0) {
+        env.LOBSTER_WECOM_SECRET = enabledWecom[idx].secret;
+      } else {
+        env[`LOBSTER_WECOM_SECRET_${idx}`] = enabledWecom[idx].secret;
+      }
     }
 
     // POPO
@@ -1978,6 +1990,7 @@ export class OpenClawConfigSync {
       dingtalk: { channel: 'dingtalk', getInstances: () => this.getDingTalkInstances() },
       feishu: { channel: 'feishu', getInstances: () => this.getFeishuInstances() },
       qq: { channel: 'qqbot', getInstances: () => this.getQQInstances() },
+      wecom: { channel: 'wecom', getInstances: () => this.getWecomInstances() },
     };
 
     for (const [platform, { channel, getInstances }] of Object.entries(multiInstanceChannels)) {
@@ -2010,7 +2023,6 @@ export class OpenClawConfigSync {
     const singleInstanceChannels: Array<{ getter: () => { enabled: boolean } | null; channel: string; platform: string }> = [
       { getter: () => this.getTelegramOpenClawConfig?.() ?? null, channel: 'telegram', platform: 'telegram' },
       { getter: () => this.getDiscordOpenClawConfig?.() ?? null, channel: 'discord', platform: 'discord' },
-      { getter: () => this.getWecomConfig(), channel: 'wecom', platform: 'wecom' },
       { getter: () => this.getPopoConfig(), channel: 'moltbot-popo', platform: 'popo' },
       { getter: () => this.getNimConfig(), channel: 'nim', platform: 'nim' },
       { getter: () => this.getNeteaseBeeChanConfig(), channel: 'netease-bee', platform: 'netease-bee' },

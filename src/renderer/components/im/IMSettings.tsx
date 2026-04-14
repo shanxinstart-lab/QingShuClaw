@@ -9,13 +9,14 @@ import { SignalIcon, XMarkIcon, CheckCircleIcon, XCircleIcon, ExclamationTriangl
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import { RootState } from '../../store';
 import { imService } from '../../services/im';
-import { setDingTalkConfig, setDingTalkInstanceConfig, setFeishuConfig, setFeishuInstanceConfig, setTelegramOpenClawConfig, setQQConfig, setQQInstanceConfig, setDiscordConfig, setNimConfig, setNeteaseBeeChanConfig, setWecomConfig, setWeixinConfig, setPopoConfig, clearError } from '../../store/slices/imSlice';
+import { setDingTalkConfig, setDingTalkInstanceConfig, setFeishuConfig, setFeishuInstanceConfig, setTelegramOpenClawConfig, setQQConfig, setQQInstanceConfig, setDiscordConfig, setNimConfig, setNeteaseBeeChanConfig, setWecomConfig, setWecomInstanceConfig, setWeixinConfig, setPopoConfig, clearError } from '../../store/slices/imSlice';
 import { i18nService } from '../../services/i18n';
-import type { IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, TelegramOpenClawConfig, DiscordOpenClawConfig, WecomOpenClawConfig, PopoOpenClawConfig } from '../../types/im';
-import { MAX_QQ_INSTANCES, MAX_FEISHU_INSTANCES, MAX_DINGTALK_INSTANCES } from '../../types/im';
+import type { IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, TelegramOpenClawConfig, DiscordOpenClawConfig, PopoOpenClawConfig } from '../../types/im';
+import { MAX_QQ_INSTANCES, MAX_FEISHU_INSTANCES, MAX_DINGTALK_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
 import QQInstanceSettings from './QQInstanceSettings';
 import FeishuInstanceSettings from './FeishuInstanceSettings';
 import DingTalkInstanceSettings from './DingTalkInstanceSettings';
+import WecomInstanceSettings from './WecomInstanceSettings';
 import { PlatformRegistry } from '@shared/platform';
 import type { Platform } from '@shared/platform';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
@@ -111,6 +112,8 @@ const IMSettings: React.FC = () => {
   const [feishuExpanded, setFeishuExpanded] = useState(false);
   const [activeDingTalkInstanceId, setActiveDingTalkInstanceId] = useState<string | null>(null);
   const [dingtalkExpanded, setDingtalkExpanded] = useState(false);
+  const [activeWecomInstanceId, setActiveWecomInstanceId] = useState<string | null>(null);
+  const [wecomExpanded, setWecomExpanded] = useState(false);
   const [testingPlatform, setTestingPlatform] = useState<Platform | null>(null);
   const [connectivityResults, setConnectivityResults] = useState<Partial<Record<Platform, IMConnectivityTestResult>>>({});
   const [connectivityModalPlatform, setConnectivityModalPlatform] = useState<Platform | null>(null);
@@ -400,19 +403,6 @@ const IMSettings: React.FC = () => {
     dispatch(setNeteaseBeeChanConfig({ [field]: value }));
   };
 
-  // Handle WeCom OpenClaw config change
-  const wecomOpenClawConfig = config.wecom;
-  const handleWecomOpenClawChange = (update: Partial<WecomOpenClawConfig>) => {
-    dispatch(setWecomConfig(update));
-  };
-  const handleSaveWecomOpenClawConfig = async (override?: Partial<WecomOpenClawConfig>) => {
-    if (!configLoaded) return;
-    const configToSave = override
-      ? { ...wecomOpenClawConfig, ...override }
-      : wecomOpenClawConfig;
-    await imService.persistConfig({ wecom: configToSave });
-  };
-
   // Handle Weixin OpenClaw config
   const weixinOpenClawConfig = config.weixin;
 
@@ -427,44 +417,6 @@ const IMSettings: React.FC = () => {
       ? { ...popoConfig, ...override }
       : popoConfig;
     await imService.persistConfig({ popo: configToSave });
-  };
-
-  const handleWecomQuickSetup = async () => {
-    setWecomQuickSetupStatus('pending');
-    setWecomQuickSetupError('');
-    try {
-      const bot = await WecomAIBotSDK.openBotInfoAuthWindow({
-        source: 'lobster-ai',
-      });
-      if (!isMountedRef.current) return;
-
-      // Save credentials + enable in one atomic operation.
-      // im:config:set handler in main process already calls
-      // syncOpenClawConfig({ restartGatewayIfRunning: true }) when wecom config changes,
-      // so we do NOT call stopGateway/startGateway here to avoid redundant gateway restarts.
-      const fullConfig = { ...wecomOpenClawConfig, botId: bot.botid, secret: bot.secret, enabled: true };
-      dispatch(setWecomConfig({ botId: bot.botid, secret: bot.secret, enabled: true }));
-      dispatch(clearError());
-      await imService.updateConfig({ wecom: fullConfig });
-      if (!isMountedRef.current) return;
-      // Refresh status so the UI reflects the new connected state immediately.
-      // OpenClaw channels derive `connected` from config, but updateConfig only
-      // reloads config — status needs a separate refresh.
-      await imService.loadStatus();
-      if (!isMountedRef.current) return;
-      setWecomQuickSetupStatus('success');
-    } catch (error: unknown) {
-      if (!isMountedRef.current) return;
-      // Roll back optimistic Redux dispatch so UI matches persisted state
-      dispatch(setWecomConfig({
-        botId: wecomOpenClawConfig.botId,
-        secret: wecomOpenClawConfig.secret,
-        enabled: wecomOpenClawConfig.enabled,
-      }));
-      setWecomQuickSetupStatus('error');
-      const err = error as { message?: string; code?: string };
-      setWecomQuickSetupError(err.message || err.code || 'Unknown error');
-    }
   };
 
   const handleWeixinQrLogin = async () => {
@@ -605,9 +557,9 @@ const IMSettings: React.FC = () => {
       return;
     }
 
-    // For WeCom, save wecom config directly (OpenClaw mode)
+    // For WeCom, save is handled per-instance in WecomInstanceSettings
     if (activePlatform === 'wecom') {
-      await imService.persistConfig({ wecom: wecomOpenClawConfig });
+      await imService.persistConfig({ wecom: config.wecom });
       return;
     }
 
@@ -719,13 +671,7 @@ const IMSettings: React.FC = () => {
       }
 
       if (platform === 'wecom') {
-        const newEnabled = !wecomOpenClawConfig.enabled;
-        const success = await imService.updateConfig({ wecom: { ...wecomOpenClawConfig, enabled: newEnabled } });
-        if (success) {
-          dispatch(setWecomConfig({ enabled: newEnabled }));
-          if (newEnabled) dispatch(clearError());
-          await imService.loadStatus();
-        }
+        // WeCom multi-instance: toggle is handled per-instance in WecomInstanceSettings
         return;
       }
 
@@ -800,7 +746,7 @@ const IMSettings: React.FC = () => {
   const nimConnected = status.nim.connected;
   const neteaseBeeChanConnected = status['netease-bee']?.connected ?? false;
   const qqConnected = status.qq?.instances?.some(i => i.connected) ?? false;
-  const wecomConnected = status.wecom?.connected ?? false;
+  const wecomConnected = status.wecom?.instances?.some(i => i.connected) ?? false;
   const weixinConnected = status.weixin?.connected ?? false;
   const popoConnected = status.popo?.connected ?? false;
 
@@ -838,7 +784,7 @@ const IMSettings: React.FC = () => {
       return config.qq.instances.some(i => !!(i.appId && i.appSecret));
     }
     if (platform === 'wecom') {
-      return !!(wecomOpenClawConfig.botId && wecomOpenClawConfig.secret);
+      return config.wecom.instances.some(i => !!(i.botId && i.secret));
     }
     if (platform === 'weixin') {
       return true; // No credentials needed, connects via QR code in CLI
@@ -859,6 +805,9 @@ const IMSettings: React.FC = () => {
     }
     if (platform === 'feishu') {
       return config.feishu.instances?.some(i => i.enabled);
+    }
+    if (platform === 'wecom') {
+      return config.wecom.instances?.some(i => i.enabled);
     }
     return (config[platform] as { enabled: boolean }).enabled;
   };
@@ -948,14 +897,20 @@ const IMSettings: React.FC = () => {
 
     // For WeCom, persist wecom config and test (OpenClaw mode)
     if (platform === 'wecom') {
-      await imService.persistConfig({ wecom: wecomOpenClawConfig });
+      const wecomMultiConfig = config.wecom;
+      await imService.persistConfig({ wecom: wecomMultiConfig });
       const result = await runConnectivityTest(platform, {
-        wecom: wecomOpenClawConfig,
+        wecom: wecomMultiConfig,
       } as Partial<IMGatewayConfig>);
-      if (!wecomOpenClawConfig.enabled && result) {
-        const authCheck = result.checks.find((c) => c.code === 'auth_check');
-        if (authCheck && authCheck.level === 'pass') {
-          toggleGateway(platform);
+      // Auto-enable: if the active instance is OFF and auth_check passed, turn on automatically
+      if (activeWecomInstanceId && result) {
+        const inst = wecomMultiConfig.instances.find(i => i.instanceId === activeWecomInstanceId);
+        if (inst && !inst.enabled) {
+          const authCheck = result.checks.find((c) => c.code === 'auth_check');
+          if (authCheck && authCheck.level === 'pass') {
+            dispatch(setWecomInstanceConfig({ instanceId: activeWecomInstanceId, config: { enabled: true } }));
+            await imService.updateWecomInstanceConfig(activeWecomInstanceId, { enabled: true });
+          }
         }
       }
       return;
@@ -1304,6 +1259,58 @@ const IMSettings: React.FC = () => {
             );
           }
 
+          if (platform === 'wecom') {
+            return (
+              <div key="wecom">
+                {/* WeCom Platform Header - clickable to expand/collapse */}
+                <div
+                  onClick={() => { setActivePlatform('wecom'); setActiveWecomInstanceId(null); setWecomExpanded(!wecomExpanded); }}
+                  className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    activePlatform === 'wecom'
+                      ? 'bg-primary-muted border border-primary shadow-subtle'
+                      : 'bg-surface hover:bg-surface-raised border border-transparent'
+                  }`}
+                >
+                  <div className="flex flex-1 items-center">
+                    <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                      <img src={PlatformRegistry.logo('wecom')} alt="WeCom" className="w-6 h-6 object-contain rounded-md" />
+                    </div>
+                    <span className={`text-sm font-medium truncate ${activePlatform === 'wecom' ? 'text-primary' : 'text-foreground'}`}>
+                      {i18nService.t('wecom')}
+                    </span>
+                  </div>
+                  <span className="text-xs opacity-50">{wecomExpanded ? '\u25BC' : '\u25B6'}</span>
+                </div>
+                {/* WeCom Instance Sub-items */}
+                {wecomExpanded && (
+                  <div className="ml-5 mt-1 space-y-1">
+                    {config.wecom.instances.map((inst) => {
+                      const instStatus = status.wecom?.instances?.find(s => s.instanceId === inst.instanceId);
+                      const isSelected = activePlatform === 'wecom' && activeWecomInstanceId === inst.instanceId;
+                      const dotColor = !inst.enabled ? 'bg-gray-400' : (instStatus?.connected ? 'bg-green-500' : 'bg-yellow-500');
+                      return (
+                        <div
+                          key={inst.instanceId}
+                          onClick={() => { setActivePlatform('wecom'); setActiveWecomInstanceId(inst.instanceId); }}
+                          className={`flex items-center p-1.5 pl-2 rounded-lg cursor-pointer transition-colors text-sm ${
+                            isSelected
+                              ? 'bg-primary/10 dark:bg-primary/20'
+                              : 'hover:bg-surface-raised'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
+                          <span className={`truncate flex-1 ${isSelected ? 'text-primary font-medium' : 'text-foreground'}`}>
+                            {inst.instanceName}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           return (
             <div
               key={platform}
@@ -1357,7 +1364,7 @@ const IMSettings: React.FC = () => {
       {/* Platform Settings - Right Side */}
       <div className="flex-1 min-w-0 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
         {/* Header with status (hidden for QQ which has per-instance headers) */}
-        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && (
+        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && activePlatform !== 'wecom' && (
         <div className="flex items-center gap-3 pb-3 border-b border-border-subtle">
           <div className="flex items-center gap-2">
              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-surface border border-border-subtle p-1">
@@ -2505,285 +2512,104 @@ const IMSettings: React.FC = () => {
           </div>
         )}
 
-        {/* WeCom (企业微信) Settings */}
-        {activePlatform === 'wecom' && (
-          <div className="space-y-3">
-            {/* Scan QR code section */}
-            <div className="rounded-lg border border-dashed border-border-subtle p-4 text-center space-y-2">
-              <button
-                type="button"
-                disabled={wecomQuickSetupStatus === 'pending'}
-                onClick={handleWecomQuickSetup}
-                className="px-4 py-2.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {wecomQuickSetupStatus === 'pending'
-                  ? i18nService.t('imWecomQuickSetupPending')
-                  : i18nService.t('imWecomScanBtn')}
-              </button>
-              <p className="text-xs text-secondary">
-                {i18nService.t('imWecomScanHint')}
+        {/* WeCom (企业微信) Multi-Instance Settings */}
+        {activePlatform === 'wecom' && (() => {
+          const wecomMultiConfig = config.wecom;
+          const activeWecomInstance = activeWecomInstanceId
+            ? wecomMultiConfig.instances.find(i => i.instanceId === activeWecomInstanceId)
+            : null;
+          const activeWecomStatus = activeWecomInstanceId
+            ? status.wecom?.instances?.find(s => s.instanceId === activeWecomInstanceId)
+            : undefined;
+
+          if (activeWecomInstance) {
+            return (
+              <WecomInstanceSettings
+                instance={activeWecomInstance}
+                instanceStatus={activeWecomStatus}
+                onConfigChange={(update) => {
+                  dispatch(setWecomInstanceConfig({ instanceId: activeWecomInstanceId!, config: update }));
+                }}
+                onSave={async (override) => {
+                  if (!configLoaded) return;
+                  const configToSave = override
+                    ? { ...activeWecomInstance, ...override }
+                    : activeWecomInstance;
+                  await imService.persistWecomInstanceConfig(activeWecomInstanceId!, configToSave);
+                }}
+                onRename={async (newName) => {
+                  dispatch(setWecomInstanceConfig({ instanceId: activeWecomInstanceId!, config: { instanceName: newName } as any }));
+                  await imService.persistWecomInstanceConfig(activeWecomInstanceId!, { instanceName: newName } as any);
+                }}
+                onDelete={async () => {
+                  await imService.deleteWecomInstance(activeWecomInstanceId!);
+                  setActiveWecomInstanceId(null);
+                }}
+                onToggleEnabled={async () => {
+                  const newEnabled = !activeWecomInstance.enabled;
+                  dispatch(setWecomInstanceConfig({ instanceId: activeWecomInstanceId!, config: { enabled: newEnabled } }));
+                  await imService.updateWecomInstanceConfig(activeWecomInstanceId!, { enabled: newEnabled });
+                }}
+                onTestConnectivity={() => void handleConnectivityTest('wecom')}
+                onQuickSetup={async () => {
+                  setWecomQuickSetupStatus('pending');
+                  setWecomQuickSetupError('');
+                  try {
+                    const bot = await WecomAIBotSDK.openBotInfoAuthWindow({ source: 'lobster-ai' });
+                    if (!isMountedRef.current) return;
+                    dispatch(setWecomInstanceConfig({ instanceId: activeWecomInstanceId!, config: { botId: bot.botid, secret: bot.secret, enabled: true } }));
+                    dispatch(clearError());
+                    await imService.updateWecomInstanceConfig(activeWecomInstanceId!, { botId: bot.botid, secret: bot.secret, enabled: true });
+                    if (!isMountedRef.current) return;
+                    await imService.loadStatus();
+                    if (!isMountedRef.current) return;
+                    setWecomQuickSetupStatus('success');
+                  } catch (error: unknown) {
+                    if (!isMountedRef.current) return;
+                    setWecomQuickSetupStatus('error');
+                    const err = error as { message?: string; code?: string };
+                    setWecomQuickSetupError(err.message || err.code || 'Unknown error');
+                  }
+                }}
+                quickSetupStatus={wecomQuickSetupStatus}
+                quickSetupError={wecomQuickSetupError}
+                testingPlatform={testingPlatform}
+                connectivityResults={connectivityResults as Record<string, IMConnectivityTestResult>}
+                language={language}
+                renderPairingSection={renderPairingSection}
+              />
+            );
+          }
+
+          // No instance selected - show placeholder
+          return (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <img src={PlatformRegistry.logo('wecom')} alt="WeCom" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
+              <p className="text-sm text-secondary mb-4">
+                {wecomMultiConfig.instances.length === 0
+                  ? (language === 'zh' ? '尚未添加企业微信实例，点击下方按钮添加' : 'No WeCom instances yet. Click below to add one.')
+                  : (language === 'zh' ? '请在左侧选择一个企业微信实例' : 'Select a WeCom instance from the sidebar.')}
               </p>
-              {wecomQuickSetupStatus === 'success' && (
-                <div className="flex items-center justify-center gap-1.5 text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
-                  <CheckCircleIcon className="h-4 w-4 flex-shrink-0" />
-                  {i18nService.t('imWecomQuickSetupSuccess')}
-                </div>
+              {wecomMultiConfig.instances.length < MAX_WECOM_INSTANCES && (
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const name = `WeCom Bot ${wecomMultiConfig.instances.length + 1}`;
+                    const inst = await imService.addWecomInstance(name);
+                    if (inst) {
+                      setActiveWecomInstanceId(inst.instanceId);
+                      setWecomExpanded(true);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                >
+                  + {i18nService.t('imWecomAddInstance')}
+                </button>
               )}
-              {wecomQuickSetupStatus === 'error' && (
-                <div className="flex items-center justify-center gap-1.5 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
-                  <XCircleIcon className="h-4 w-4 flex-shrink-0" />
-                  {i18nService.t('imWecomQuickSetupError')}: {wecomQuickSetupError}
-                </div>
-              )}
             </div>
-
-            {/* Divider with "or manually enter" */}
-            <div className="relative flex items-center">
-              <div className="flex-1 border-t border-border-subtle" />
-              <span className="px-3 text-xs text-secondary whitespace-nowrap">
-                {i18nService.t('imWecomOrManual')}
-              </span>
-              <div className="flex-1 border-t border-border-subtle" />
-            </div>
-
-            {/* Manual input section */}
-            <PlatformGuide
-              steps={[
-                i18nService.t('imWecomGuideStep1'),
-                i18nService.t('imWecomGuideStep2'),
-                i18nService.t('imWecomGuideStep3'),
-              ]}
-                guideUrl={PlatformRegistry.guideUrl('wecom')}
-            />
-            {/* Bot ID */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-secondary">
-                Bot ID
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={wecomOpenClawConfig.botId}
-                  onChange={(e) => handleWecomOpenClawChange({ botId: e.target.value })}
-                  onBlur={() => handleSaveWecomOpenClawConfig()}
-                  className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-8 text-sm transition-colors"
-                  placeholder={i18nService.t('imWecomBotIdPlaceholder')}
-                />
-                {wecomOpenClawConfig.botId && (
-                  <div className="absolute right-2 inset-y-0 flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => { handleWecomOpenClawChange({ botId: '' }); void imService.persistConfig({ wecom: { ...wecomOpenClawConfig, botId: '' } }); }}
-                      className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                      title={i18nService.t('clear') || 'Clear'}
-                    >
-                      <XCircleIconSolid className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Secret */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-secondary">
-                Secret
-              </label>
-              <div className="relative">
-                <input
-                  type={showSecrets['wecom.secret'] ? 'text' : 'password'}
-                  value={wecomOpenClawConfig.secret}
-                  onChange={(e) => handleWecomOpenClawChange({ secret: e.target.value })}
-                  onBlur={() => handleSaveWecomOpenClawConfig()}
-                  className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-sm transition-colors"
-                  placeholder="••••••••••••"
-                />
-                <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                  {wecomOpenClawConfig.secret && (
-                    <button
-                      type="button"
-                      onClick={() => { handleWecomOpenClawChange({ secret: '' }); void imService.persistConfig({ wecom: { ...wecomOpenClawConfig, secret: '' } }); }}
-                      className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                      title={i18nService.t('clear') || 'Clear'}
-                    >
-                      <XCircleIconSolid className="h-4 w-4" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setShowSecrets(prev => ({ ...prev, 'wecom.secret': !prev['wecom.secret'] }))}
-                    className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                    title={showSecrets['wecom.secret'] ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                  >
-                    {showSecrets['wecom.secret'] ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-              <p className="text-xs text-secondary">
-                {i18nService.t('imWecomCredentialHint')}
-              </p>
-            </div>
-
-            {/* Advanced Settings (collapsible) */}
-            <details className="group">
-              <summary className="cursor-pointer text-xs font-medium text-secondary hover:text-primary transition-colors">
-                {i18nService.t('imAdvancedSettings')}
-              </summary>
-              <div className="mt-2 space-y-3 pl-2 border-l-2 border-border-subtle">
-                {/* DM Policy */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    DM Policy
-                  </label>
-                  <select
-                    value={wecomOpenClawConfig.dmPolicy}
-                    onChange={(e) => {
-                      const update = { dmPolicy: e.target.value as WecomOpenClawConfig['dmPolicy'] };
-                      handleWecomOpenClawChange(update);
-                      void handleSaveWecomOpenClawConfig(update);
-                    }}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  >
-                    <option value="open">{i18nService.t('imDmPolicyOpen')}</option>
-                    <option value="pairing">{i18nService.t('imDmPolicyPairing')}</option>
-                    <option value="allowlist">{i18nService.t('imDmPolicyAllowlist')}</option>
-                    <option value="disabled">{i18nService.t('imDmPolicyDisabled')}</option>
-                  </select>
-                </div>
-
-                {/* Pairing Requests (shown when dmPolicy is 'pairing') */}
-                {wecomOpenClawConfig.dmPolicy === 'pairing' && renderPairingSection('wecom')}
-
-                {/* Allow From */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Allow From (User IDs)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={allowedUserIdInput}
-                      onChange={(e) => setAllowedUserIdInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          const id = allowedUserIdInput.trim();
-                          if (id && !wecomOpenClawConfig.allowFrom.includes(id)) {
-                            const newIds = [...wecomOpenClawConfig.allowFrom, id];
-                            handleWecomOpenClawChange({ allowFrom: newIds });
-                            setAllowedUserIdInput('');
-                            void imService.persistConfig({ wecom: { ...wecomOpenClawConfig, allowFrom: newIds } });
-                          }
-                        }
-                      }}
-                      className="block flex-1 rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                      placeholder={i18nService.t('imWecomUserIdPlaceholder')}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const id = allowedUserIdInput.trim();
-                        if (id && !wecomOpenClawConfig.allowFrom.includes(id)) {
-                          const newIds = [...wecomOpenClawConfig.allowFrom, id];
-                          handleWecomOpenClawChange({ allowFrom: newIds });
-                          setAllowedUserIdInput('');
-                          void imService.persistConfig({ wecom: { ...wecomOpenClawConfig, allowFrom: newIds } });
-                        }
-                      }}
-                      className="px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                    >
-                      {i18nService.t('add') || '添加'}
-                    </button>
-                  </div>
-                  {wecomOpenClawConfig.allowFrom.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
-                      {wecomOpenClawConfig.allowFrom.map((id) => (
-                        <span
-                          key={id}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-surface border-border-subtle border text-foreground"
-                        >
-                          {id}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newIds = wecomOpenClawConfig.allowFrom.filter((uid) => uid !== id);
-                              handleWecomOpenClawChange({ allowFrom: newIds });
-                              void imService.persistConfig({ wecom: { ...wecomOpenClawConfig, allowFrom: newIds } });
-                            }}
-                            className="text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                          >
-                            <XMarkIcon className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Group Policy */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Group Policy
-                  </label>
-                  <select
-                    value={wecomOpenClawConfig.groupPolicy}
-                    onChange={(e) => {
-                      const update = { groupPolicy: e.target.value as WecomOpenClawConfig['groupPolicy'] };
-                      handleWecomOpenClawChange(update);
-                      void handleSaveWecomOpenClawConfig(update);
-                    }}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  >
-                    <option value="open">Open</option>
-                    <option value="allowlist">Allowlist</option>
-                    <option value="disabled">Disabled</option>
-                  </select>
-                </div>
-
-                {/* Send Thinking Message */}
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium text-secondary">
-                    {i18nService.t('imSendThinkingMessage')}
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const update = { sendThinkingMessage: !wecomOpenClawConfig.sendThinkingMessage };
-                      handleWecomOpenClawChange(update);
-                      void handleSaveWecomOpenClawConfig(update);
-                    }}
-                    className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                      wecomOpenClawConfig.sendThinkingMessage ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                    }`}
-                  >
-                    <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                      wecomOpenClawConfig.sendThinkingMessage ? 'translate-x-4' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-              </div>
-            </details>
-
-            {/* Connectivity test */}
-            <div className="pt-1">
-              {renderConnectivityTestButton('wecom')}
-            </div>
-
-            {/* Bot ID display */}
-            {status.wecom?.botId && (
-              <div className="text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
-                Bot ID: {status.wecom.botId}
-              </div>
-            )}
-
-            {/* Error display */}
-            {status.wecom?.lastError && (
-              <div className="text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
-                {status.wecom.lastError}
-              </div>
-            )}
-          </div>
-        )}
+          );
+        })()}
 
         {activePlatform === 'popo' && (
           <div className="space-y-3">

@@ -334,6 +334,28 @@ export interface WecomGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+// ==================== WeCom Multi-Instance Types ====================
+
+export const MAX_WECOM_INSTANCES = 5;
+
+export interface WecomInstanceConfig extends WecomOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface WecomInstanceStatus extends WecomGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface WecomMultiInstanceConfig {
+  instances: WecomInstanceConfig[];
+}
+
+export interface WecomMultiInstanceStatus {
+  instances: WecomInstanceStatus[];
+}
+
 // ==================== POPO Types ====================
 
 export interface PopoOpenClawConfig {
@@ -393,7 +415,7 @@ export interface IMGatewayConfig {
   discord: DiscordOpenClawConfig;
   nim: NimConfig;
   'netease-bee': NeteaseBeeChanConfig;
-  wecom: WecomOpenClawConfig;
+  wecom: WecomMultiInstanceConfig;
   popo: PopoOpenClawConfig;
   weixin: WeixinOpenClawConfig;
   settings: IMSettings;
@@ -414,7 +436,7 @@ export interface IMGatewayStatus {
   discord: DiscordGatewayStatus;
   nim: NimGatewayStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
-  wecom: WecomGatewayStatus;
+  wecom: WecomMultiInstanceStatus;
   popo: PopoGatewayStatus;
   weixin: WeixinGatewayStatus;
 }
@@ -652,6 +674,8 @@ export const DEFAULT_WECOM_CONFIG: WecomOpenClawConfig = {
   debug: true,
 };
 
+export const DEFAULT_WECOM_MULTI_INSTANCE_CONFIG: WecomMultiInstanceConfig = { instances: [] };
+
 export const DEFAULT_POPO_CONFIG: PopoOpenClawConfig = {
   enabled: false,
   connectionMode: 'websocket',
@@ -694,7 +718,7 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
   discord: DEFAULT_DISCORD_OPENCLAW_CONFIG,
   nim: DEFAULT_NIM_CONFIG,
   'netease-bee': DEFAULT_NETEASE_BEE_CONFIG,
-  wecom: DEFAULT_WECOM_CONFIG,
+  wecom: DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
   popo: DEFAULT_POPO_CONFIG,
   weixin: DEFAULT_WEIXIN_CONFIG,
   settings: DEFAULT_IM_SETTINGS,
@@ -793,7 +817,7 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   discord: DEFAULT_DISCORD_STATUS,
   nim: DEFAULT_NIM_STATUS,
   'netease-bee': DEFAULT_NETEASE_BEE_STATUS,
-  wecom: DEFAULT_WECOM_STATUS,
+  wecom: { instances: [] },
   popo: DEFAULT_POPO_STATUS,
   weixin: DEFAULT_WEIXIN_STATUS,
 };

@@ -399,6 +399,12 @@ contextBridge.exposeInMainWorld('electron', {
     setFeishuInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:feishu:instance:config:set', instanceId, config, options),
 
+    // WeCom Multi-Instance
+    addWecomInstance: (name: string) => ipcRenderer.invoke('im:wecom:instance:add', name),
+    deleteWecomInstance: (instanceId: string) => ipcRenderer.invoke('im:wecom:instance:delete', instanceId),
+    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:wecom:instance:config:set', instanceId, config, options),
+
     // Event listeners
     onStatusChange: (callback: (status: any) => void) => {
       const handler = (_event: any, status: any) => callback(status);

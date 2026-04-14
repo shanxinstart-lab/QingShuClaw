@@ -194,7 +194,7 @@ export function extractAccountIdFromKey(sessionKey: string): string | null {
   return null;
 }
 
-const MULTI_INSTANCE_PLATFORMS = new Set<Platform>(['dingtalk', 'feishu', 'qq']);
+const MULTI_INSTANCE_PLATFORMS = new Set<Platform>(['dingtalk', 'feishu', 'qq', 'wecom']);
 
 /**
  * Resolve the agent binding for a platform, supporting per-instance bindings.

@@ -480,12 +480,16 @@ export class IMGatewayManager extends EventEmitter {
         };
       })(),
       wecom: {
-        connected: Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret),
-        startedAt: null as number | null,
-        lastError: null as string | null,
-        botId: config.wecom?.botId || null,
-        lastInboundAt: null as number | null,
-        lastOutboundAt: null as number | null,
+        instances: (config.wecom?.instances || []).map(inst => ({
+          instanceId: inst.instanceId,
+          instanceName: inst.instanceName,
+          connected: Boolean(inst.enabled && inst.botId && inst.secret),
+          startedAt: null as number | null,
+          lastError: null as string | null,
+          botId: inst.botId || null,
+          lastInboundAt: null as number | null,
+          lastOutboundAt: null as number | null,
+        })),
       },
       weixin: {
         connected: Boolean(config.weixin?.enabled && config.weixin?.accountId),
@@ -626,6 +630,8 @@ export class IMGatewayManager extends EventEmitter {
       enabled = config.feishu?.instances?.some(i => i.enabled) ?? false;
     } else if (p === 'dingtalk') {
       enabled = config.dingtalk?.instances?.some(i => i.enabled) ?? false;
+    } else if (p === 'wecom') {
+      enabled = config.wecom?.instances?.some(i => i.enabled) ?? false;
     } else {
       enabled = Boolean((config[platform] as { enabled?: boolean })?.enabled);
     }
@@ -891,7 +897,8 @@ export class IMGatewayManager extends EventEmitter {
     if (qqInstances.some(i => i.enabled && i.appId && i.appSecret)) {
       openClawPlatformsToStart.push('qq');
     }
-    if (config.wecom?.enabled && config.wecom?.botId && config.wecom?.secret) {
+    const wecomInstances = config.wecom?.instances || [];
+    if (wecomInstances.some(i => i.enabled && i.botId && i.secret)) {
       openClawPlatformsToStart.push('wecom');
     }
     if (config.weixin?.enabled) {
@@ -966,9 +973,10 @@ export class IMGatewayManager extends EventEmitter {
       return qqInstances.some(i => i.enabled && i.appId && i.appSecret);
     }
     if (platform === 'wecom') {
-      // WeCom runs via OpenClaw; consider it connected when enabled and configured
+      // WeCom runs via OpenClaw; consider it connected when any instance is enabled and configured
       const config = this.getConfig();
-      return Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret);
+      const wecomInstances = config.wecom?.instances || [];
+      return wecomInstances.some(i => i.enabled && i.botId && i.secret);
     }
     if (platform === 'weixin') {
       const config = this.getConfig();
@@ -1370,7 +1378,8 @@ export class IMGatewayManager extends EventEmitter {
     const platform: Platform = 'wecom';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
-    const wcConfig = mergedConfig.wecom;
+    const wecomInstances = mergedConfig.wecom?.instances || [];
+    const wcConfig = wecomInstances.find(i => i.enabled) || wecomInstances[0];
 
     // Check 1: Credentials present
     if (!wcConfig?.botId || !wcConfig?.secret) {
@@ -1802,7 +1811,7 @@ export class IMGatewayManager extends EventEmitter {
       discord: { ...current.discord, ...(configOverride.discord || {}) },
       nim: { ...current.nim, ...(configOverride.nim || {}) },
       'netease-bee': { ...current['netease-bee'], ...(configOverride['netease-bee'] || {}) },
-      wecom: { ...current.wecom, ...(configOverride.wecom || {}) },
+      wecom: configOverride.wecom || current.wecom,
       weixin: { ...current.weixin, ...(configOverride.weixin || {}) },
       popo: { ...current.popo, ...(configOverride.popo || {}) },
       settings: { ...current.settings, ...(configOverride.settings || {}) },
@@ -1854,9 +1863,12 @@ export class IMGatewayManager extends EventEmitter {
       return fields;
     }
     if (platform === 'wecom') {
+      const wecomInstances = config.wecom?.instances || [];
+      const wcInst = wecomInstances.find(i => i.enabled);
+      if (!wcInst) return ['botId', 'secret'];
       const fields: string[] = [];
-      if (!config.wecom?.botId) fields.push('botId');
-      if (!config.wecom?.secret) fields.push('secret');
+      if (!wcInst.botId) fields.push('botId');
+      if (!wcInst.secret) fields.push('secret');
       return fields;
     }
     if (platform === 'weixin') {
@@ -1933,11 +1945,12 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     if (platform === 'wecom') {
-      const { botId, secret } = config.wecom;
-      if (!botId || !secret) {
+      const wecomInstances = config.wecom?.instances || [];
+      const wcInst = wecomInstances.find(i => i.enabled && i.botId && i.secret);
+      if (!wcInst) {
         throw new Error(t('imConfigIncomplete'));
       }
-      return t('imWecomConfigReadyOpenClaw', { botId });
+      return t('imWecomConfigReadyOpenClaw', { botId: wcInst.botId });
 
     }
 
@@ -2428,7 +2441,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'nim') return status.nim.startedAt;
     if (platform === 'netease-bee') return status['netease-bee'].startedAt;
     if (platform === 'qq') return status.qq.instances?.[0]?.startedAt ?? null;
-    if (platform === 'wecom') return status.wecom.startedAt;
+    if (platform === 'wecom') return status.wecom.instances?.[0]?.startedAt ?? null;
     if (platform === 'weixin') return status.weixin.startedAt;
     if (platform === 'popo') return status.popo.startedAt;
     return status.discord.startedAt;
@@ -2441,7 +2454,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'nim') return status.nim.lastInboundAt;
     if (platform === 'netease-bee') return status['netease-bee'].lastInboundAt;
     if (platform === 'qq') return status.qq.instances?.[0]?.lastInboundAt ?? null;
-    if (platform === 'wecom') return status.wecom.lastInboundAt;
+    if (platform === 'wecom') return status.wecom.instances?.[0]?.lastInboundAt ?? null;
     if (platform === 'weixin') return status.weixin.lastInboundAt;
     if (platform === 'popo') return status.popo.lastInboundAt;
     return status.discord.lastInboundAt;
@@ -2454,7 +2467,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'nim') return status.nim.lastOutboundAt;
     if (platform === 'netease-bee') return status['netease-bee'].lastOutboundAt;
     if (platform === 'qq') return status.qq.instances?.[0]?.lastOutboundAt ?? null;
-    if (platform === 'wecom') return status.wecom.lastOutboundAt;
+    if (platform === 'wecom') return status.wecom.instances?.[0]?.lastOutboundAt ?? null;
     if (platform === 'weixin') return status.weixin.lastOutboundAt;
     if (platform === 'popo') return status.popo.lastOutboundAt;
     return status.discord.lastOutboundAt;
@@ -2467,7 +2480,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'nim') return status.nim.lastError;
     if (platform === 'netease-bee') return status['netease-bee'].lastError;
     if (platform === 'qq') return status.qq.instances?.[0]?.lastError ?? null;
-    if (platform === 'wecom') return status.wecom.lastError;
+    if (platform === 'wecom') return status.wecom.instances?.[0]?.lastError ?? null;
     if (platform === 'weixin') return status.weixin.lastError;
     if (platform === 'popo') return status.popo.lastError;
     return status.discord.lastError;
