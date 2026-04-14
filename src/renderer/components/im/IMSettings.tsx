@@ -1944,6 +1944,60 @@ const IMSettings: React.FC = () => {
                 </div>
               </div>
 
+              {/* A2A Config */}
+              <div className="space-y-3 pt-2 border-t border-border-subtle">
+                <label className="text-xs font-medium text-secondary">{i18nService.t('emailA2aConfig')}</label>
+                <label className="flex items-center gap-1.5 text-sm text-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={inst.a2aEnabled ?? false}
+                    onChange={e => {
+                      const a2aEnabled = e.target.checked;
+                      dispatch(setEmailInstanceConfig({ instanceId: inst.instanceId, config: { a2aEnabled } }));
+                      void imService.persistEmailInstanceConfig(inst.instanceId, { a2aEnabled });
+                    }}
+                    className="accent-primary"
+                  />
+                  {i18nService.t('emailA2aEnabled')}
+                </label>
+                {inst.a2aEnabled && (
+                  <>
+                    <div>
+                      <label className={labelClass}>{i18nService.t('emailA2aAgentDomains')}</label>
+                      <input
+                        type="text"
+                        value={(inst.a2aAgentDomains ?? []).join(', ')}
+                        onChange={e => dispatch(setEmailInstanceConfig({
+                          instanceId: inst.instanceId,
+                          config: { a2aAgentDomains: e.target.value.split(',').map(s => s.trim()).filter(Boolean) },
+                        }))}
+                        onBlur={e => void imService.persistEmailInstanceConfig(inst.instanceId, {
+                          a2aAgentDomains: e.target.value.split(',').map(s => s.trim()).filter(Boolean),
+                        })}
+                        placeholder={i18nService.t('emailA2aAgentDomainsPlaceholder')}
+                        className={inputClass}
+                      />
+                      <p className="text-xs text-secondary mt-1">{i18nService.t('emailA2aAgentDomainsHint')}</p>
+                    </div>
+                    <div>
+                      <label className={labelClass}>{i18nService.t('emailA2aMaxTurns')}</label>
+                      <input
+                        type="number"
+                        value={inst.a2aMaxPingPongTurns ?? 20}
+                        onChange={e => {
+                          const a2aMaxPingPongTurns = parseInt(e.target.value) || 20;
+                          dispatch(setEmailInstanceConfig({ instanceId: inst.instanceId, config: { a2aMaxPingPongTurns } }));
+                        }}
+                        onBlur={e => void imService.persistEmailInstanceConfig(inst.instanceId, {
+                          a2aMaxPingPongTurns: parseInt(e.target.value) || 20,
+                        })}
+                        className={inputClass}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+
               {/* Connectivity test button */}
               <div className="pt-1">
                 <button
