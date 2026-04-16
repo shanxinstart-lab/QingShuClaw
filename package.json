@@ -8,7 +8,7 @@
   "license": "MIT",
   "version": "2026.4.14-beta.1",
   "openclaw": {
-    "version": "v2026.4.8",
+    "version": "v2026.4.14",
     "repo": "https://github.com/openclaw/openclaw.git",
     "plugins": [
       {
