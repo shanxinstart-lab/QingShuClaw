@@ -82,4 +82,126 @@ describe('buildTransientSessionFromOpenClawTranscript', () => {
     expect(session?.messages[1]?.metadata?.toolInput).toEqual({ topic: '杭州 vs 上海' });
     expect(session?.messages[2]?.metadata?.toolUseId).toBe('call-1');
   });
+
+  test('normalizes wrapped user prompts and preserves input_text content', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:qingshu-managed:run:33333333-3333-3333-3333-333333333333',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: [
+                  '## Local Time Context',
+                  '- Current local datetime: 2026-04-16 18:00:00 (timezone: Asia/Shanghai, UTC+08:00)',
+                  '',
+                  '[Current user request]',
+                  '帮我总结今天任务执行失败的原因',
+                ].join('\n'),
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:00:05.000Z',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'output_text', text: '我先检查错误日志。' },
+            ],
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages.map((message) => message.type)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(session?.messages[0]?.content).toBe('帮我总结今天任务执行失败的原因');
+    expect(session?.messages[1]?.content).toBe('我先检查错误日志。');
+  });
+
+  test('preserves assistant content stored as nested parts objects', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:qingshu-managed:run:44444444-4444-4444-4444-444444444444',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:01:00.000Z',
+          message: {
+            role: 'assistant',
+            content: {
+              parts: [
+                { text: '第一段总结。' },
+                { text: '第二段补充。' },
+              ],
+            },
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages.map((message) => message.type)).toEqual([
+      'assistant',
+    ]);
+    expect(session?.messages[0]?.content).toBe('第一段总结。\n第二段补充。');
+  });
+
+  test('parses native openclaw toolCall and toolResult transcript entries', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:main:cron:test-job:run:55555555-5555-5555-5555-555555555555',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:02:00.000Z',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'thinking',
+                thinking: '先调用工具。',
+              },
+              {
+                type: 'toolCall',
+                id: 'call-native-1',
+                name: 'exec',
+                arguments: { command: 'echo hello' },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:02:01.000Z',
+          message: {
+            role: 'toolResult',
+            toolCallId: 'call-native-1',
+            toolName: 'exec',
+            content: [
+              { type: 'text', text: 'hello' },
+            ],
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages.map((message) => message.type)).toEqual([
+      'assistant',
+      'tool_use',
+      'tool_result',
+    ]);
+    expect(session?.messages[1]?.metadata?.toolName).toBe('exec');
+    expect(session?.messages[1]?.metadata?.toolInput).toEqual({ command: 'echo hello' });
+    expect(session?.messages[2]?.metadata?.toolUseId).toBe('call-native-1');
+    expect(session?.messages[2]?.content).toBe('hello');
+  });
 });

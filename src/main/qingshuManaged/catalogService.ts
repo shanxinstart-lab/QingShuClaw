@@ -44,6 +44,7 @@ type ManagedToolInvokeResponse = {
 const MANAGED_AGENT_ID_PREFIX = 'qingshu-managed:';
 const QINGSHU_MANAGED_CATALOG_SNAPSHOT_KEY = 'qingshuManaged.catalogSnapshot.v1';
 const QINGSHU_MANAGED_AGENT_EXTRA_SKILL_IDS_KEY = 'qingshuManaged.agentExtraSkillIds.v1';
+const MANAGED_TOOL_TIMEOUT_MS = 200_000;
 
 const emptySnapshot = (): QingShuManagedCatalogSnapshot => ({
   catalogVersion: '',
@@ -84,6 +85,10 @@ const buildManagedToolAlias = (toolName: string): string =>
 
 const summarizeToolArgs = (args: Record<string, unknown>): string =>
   clipText(stringifyToolPayload(args), 512);
+
+const isAbortError = (error: unknown): boolean =>
+  error instanceof Error
+  && (error.name === 'AbortError' || /abort|timed out/i.test(error.message));
 
 export class QingShuManagedCatalogService {
   private snapshot: QingShuManagedCatalogSnapshot;
@@ -349,6 +354,9 @@ export class QingShuManagedCatalogService {
             arguments: args,
           }),
         },
+        {
+          timeoutMs: MANAGED_TOOL_TIMEOUT_MS,
+        },
       );
 
       const summaryText = body.summary?.trim()
@@ -368,6 +376,22 @@ export class QingShuManagedCatalogService {
         isError: body.success !== true,
       };
     } catch (error) {
+      if (isAbortError(error)) {
+        const message = `Managed tool invocation timed out after ${Math.floor(MANAGED_TOOL_TIMEOUT_MS / 1000)}s`;
+        console.error(
+          `[QingShuManaged] MCP tool "${toolAlias}" mapped to "${toolName}" timed out via "${backendPath}":`,
+          error,
+        );
+        return {
+          content: [
+            {
+              type: 'text',
+              text: message,
+            },
+          ],
+          isError: true,
+        };
+      }
       console.error(
         `[QingShuManaged] MCP tool "${toolAlias}" mapped to "${toolName}" failed via "${backendPath}":`,
         error,
@@ -376,8 +400,12 @@ export class QingShuManagedCatalogService {
     }
   }
 
-  private async fetchResult<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchWithAuth(path, init);
+  private async fetchResult<T>(
+    path: string,
+    init?: RequestInit,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
+    const response = await this.fetchWithAuth(path, init, options);
     const body = await response.json().catch((): QtbResult<T> | null => null);
     if (!response.ok || !body || body.code !== 200) {
       throw new Error(body?.msg || `QingShu managed request failed: ${response.status}`);
@@ -385,7 +413,11 @@ export class QingShuManagedCatalogService {
     return body.data as T;
   }
 
-  private async fetchWithAuth(path: string, init?: RequestInit): Promise<Response> {
+  private async fetchWithAuth(
+    path: string,
+    init?: RequestInit,
+    options?: { timeoutMs?: number },
+  ): Promise<Response> {
     const baseUrl = this.deps.resolveApiBaseUrl();
     if (!baseUrl) {
       throw new Error('QTB auth API base URL is not configured');
@@ -397,11 +429,55 @@ export class QingShuManagedCatalogService {
       throw new Error('QingShu auth token is not available');
     }
 
-    const execute = async (token: string): Promise<Response> =>
-      this.deps.fetchFn(`${baseUrl}${path}`, {
-        ...init,
-        headers: buildAuthHeaders(token, init?.headers),
-      });
+    const timeoutMs = options?.timeoutMs;
+    const deadlineAt = typeof timeoutMs === 'number' && timeoutMs > 0
+      ? Date.now() + timeoutMs
+      : null;
+
+    const execute = async (token: string): Promise<Response> => {
+      const controller = new AbortController();
+      const upstreamSignal = init?.signal;
+      const onAbort = () => controller.abort(
+        upstreamSignal instanceof AbortSignal && upstreamSignal.reason
+          ? upstreamSignal.reason
+          : 'aborted',
+      );
+      if (upstreamSignal?.aborted) {
+        onAbort();
+      } else if (upstreamSignal) {
+        upstreamSignal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      const remainingMs = deadlineAt == null ? null : deadlineAt - Date.now();
+      if (remainingMs != null && remainingMs <= 0) {
+        if (upstreamSignal) {
+          upstreamSignal.removeEventListener('abort', onAbort);
+        }
+        throw new Error(`Managed tool invocation timed out after ${Math.floor(timeoutMs! / 1000)}s`);
+      }
+
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      if (remainingMs != null) {
+        timeoutId = setTimeout(() => {
+          controller.abort(`Managed tool invocation timed out after ${Math.floor(timeoutMs! / 1000)}s`);
+        }, remainingMs);
+      }
+
+      try {
+        return await this.deps.fetchFn(`${baseUrl}${path}`, {
+          ...init,
+          headers: buildAuthHeaders(token, init?.headers),
+          signal: controller.signal,
+        });
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        if (upstreamSignal) {
+          upstreamSignal.removeEventListener('abort', onAbort);
+        }
+      }
+    };
 
     console.debug(`[QingShuManaged] sending authenticated request to "${path}"`);
     let response = await execute(accessToken);

@@ -747,6 +747,11 @@ export class EdgeTtsService extends EventEmitter {
         return;
       }
 
+      if (!force && this.isReady()) {
+        await this.ensureWorkerStarted();
+        return;
+      }
+
       this.preparePromise = (async () => {
         this.setPrepareStatus(TtsPrepareStatus.Installing);
         if (app.isPackaged) {

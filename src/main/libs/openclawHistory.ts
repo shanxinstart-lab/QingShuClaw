@@ -7,6 +7,12 @@ type GatewayHistoryRole = 'user' | 'assistant' | 'system';
 
 const CURRENT_USER_REQUEST_MARKER = '[Current user request]';
 const METADATA_PREFIX_RE = /^Sender \(untrusted metadata\):\s*```json\s*\{[^}]*}\s*```\s*/s;
+const WRAPPED_REQUEST_HEADING_RE = /^(#{1,6}\s+|[-*]\s+|\d+\.\s+|```)/m;
+const WRAPPED_REQUEST_MARKER_PATTERNS = [
+  /(?:结合上面内容|结合以上内容|结合上文内容|结合上述内容)(?:帮我分析|进行分析|回答问题)?[：:]\s*(.+)$/s,
+  /(?:请)?(?:基于|根据)(?:上面|以上|上文|上述)内容(?:帮我分析|进行分析|回答问题)?[：:]\s*(.+)$/s,
+  /(?:用户(?:当前)?(?:请求|问题|查询)|最终问题|实际问题)[：:]\s*(.+)$/s,
+] as const;
 
 export interface GatewayHistoryEntry {
   role: GatewayHistoryRole;
@@ -93,9 +99,60 @@ export const normalizeGatewayHistoryText = (
     return normalized;
   }
 
-  return normalized
+  const currentUserRequest = normalized
     .slice(requestMarkerIndex + CURRENT_USER_REQUEST_MARKER.length)
     .trim();
+
+  const extractedWrappedRequest = extractWrappedUserRequest(currentUserRequest);
+  if (extractedWrappedRequest) {
+    return extractedWrappedRequest;
+  }
+
+  return currentUserRequest;
+};
+
+const extractWrappedUserRequest = (text: string): string | null => {
+  const normalized = text.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const headingCount = (normalized.match(/^#{1,6}\s+/gm) ?? []).length;
+  const bulletCount = (normalized.match(/^[-*]\s+/gm) ?? []).length;
+  const orderedStepCount = (normalized.match(/^\d+\.\s+/gm) ?? []).length;
+  const looksLikeWrappedTemplate = WRAPPED_REQUEST_HEADING_RE.test(normalized) && (
+    normalized.length >= 400
+    || headingCount >= 2
+    || (headingCount >= 1 && bulletCount >= 2)
+    || orderedStepCount >= 3
+  );
+  if (!looksLikeWrappedTemplate) {
+    return null;
+  }
+
+  for (const pattern of WRAPPED_REQUEST_MARKER_PATTERNS) {
+    const match = normalized.match(pattern);
+    const candidate = match?.[1]?.trim();
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  const lastNonEmptyLine = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!lastNonEmptyLine) {
+    return null;
+  }
+
+  const lastLineCandidate = lastNonEmptyLine.replace(/^[-*]\s+/, '').trim();
+  if (!lastLineCandidate || WRAPPED_REQUEST_HEADING_RE.test(lastLineCandidate)) {
+    return null;
+  }
+
+  return lastLineCandidate;
 };
 
 export const buildScheduledReminderSystemMessage = (text: string): string | null => {

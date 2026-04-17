@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-electron/
+release/
+release-repack/
+release-repack2/
+release-repack3/
+release-repack4/
+release-repack5/
+release-repack6/
+release-repack7/
+release-repack8/
+release-repack9/
+release-repack10/
+release-repack11/
+vendor/

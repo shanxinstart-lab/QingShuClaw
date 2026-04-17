@@ -44,6 +44,8 @@ import AppUpdateModal from './components/update/AppUpdateModal';
 import PrivacyDialog from './components/PrivacyDialog';
 import { AppCustomEvent } from './constants/app';
 import {
+  WakeActivationOverlayPhase,
+  type WakeActivationOverlayStateChange,
   nextWakeActivationOverlaySequence,
   shouldShowWakeActivationOverlay,
 } from './components/wakeActivationOverlayHelpers';
@@ -67,6 +69,10 @@ const App: React.FC = () => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showLoginWelcome, setShowLoginWelcome] = useState(false);
   const [showWakeActivationOverlay, setShowWakeActivationOverlay] = useState(false);
+  const [wakeActivationOverlayPhase, setWakeActivationOverlayPhase] = useState<WakeActivationOverlayPhase>(
+    WakeActivationOverlayPhase.Preparing
+  );
+  const [wakeActivationOverlayTranscript, setWakeActivationOverlayTranscript] = useState('');
   const [wakeActivationOverlaySequence, setWakeActivationOverlaySequence] = useState(0);
   const [, forceLanguageRefresh] = useState(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -433,8 +439,32 @@ const App: React.FC = () => {
   }, []);
 
   const triggerWakeActivationOverlay = useCallback(() => {
+    setWakeActivationOverlayPhase(WakeActivationOverlayPhase.Preparing);
+    setWakeActivationOverlayTranscript('');
     setShowWakeActivationOverlay(true);
     setWakeActivationOverlaySequence((current) => nextWakeActivationOverlaySequence(current));
+  }, []);
+
+  useEffect(() => {
+    const handleWakeActivationOverlayUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<WakeActivationOverlayStateChange>).detail;
+      if (!detail) {
+        return;
+      }
+
+      if (detail.phase) {
+        setWakeActivationOverlayPhase(detail.phase);
+      }
+      if (detail.transcript !== undefined) {
+        setWakeActivationOverlayTranscript(detail.transcript);
+      }
+      setShowWakeActivationOverlay(detail.visible);
+    };
+
+    window.addEventListener(AppCustomEvent.UpdateWakeActivationOverlay, handleWakeActivationOverlayUpdate);
+    return () => {
+      window.removeEventListener(AppCustomEvent.UpdateWakeActivationOverlay, handleWakeActivationOverlayUpdate);
+    };
   }, []);
 
   const showToast = useCallback((message: string) => {
@@ -961,7 +991,8 @@ const App: React.FC = () => {
       {showWakeActivationOverlay && (
         <WakeActivationOverlay
           key={wakeActivationOverlaySequence}
-          onClose={() => setShowWakeActivationOverlay(false)}
+          phase={wakeActivationOverlayPhase}
+          transcript={wakeActivationOverlayTranscript}
         />
       )}
       {toastMessage && (

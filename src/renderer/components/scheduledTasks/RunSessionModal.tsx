@@ -17,6 +17,31 @@ interface RunSessionModalProps {
 
 const MAX_RETRIES = 5;
 const RETRY_INTERVAL_MS = 3000;
+const TRANSCRIPT_RUN_SESSION_KEY_RE = /(?:^|:)run:[0-9a-f-]{36}(?:$|:)/i;
+
+export const getRunSessionLoadOrder = (
+  sessionId?: string | null,
+  sessionKey?: string | null,
+): Array<'sessionKey' | 'sessionId'> => {
+  const normalizedSessionId = sessionId?.trim() ?? '';
+  const normalizedSessionKey = sessionKey?.trim() ?? '';
+  const preferSessionKey = Boolean(
+    normalizedSessionKey
+    && TRANSCRIPT_RUN_SESSION_KEY_RE.test(normalizedSessionKey)
+  );
+
+  const loadOrder: Array<'sessionKey' | 'sessionId'> = [];
+  if (preferSessionKey && normalizedSessionKey) {
+    loadOrder.push('sessionKey');
+  }
+  if (normalizedSessionId) {
+    loadOrder.push('sessionId');
+  }
+  if (!preferSessionKey && normalizedSessionKey) {
+    loadOrder.push('sessionKey');
+  }
+  return loadOrder;
+};
 
 const RunSessionModal: React.FC<RunSessionModalProps> = ({ sessionId, sessionKey, onClose }) => {
   const [session, setSession] = useState<CoworkSession | null>(null);
@@ -34,20 +59,23 @@ const RunSessionModal: React.FC<RunSessionModalProps> = ({ sessionId, sessionKey
 
     try {
       let loadedSession: CoworkSession | null = null;
+      const loadOrder = getRunSessionLoadOrder(sessionId, sessionKey);
 
-      // 1. Try loading by local session ID first
-      if (sessionId) {
-        const result = await window.electron?.cowork?.getSession(sessionId);
-        if (result?.success && result.session) {
-          loadedSession = result.session;
+      for (const source of loadOrder) {
+        if (source === 'sessionKey' && sessionKey) {
+          const result = await window.electron?.scheduledTasks?.resolveSession(sessionKey);
+          if (result?.success && result.session) {
+            loadedSession = result.session;
+            break;
+          }
         }
-      }
 
-      // 2. If not found locally, try resolving via OpenClaw sessionKey
-      if (!loadedSession && sessionKey) {
-        const result = await window.electron?.scheduledTasks?.resolveSession(sessionKey);
-        if (result?.success && result.session) {
-          loadedSession = result.session;
+        if (source === 'sessionId' && sessionId) {
+          const result = await window.electron?.cowork?.getSession(sessionId);
+          if (result?.success && result.session) {
+            loadedSession = result.session;
+            break;
+          }
         }
       }
 

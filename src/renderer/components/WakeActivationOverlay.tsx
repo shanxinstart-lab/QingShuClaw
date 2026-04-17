@@ -1,13 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MicrophoneIcon } from '@heroicons/react/24/outline';
 import { i18nService } from '../services/i18n';
-import { getWakeActivationOverlayDuration } from './wakeActivationOverlayHelpers';
+import {
+  getWakeActivationOverlaySubtitleKey,
+  WakeActivationOverlayPhase,
+} from './wakeActivationOverlayHelpers';
 
 interface WakeActivationOverlayProps {
-  onClose: () => void;
+  phase: WakeActivationOverlayPhase;
+  transcript: string;
 }
 
-const WakeActivationOverlay: React.FC<WakeActivationOverlayProps> = ({ onClose }) => {
+const WakeActivationOverlay: React.FC<WakeActivationOverlayProps> = ({ phase, transcript }) => {
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   useEffect(() => {
@@ -23,16 +27,6 @@ const WakeActivationOverlay: React.FC<WakeActivationOverlayProps> = ({ onClose }
     };
   }, []);
 
-  useEffect(() => {
-    const timer = window.setTimeout(
-      onClose,
-      getWakeActivationOverlayDuration(prefersReducedMotion)
-    );
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [onClose, prefersReducedMotion]);
-
   const shellClassName = useMemo(
     () => (
       prefersReducedMotion
@@ -45,74 +39,92 @@ const WakeActivationOverlay: React.FC<WakeActivationOverlayProps> = ({ onClose }
   const ringClassName = prefersReducedMotion
     ? 'qs-wake-activation-ring qs-wake-activation-ring-reduced'
     : 'qs-wake-activation-ring';
+  const subtitleKey = getWakeActivationOverlaySubtitleKey(phase);
+  const trimmedTranscript = transcript.trim();
+  const showTranscript = phase !== WakeActivationOverlayPhase.Preparing && trimmedTranscript.length > 0;
+  const showDictatingBars = phase === WakeActivationOverlayPhase.Dictating && !showTranscript;
+  const showSubmittingDots = phase === WakeActivationOverlayPhase.Submitting && !showTranscript;
 
   return (
     <>
       <style>
         {`
-          @keyframes qs-wake-activation-shell {
+          @keyframes qs-wake-activation-shell-in {
             0% { opacity: 0; transform: translate3d(0, -12px, 0) scale(0.985); }
-            18% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-            78% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-            100% { opacity: 0; transform: translate3d(0, -8px, 0) scale(1.01); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
           }
 
-          @keyframes qs-wake-activation-halo {
-            0% { opacity: 0; transform: scale(0.92); }
-            22% { opacity: 0.72; transform: scale(1); }
-            74% { opacity: 0.4; transform: scale(1.04); }
-            100% { opacity: 0; transform: scale(1.08); }
+          @keyframes qs-wake-activation-halo-breathe {
+            0%, 100% { opacity: 0.28; transform: scale(0.94); }
+            50% { opacity: 0.72; transform: scale(1.06); }
           }
 
-          @keyframes qs-wake-activation-ring {
-            0% { opacity: 0; transform: scale(0.55); }
-            20% { opacity: 0.45; transform: scale(0.8); }
+          @keyframes qs-wake-activation-ring-wave {
+            0% { opacity: 0.42; transform: scale(0.72); }
             100% { opacity: 0; transform: scale(1.45); }
           }
 
-          @keyframes qs-wake-activation-core {
+          @keyframes qs-wake-activation-core-pulse {
             0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
+            50% { transform: scale(1.06); }
           }
 
-          @keyframes qs-wake-activation-copy {
+          @keyframes qs-wake-activation-copy-in {
             0% { opacity: 0; transform: translate3d(0, 4px, 0); }
-            22% { opacity: 1; transform: translate3d(0, 0, 0); }
             100% { opacity: 1; transform: translate3d(0, 0, 0); }
           }
 
+          @keyframes qs-wake-activation-bar {
+            0%, 100% { transform: scaleY(0.45); opacity: 0.42; }
+            50% { transform: scaleY(1); opacity: 1; }
+          }
+
+          @keyframes qs-wake-activation-dot {
+            0%, 80%, 100% { transform: translateY(0); opacity: 0.32; }
+            40% { transform: translateY(-2px); opacity: 1; }
+          }
+
           .qs-wake-activation-shell {
-            animation: qs-wake-activation-shell 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+            animation: qs-wake-activation-shell-in 280ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
           }
 
           .qs-wake-activation-shell-reduced {
-            animation-duration: 520ms;
+            animation-duration: 180ms;
           }
 
           .qs-wake-activation-halo {
-            animation: qs-wake-activation-halo 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+            animation: qs-wake-activation-halo-breathe 1600ms ease-in-out infinite;
           }
 
           .qs-wake-activation-ring {
-            animation: qs-wake-activation-ring 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+            animation: qs-wake-activation-ring-wave 1650ms ease-out infinite;
           }
 
           .qs-wake-activation-ring-delayed {
-            animation-delay: 110ms;
+            animation-delay: 825ms;
           }
 
           .qs-wake-activation-core {
-            animation: qs-wake-activation-core 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+            animation: qs-wake-activation-core-pulse 1200ms ease-in-out infinite;
           }
 
           .qs-wake-activation-copy {
-            animation: qs-wake-activation-copy 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+            animation: qs-wake-activation-copy-in 240ms ease-out forwards;
+          }
+
+          .qs-wake-activation-bar {
+            animation: qs-wake-activation-bar 900ms ease-in-out infinite;
+            transform-origin: center bottom;
+          }
+
+          .qs-wake-activation-dot {
+            animation: qs-wake-activation-dot 1000ms ease-in-out infinite;
           }
 
           .qs-wake-activation-shell-reduced .qs-wake-activation-halo,
           .qs-wake-activation-shell-reduced .qs-wake-activation-core,
           .qs-wake-activation-shell-reduced .qs-wake-activation-copy {
-            animation-duration: 520ms;
+            animation-duration: 180ms;
           }
 
           .qs-wake-activation-ring-reduced,
@@ -143,8 +155,28 @@ const WakeActivationOverlay: React.FC<WakeActivationOverlayProps> = ({ onClose }
                 {i18nService.t('wakeActivationOverlayTitle')}
               </div>
               <div className="mt-0.5 text-[12px] leading-snug text-emerald-800/72 dark:text-emerald-100/70">
-                {i18nService.t('wakeActivationOverlaySubtitle')}
+                {i18nService.t(subtitleKey)}
               </div>
+              {showTranscript && (
+                <div className="mt-2 max-w-[min(56vw,34rem)] rounded-2xl border border-emerald-500/10 bg-white/60 px-3 py-2 text-[12px] leading-5 text-emerald-950/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] dark:border-emerald-200/10 dark:bg-white/5 dark:text-emerald-50/88">
+                  {trimmedTranscript}
+                </div>
+              )}
+              {showDictatingBars && (
+                <div className="mt-2 flex h-6 items-end gap-1">
+                  <span className="qs-wake-activation-bar h-3 w-1 rounded-full bg-emerald-500/70" />
+                  <span className="qs-wake-activation-bar h-5 w-1 rounded-full bg-emerald-500/85" style={{ animationDelay: '120ms' }} />
+                  <span className="qs-wake-activation-bar h-4 w-1 rounded-full bg-emerald-400/80" style={{ animationDelay: '240ms' }} />
+                  <span className="qs-wake-activation-bar h-6 w-1 rounded-full bg-emerald-500/90" style={{ animationDelay: '360ms' }} />
+                </div>
+              )}
+              {showSubmittingDots && (
+                <div className="mt-2 flex items-center gap-1.5">
+                  <span className="qs-wake-activation-dot h-1.5 w-1.5 rounded-full bg-emerald-500/80" />
+                  <span className="qs-wake-activation-dot h-1.5 w-1.5 rounded-full bg-emerald-500/80" style={{ animationDelay: '140ms' }} />
+                  <span className="qs-wake-activation-dot h-1.5 w-1.5 rounded-full bg-emerald-500/80" style={{ animationDelay: '280ms' }} />
+                </div>
+              )}
             </div>
           </div>
         </div>

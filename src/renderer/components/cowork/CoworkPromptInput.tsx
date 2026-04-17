@@ -21,6 +21,10 @@ import { SpeechErrorCode } from '../../../shared/speech/constants';
 import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_VOICE_POST_PROCESS_CONFIG, DEFAULT_WAKE_INPUT_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
+import {
+  WakeActivationOverlayPhase,
+  type WakeActivationOverlayStateChange,
+} from '../wakeActivationOverlayHelpers';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -152,6 +156,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const wakeDictationConfigRef = useRef<WakeDictationCommandConfig | null>(null);
     const wakeDictationTimerRef = useRef<number | null>(null);
     const pendingWakeDictationStartRef = useRef<WakeDictationCommandConfig | null>(null);
+    const activeWakeOverlayRef = useRef(false);
 
   // 暴露方法给父组件
   React.useImperativeHandle(ref, () => ({
@@ -264,6 +269,22 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     });
   }, []);
 
+  const syncWakeActivationOverlay = useCallback((detail: WakeActivationOverlayStateChange) => {
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.UpdateWakeActivationOverlay, { detail }));
+  }, []);
+
+  const updateWakeActivationOverlay = useCallback((detail: Omit<WakeActivationOverlayStateChange, 'visible'>) => {
+    if (!activeWakeOverlayRef.current) {
+      return;
+    }
+    syncWakeActivationOverlay({ visible: true, ...detail });
+  }, [syncWakeActivationOverlay]);
+
+  const hideWakeActivationOverlay = useCallback(() => {
+    activeWakeOverlayRef.current = false;
+    syncWakeActivationOverlay({ visible: false });
+  }, [syncWakeActivationOverlay]);
+
   const startWakeDictation = useCallback((detail: WakeDictationCommandConfig) => {
     console.log('[WakeFollowUp] Starting wake dictation.', {
       detail,
@@ -274,6 +295,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     speechBaseValueRef.current = valueRef.current;
     pendingSpeechVoiceCommandRef.current = null;
     wakeDictationConfigRef.current = detail;
+    activeWakeOverlayRef.current = detail.source === 'wake';
+    if (activeWakeOverlayRef.current) {
+      syncWakeActivationOverlay({
+        visible: true,
+        phase: WakeActivationOverlayPhase.Preparing,
+        transcript: '',
+      });
+    }
     if (wakeDictationTimerRef.current) {
       window.clearTimeout(wakeDictationTimerRef.current);
     }
@@ -281,6 +310,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       if (speechStatus !== 'idle') {
         markPendingSpeechVoiceCommand(null);
         wakeDictationConfigRef.current = null;
+        hideWakeActivationOverlay();
         void window.electron.speech.stop().catch(() => undefined);
       }
       wakeDictationTimerRef.current = null;
@@ -294,13 +324,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           window.clearTimeout(wakeDictationTimerRef.current);
           wakeDictationTimerRef.current = null;
         }
+        hideWakeActivationOverlay();
         disarmWakeFollowUpDictation();
         window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
           detail: resolveSpeechErrorMessage(result.error, result.error),
         }));
       }
     });
-  }, [disarmWakeFollowUpDictation, markPendingSpeechVoiceCommand, speechStatus]);
+  }, [disarmWakeFollowUpDictation, hideWakeActivationOverlay, markPendingSpeechVoiceCommand, speechStatus, syncWakeActivationOverlay]);
 
   // Load skills on mount
   useEffect(() => {
@@ -343,6 +374,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       const detail = (event as CustomEvent<{ clear?: boolean }>).detail;
       const shouldClear = detail?.clear ?? true;
       if (shouldClear) {
+        hideWakeActivationOverlay();
         setValue('');
         dispatch(clearDraftAttachments(draftKey));
       }
@@ -356,7 +388,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       window.removeEventListener('cowork:focus-input', handleFocusInput);
       window.removeEventListener(AppCustomEvent.FocusCoworkInput, handleFocusInput);
     };
-  }, []);
+  }, [dispatch, draftKey, hideWakeActivationOverlay]);
 
   useEffect(() => {
     if (workingDirectory?.trim()) {
@@ -388,6 +420,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       switch (event.type) {
         case 'listening':
           setSpeechStatus('listening');
+          updateWakeActivationOverlay({ phase: WakeActivationOverlayPhase.Dictating });
           break;
         case 'partial': {
           const currentCommandConfig = wakeDictationConfigRef.current
@@ -399,6 +432,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           const commandResult = resolveSpeechVoiceCommand(event.text || '', currentCommandConfig);
           const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
           setValue(nextValue);
+          updateWakeActivationOverlay({
+            phase: WakeActivationOverlayPhase.Dictating,
+            transcript: nextValue,
+          });
           if (commandResult.action) {
             speechBaseValueRef.current = nextValue;
             markPendingSpeechVoiceCommand(commandResult.action);
@@ -418,6 +455,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
             speechBaseValueRef.current = nextValue;
             setValue(nextValue);
+            updateWakeActivationOverlay({
+              phase: WakeActivationOverlayPhase.Dictating,
+              transcript: nextValue,
+            });
             if (commandResult.action) {
               markPendingSpeechVoiceCommand(commandResult.action);
               if (speechStatusRef.current !== 'idle') {
@@ -430,6 +471,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             const nextValue = buildSpeechDraftText(speechBaseValueRef.current, commandResult.cleanedSpeechText);
             speechBaseValueRef.current = nextValue;
             setValue(nextValue);
+            updateWakeActivationOverlay({
+              phase: WakeActivationOverlayPhase.Dictating,
+              transcript: nextValue,
+            });
             if (commandResult.action) {
               markPendingSpeechVoiceCommand(commandResult.action);
               if (speechStatusRef.current !== 'idle') {
@@ -445,6 +490,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         case 'error':
           setSpeechStatus('idle');
           markPendingSpeechVoiceCommand(null);
+          hideWakeActivationOverlay();
           disarmWakeFollowUpDictation();
           window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(event.code, event.message) }));
           break;
@@ -454,9 +500,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     return () => {
       active = false;
       unsubscribe();
+      hideWakeActivationOverlay();
       void window.electron.speech.stop().catch(() => undefined);
     };
-  }, [disarmWakeFollowUpDictation, getSpeechVoiceCommandConfig, isMac, markPendingSpeechVoiceCommand, maybeCorrectFinalSpeechText]);
+  }, [
+    disarmWakeFollowUpDictation,
+    getSpeechVoiceCommandConfig,
+    hideWakeActivationOverlay,
+    isMac,
+    markPendingSpeechVoiceCommand,
+    maybeCorrectFinalSpeechText,
+    updateWakeActivationOverlay,
+  ]);
 
   // Sync value from draft when sessionId changes
   useEffect(() => {
@@ -469,16 +524,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
     pendingSpeechVoiceCommandRef.current = null;
+    hideWakeActivationOverlay();
     void window.electron.speech.stop().catch(() => undefined);
-  }, [draftKey]);
+  }, [draftKey, hideWakeActivationOverlay]);
 
   useEffect(() => {
     if (!isStreaming || !isSpeechActive) {
       return;
     }
     pendingSpeechVoiceCommandRef.current = null;
+    hideWakeActivationOverlay();
     void window.electron.speech.stop().catch(() => undefined);
-  }, [isStreaming, isSpeechActive]);
+  }, [hideWakeActivationOverlay, isSpeechActive, isStreaming]);
 
   useEffect(() => {
     const pendingWakeDictation = pendingWakeDictationStartRef.current;
@@ -561,31 +618,68 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         base64Lengths: imageAtts.map(a => a.base64Data.length),
       });
     }
-    const result = await onSubmit(finalPrompt, skillPrompt, imageAtts.length > 0 ? imageAtts : undefined);
-    if (result === false) {
+    updateWakeActivationOverlay({
+      phase: WakeActivationOverlayPhase.Submitting,
+      transcript: finalPrompt,
+    });
+
+    let result: boolean | void;
+    try {
+      result = await onSubmit(finalPrompt, skillPrompt, imageAtts.length > 0 ? imageAtts : undefined);
+    } catch (error) {
+      console.error('[CoworkPromptInput] Failed to submit wake dictation prompt:', error);
+      hideWakeActivationOverlay();
       disarmWakeFollowUpDictation();
-      return;
+      return false;
+    }
+
+    if (result === false) {
+      hideWakeActivationOverlay();
+      disarmWakeFollowUpDictation();
+      return false;
     }
     armWakeFollowUpDictation(getFollowUpDictationConfig(wakeConfigOverride ?? wakeDictationConfigRef.current));
+    hideWakeActivationOverlay();
     setValue('');
     speechBaseValueRef.current = '';
     pendingSpeechVoiceCommandRef.current = null;
     dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
     dispatch(clearDraftAttachments(draftKey));
     setImageVisionHint(false);
-  }, [value, isStreaming, disabled, isSpeechActive, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch, armWakeFollowUpDictation, disarmWakeFollowUpDictation, getFollowUpDictationConfig]);
+  }, [
+    value,
+    isStreaming,
+    disabled,
+    isSpeechActive,
+    onSubmit,
+    activeSkillIds,
+    skills,
+    attachments,
+    showFolderSelector,
+    workingDirectory,
+    dispatch,
+    armWakeFollowUpDictation,
+    disarmWakeFollowUpDictation,
+    getFollowUpDictationConfig,
+    hideWakeActivationOverlay,
+    updateWakeActivationOverlay,
+  ]);
 
   useEffect(() => {
     if (speechStatus !== 'idle') {
       return;
     }
 
-    if (pendingSpeechVoiceCommandRef.current !== SpeechVoiceCommandAction.Submit) {
+    const pendingSpeechVoiceCommand = pendingSpeechVoiceCommandRef.current;
+    if (pendingSpeechVoiceCommand !== SpeechVoiceCommandAction.Submit) {
       pendingSpeechVoiceCommandRef.current = null;
       wakeDictationConfigRef.current = null;
       if (wakeDictationTimerRef.current) {
         window.clearTimeout(wakeDictationTimerRef.current);
         wakeDictationTimerRef.current = null;
+      }
+      if (pendingSpeechVoiceCommand === SpeechVoiceCommandAction.Stop) {
+        hideWakeActivationOverlay();
       }
       disarmWakeFollowUpDictation();
       return;
@@ -599,16 +693,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       wakeDictationTimerRef.current = null;
     }
     void handleSubmit(submittedWakeConfig);
-  }, [disarmWakeFollowUpDictation, handleSubmit, speechCommandNonce, speechStatus]);
+  }, [disarmWakeFollowUpDictation, handleSubmit, hideWakeActivationOverlay, speechCommandNonce, speechStatus]);
 
   useEffect(() => {
     const handleWakeDictationStart = (event: Event) => {
       const detail = (event as CustomEvent<WakeDictationCommandConfig>).detail;
       if (!detail || !isMac) {
+        hideWakeActivationOverlay();
         return;
       }
       if (disabled) {
         pendingWakeDictationStartRef.current = null;
+        hideWakeActivationOverlay();
         console.log('[WakeFollowUp] Ignored wake dictation start because prompt input is disabled.');
         return;
       }
@@ -630,7 +726,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     return () => {
       window.removeEventListener(AppCustomEvent.StartWakeDictation, handleWakeDictationStart);
     };
-  }, [disabled, isMac, isSpeechActive, isStreaming, speechVisible, startWakeDictation]);
+  }, [disabled, hideWakeActivationOverlay, isMac, isSpeechActive, isStreaming, speechVisible, startWakeDictation]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -762,6 +858,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
     if (isSpeechActive) {
       pendingSpeechVoiceCommandRef.current = null;
+      wakeDictationConfigRef.current = null;
+      hideWakeActivationOverlay();
       disarmWakeFollowUpDictation();
       const result = await window.electron.speech.stop();
       if (!result.success) {
@@ -780,7 +878,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       setSpeechStatus('idle');
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: resolveSpeechErrorMessage(result.error, result.error) }));
     }
-  }, [disabled, disarmWakeFollowUpDictation, isMac, isSpeechActive, isStreaming, speechVisible]);
+  }, [disabled, disarmWakeFollowUpDictation, hideWakeActivationOverlay, isMac, isSpeechActive, isStreaming, speechVisible]);
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;

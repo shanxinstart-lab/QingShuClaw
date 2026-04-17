@@ -5,6 +5,11 @@ import type {
   CoworkSession,
   CoworkSessionStatus,
 } from '../coworkStore';
+import {
+  extractGatewayMessageText,
+  normalizeGatewayHistoryText,
+} from './openclawHistory';
+import { extractOpenClawAssistantStreamText } from './openclawAssistantText';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -35,6 +40,14 @@ const toToolInputRecord = (value: unknown): Record<string, unknown> => {
   return { value };
 };
 
+const extractToolUseId = (value: Record<string, unknown>): string | null => (
+  toStringValue(value.tool_use_id).trim()
+  || toStringValue(value.toolCallId).trim()
+  || toStringValue(value.tool_call_id).trim()
+  || toStringValue(value.id).trim()
+  || null
+);
+
 const extractToolText = (payload: unknown): string => {
   if (typeof payload === 'string') {
     return payload;
@@ -64,6 +77,9 @@ const extractToolText = (payload: unknown): string => {
   if (typeof payload.output === 'string' && payload.output.trim()) {
     return payload.output;
   }
+  if (typeof payload.output_text === 'string' && payload.output_text.trim()) {
+    return payload.output_text;
+  }
   if (typeof payload.stdout === 'string' || typeof payload.stderr === 'string') {
     const chunks = [
       typeof payload.stdout === 'string' ? payload.stdout : '',
@@ -72,6 +88,11 @@ const extractToolText = (payload: unknown): string => {
     if (chunks.length > 0) {
       return chunks.join('\n');
     }
+  }
+
+  const nestedText = extractOpenClawAssistantStreamText(payload);
+  if (nestedText) {
+    return nestedText;
   }
 
   const content = payload.content;
@@ -106,28 +127,14 @@ const extractToolText = (payload: unknown): string => {
   }
 };
 
-const extractPlainTextFromContent = (content: unknown): string => {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
+const extractTranscriptText = (message: unknown): string => (
+  extractOpenClawAssistantStreamText(message) || extractGatewayMessageText(message)
+);
 
-  const parts: string[] = [];
-  for (const block of content) {
-    if (!isRecord(block)) continue;
-    const blockType = toStringValue(block.type);
-    if (blockType === 'text') {
-      const text = toStringValue(block.text);
-      if (text) {
-        parts.push(text);
-      }
-    }
-  }
-
-  return parts.join('\n').trim();
-};
+const extractNormalizedTranscriptText = (
+  role: 'user' | 'assistant' | 'system',
+  message: unknown,
+): string => normalizeGatewayHistoryText(role, extractTranscriptText(message));
 
 const parseToolCallArguments = (value: unknown): Record<string, unknown> => {
   if (isRecord(value)) {
@@ -200,16 +207,16 @@ const parseTranscriptMessages = (fileContent: string): CoworkMessage[] => {
       ?? Date.now();
 
     if (role === 'user') {
-      const text = extractPlainTextFromContent(message.content);
+      const text = extractNormalizedTranscriptText('user', message);
       if (text) {
         pushMessage('user', text, timestamp, {});
       }
       continue;
     }
 
-    if (role === 'tool') {
+    if (role === 'tool' || role === 'toolresult') {
       const text = extractToolText(message.content);
-      const toolUseId = toStringValue(message.tool_call_id).trim() || null;
+      const toolUseId = extractToolUseId(message);
       pushMessage('tool_result', text, timestamp, {
         toolResult: text,
         toolUseId,
@@ -240,13 +247,18 @@ const parseTranscriptMessages = (fileContent: string): CoworkMessage[] => {
     const content = message.content;
     if (typeof content === 'string' && content.trim()) {
       textParts.push(content);
+    } else if (isRecord(content)) {
+      const text = extractNormalizedTranscriptText('assistant', { content });
+      if (text.trim()) {
+        textParts.push(text);
+      }
     } else if (Array.isArray(content)) {
       for (const block of content) {
         if (!isRecord(block)) continue;
-        const blockType = toStringValue(block.type);
+        const blockType = toStringValue(block.type).trim().toLowerCase();
 
-        if (blockType === 'text') {
-          const text = toStringValue(block.text);
+        if (blockType === 'text' || blockType === 'input_text' || blockType === 'output_text') {
+          const text = extractNormalizedTranscriptText('assistant', { content: block });
           if (text.trim()) {
             textParts.push(text);
           }
@@ -262,28 +274,38 @@ const parseTranscriptMessages = (fileContent: string): CoworkMessage[] => {
           continue;
         }
 
-        if (blockType === 'tool_use') {
+        if (blockType === 'tool_use' || blockType === 'toolcall') {
           flushAssistantText();
-          const toolName = toStringValue(block.name).trim() || 'Tool';
-          const toolUseId = toStringValue(block.id).trim() || null;
+          const toolName = toStringValue(block.name).trim()
+            || toStringValue(block.toolName).trim()
+            || 'Tool';
+          const toolUseId = extractToolUseId(block);
           pushMessage('tool_use', `Using tool: ${toolName}`, timestamp, {
             toolName,
-            toolInput: toToolInputRecord(block.input),
+            toolInput: toToolInputRecord(
+              isRecord(block.arguments) ? block.arguments : (block.input ?? block.arguments)
+            ),
             toolUseId,
           });
           continue;
         }
 
-        if (blockType === 'tool_result') {
+        if (blockType === 'tool_result' || blockType === 'toolresult') {
           flushAssistantText();
           const resultText = extractToolText(block.content);
           const isError = Boolean(block.is_error);
           pushMessage('tool_result', resultText, timestamp, {
             toolResult: resultText,
-            toolUseId: toStringValue(block.tool_use_id).trim() || null,
+            toolUseId: extractToolUseId(block),
             error: isError ? (resultText || 'Tool execution failed') : undefined,
             isError,
           });
+          continue;
+        }
+
+        const fallbackText = extractNormalizedTranscriptText('assistant', { content: block });
+        if (fallbackText.trim()) {
+          textParts.push(fallbackText);
         }
       }
     }

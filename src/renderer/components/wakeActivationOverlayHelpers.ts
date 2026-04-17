@@ -1,7 +1,17 @@
 import type { WakeInputDictationRequest } from '../../shared/wakeInput/constants';
 
-export const WAKE_ACTIVATION_OVERLAY_DURATION_MS = 900;
-export const WAKE_ACTIVATION_OVERLAY_REDUCED_DURATION_MS = 520;
+export const WakeActivationOverlayPhase = {
+  Preparing: 'preparing',
+  Dictating: 'dictating',
+  Submitting: 'submitting',
+} as const;
+export type WakeActivationOverlayPhase = typeof WakeActivationOverlayPhase[keyof typeof WakeActivationOverlayPhase];
+
+export interface WakeActivationOverlayStateChange {
+  visible: boolean;
+  phase?: WakeActivationOverlayPhase;
+  transcript?: string;
+}
 
 export const shouldShowWakeActivationOverlay = (
   source?: WakeInputDictationRequest['source']
@@ -9,10 +19,18 @@ export const shouldShowWakeActivationOverlay = (
   return source === 'wake';
 };
 
-export const getWakeActivationOverlayDuration = (prefersReducedMotion: boolean): number => {
-  return prefersReducedMotion
-    ? WAKE_ACTIVATION_OVERLAY_REDUCED_DURATION_MS
-    : WAKE_ACTIVATION_OVERLAY_DURATION_MS;
+export const getWakeActivationOverlaySubtitleKey = (
+  phase: WakeActivationOverlayPhase
+): 'wakeActivationOverlaySubtitlePreparing' | 'wakeActivationOverlaySubtitleDictating' | 'wakeActivationOverlaySubtitleSubmitting' => {
+  switch (phase) {
+    case WakeActivationOverlayPhase.Dictating:
+      return 'wakeActivationOverlaySubtitleDictating';
+    case WakeActivationOverlayPhase.Submitting:
+      return 'wakeActivationOverlaySubtitleSubmitting';
+    case WakeActivationOverlayPhase.Preparing:
+    default:
+      return 'wakeActivationOverlaySubtitlePreparing';
+  }
 };
 
 export const nextWakeActivationOverlaySequence = (current: number): number => {

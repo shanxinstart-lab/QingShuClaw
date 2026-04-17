@@ -1,10 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
-  WAKE_ACTIVATION_OVERLAY_DURATION_MS,
-  WAKE_ACTIVATION_OVERLAY_REDUCED_DURATION_MS,
-  getWakeActivationOverlayDuration,
+  getWakeActivationOverlaySubtitleKey,
   nextWakeActivationOverlaySequence,
   shouldShowWakeActivationOverlay,
+  WakeActivationOverlayPhase,
 } from './wakeActivationOverlayHelpers';
 
 describe('shouldShowWakeActivationOverlay', () => {
@@ -18,13 +17,11 @@ describe('shouldShowWakeActivationOverlay', () => {
   });
 });
 
-describe('getWakeActivationOverlayDuration', () => {
-  test('常规模式返回标准时长', () => {
-    expect(getWakeActivationOverlayDuration(false)).toBe(WAKE_ACTIVATION_OVERLAY_DURATION_MS);
-  });
-
-  test('减少动态模式返回更短时长', () => {
-    expect(getWakeActivationOverlayDuration(true)).toBe(WAKE_ACTIVATION_OVERLAY_REDUCED_DURATION_MS);
+describe('getWakeActivationOverlaySubtitleKey', () => {
+  test('不同阶段返回对应的副标题 key', () => {
+    expect(getWakeActivationOverlaySubtitleKey(WakeActivationOverlayPhase.Preparing)).toBe('wakeActivationOverlaySubtitlePreparing');
+    expect(getWakeActivationOverlaySubtitleKey(WakeActivationOverlayPhase.Dictating)).toBe('wakeActivationOverlaySubtitleDictating');
+    expect(getWakeActivationOverlaySubtitleKey(WakeActivationOverlayPhase.Submitting)).toBe('wakeActivationOverlaySubtitleSubmitting');
   });
 });
 
