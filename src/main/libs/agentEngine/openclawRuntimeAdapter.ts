@@ -26,6 +26,7 @@ import {
   extractGatewayHistoryEntries,
   extractGatewayMessageText,
   isHeartbeatAckText,
+  shouldSuppressHeartbeatText,
 } from '../openclawHistory';
 import { buildOpenClawLocalTimeContextPrompt } from '../openclawLocalTimeContextPrompt';
 import type {
@@ -419,7 +420,7 @@ const extractCurrentTurnAssistantText = (messages: unknown[]): string => {
     const role = typeof msg.role === 'string' ? msg.role.trim().toLowerCase() : '';
     if (role !== 'assistant') continue;
     const text = extractMessageText(msg).trim();
-    if (text) {
+    if (text && !shouldSuppressHeartbeatText('assistant', text)) {
       textParts.push(text);
     }
   }
@@ -3270,16 +3271,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
       // Extract authoritative user/assistant entries from gateway history
       const authoritativeEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
-      for (const message of history.messages) {
-        if (!isRecord(message)) continue;
-        const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
+      for (const entry of extractGatewayHistoryEntries(history.messages)) {
+        const role = entry.role;
         if (role !== 'user' && role !== 'assistant') continue;
-        let text = extractMessageText(message).trim();
+        let text = entry.text.trim();
         if (!text) continue;
         if (isDiscord) text = stripDiscordMentions(text);
         if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
         if (isPopo && role === 'user') text = stripPopoSystemHeader(text);
         if (isFeishu && role === 'user') text = stripFeishuSystemHeader(text);
+        if (!text || shouldSuppressHeartbeatText(role, text)) continue;
         authoritativeEntries.push({ role: role as 'user' | 'assistant', text });
       }
 
@@ -3448,6 +3449,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
             const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
             if (role !== 'assistant') continue;
             canonicalText = extractMessageText(message).trim();
+            if (canonicalText && shouldSuppressHeartbeatText('assistant', canonicalText)) {
+              canonicalText = '';
+              continue;
+            }
             if (canonicalText) {
               break;
             }
@@ -3542,10 +3547,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   ): ChannelHistorySyncEntry[] {
     const historyEntries: ChannelHistorySyncEntry[] = [];
     for (const message of historyMessages) {
-      if (!isRecord(message)) continue;
-      const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
+      const entry = extractGatewayHistoryEntries([message])[0];
+      if (!entry) continue;
+      const role = entry.role;
       if (role !== 'user' && role !== 'assistant') continue;
-      let text = extractMessageText(message).trim();
+      let text = entry.text.trim();
       // POPO's moltbot-popo plugin converts newlines to HTML break tags (<br />),
       // causing raw <br /> to appear in the UI and AI conversation.
       if (isPopo) text = text.replace(/<br\s*\/?>/gi, '\n');
@@ -3553,7 +3559,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (isDiscord) text = stripDiscordMentions(text);
       if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
       if (isFeishu && role === 'user') text = stripFeishuSystemHeader(text);
-      if (text) {
+      if (text && !shouldSuppressHeartbeatText(role, text)) {
         historyEntries.push({ role: role as 'user' | 'assistant', text });
       }
     }

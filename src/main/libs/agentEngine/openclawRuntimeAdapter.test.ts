@@ -127,6 +127,40 @@ test('reconcileWithHistory: missing assistant message — triggers replace', asy
   ]);
 });
 
+test('reconcileWithHistory: filters heartbeat prompt and ack entries', async () => {
+  const { session, store, getReplaceCallCount, getLastReplaceArgs } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'Hello', timestamp: 1, metadata: {} },
+  ]);
+
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: async () => ({
+      messages: [
+        { role: 'user', content: 'Hello' },
+        {
+          role: 'user',
+          content: `Read HEARTBEAT.md if it exists.
+When reading HEARTBEAT.md, use workspace file /tmp/HEARTBEAT.md.
+Do not infer or repeat old tasks from prior chats.
+If nothing needs attention, reply HEARTBEAT_OK.`,
+        },
+        { role: 'assistant', content: 'HEARTBEAT_OK' },
+        { role: 'assistant', content: 'Real answer' },
+      ],
+    }),
+  };
+
+  await adapter.reconcileWithHistory(session.id, 'managed:session-1');
+
+  expect(getReplaceCallCount()).toBe(1);
+  expect(getLastReplaceArgs()?.authoritative).toEqual([
+    { role: 'user', text: 'Hello' },
+    { role: 'assistant', text: 'Real answer' },
+  ]);
+});
+
 test('reconcileWithHistory: duplicate messages locally — skips replace to preserve local history', async () => {
   const { session, store, getReplaceCallCount } = createReconcileStore([
     { id: 'msg-1', type: 'user', content: 'Hello', timestamp: 1, metadata: {} },
@@ -428,6 +462,29 @@ test('syncSystemMessagesFromHistory skips pure heartbeat ack system messages', (
   });
 
   expect(getSystemMessages(session).map((message) => message.content)).toEqual(['Reminder fired']);
+});
+
+test('collectChannelHistoryEntries skips heartbeat prompt and ack messages', () => {
+  const { store } = createHistoryStore([]);
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+
+  const entries = adapter.collectChannelHistoryEntries([
+    { role: 'user', content: 'regular user' },
+    {
+      role: 'user',
+      content: `Read HEARTBEAT.md if it exists.
+When reading HEARTBEAT.md, use workspace file /tmp/HEARTBEAT.md.
+Do not infer or repeat old tasks from prior chats.
+If nothing needs attention, reply HEARTBEAT_OK.`,
+    },
+    { role: 'assistant', content: 'HEARTBEAT_OK' },
+    { role: 'assistant', content: 'regular assistant' },
+  ]);
+
+  expect(entries).toEqual([
+    { role: 'user', text: 'regular user' },
+    { role: 'assistant', text: 'regular assistant' },
+  ]);
 });
 
 test('getSessionKeysForSession prefers channel keys before managed fallback', () => {

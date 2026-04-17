@@ -5,6 +5,7 @@ import {
   extractGatewayHistoryEntry,
   extractGatewayMessageText,
   isHeartbeatAckText,
+  isHeartbeatPromptText,
 } from './openclawHistory';
 
 describe('openclawHistory', () => {
@@ -85,6 +86,16 @@ describe('openclawHistory', () => {
     expect(entry).toBeNull();
   });
 
+  test('filters heartbeat prompt user messages', () => {
+    const entry = extractGatewayHistoryEntry({
+      role: 'user',
+      content: `Read HEARTBEAT.md if it exists (workspace context). Follow it strictly.
+When reading HEARTBEAT.md, use workspace file /tmp/HEARTBEAT.md.
+Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.`,
+    });
+    expect(entry).toBeNull();
+  });
+
   test('filters unsupported roles and empty messages', () => {
     const entries = extractGatewayHistoryEntries([
       { role: 'user', content: 'Set a reminder' },
@@ -129,5 +140,15 @@ Current time: Sunday, March 15th, 2026 — 11:27 (Asia/Shanghai)`,
     expect(isHeartbeatAckText('HEARTBEAT_OK')).toBe(true);
     expect(isHeartbeatAckText('`HEARTBEAT_OK`')).toBe(true);
     expect(isHeartbeatAckText('HEARTBEAT_OK: all clear')).toBe(false);
+  });
+
+  test('isHeartbeatPromptText matches canonical heartbeat instructions only', () => {
+    expect(
+      isHeartbeatPromptText(`Read HEARTBEAT.md if it exists.
+When reading HEARTBEAT.md, use workspace file /tmp/HEARTBEAT.md.
+Do not infer or repeat old tasks from prior chats.
+If nothing needs attention, reply HEARTBEAT_OK.`)
+    ).toBe(true);
+    expect(isHeartbeatPromptText('Please read README.md and reply OK.')).toBe(false);
   });
 });
