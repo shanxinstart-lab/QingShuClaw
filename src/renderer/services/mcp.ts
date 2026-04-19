@@ -1,4 +1,4 @@
-import { McpServerConfig, McpServerFormData, McpRegistryEntry, McpMarketplaceCategoryInfo, McpCategory, McpMarketplaceServer } from '../types/mcp';
+import { McpCategory, McpMarketplaceCategoryInfo, McpMarketplaceServer,McpRegistryEntry, McpServerConfig, McpServerFormData } from '../types/mcp';
 
 /**
  * Convert remote marketplace server data to McpRegistryEntry format.
@@ -146,6 +146,14 @@ class McpService {
       console.error('Failed to refresh MCP bridge:', error);
       return { success: false, tools: 0, error: message };
     }
+  }
+
+  onBridgeSyncStart(callback: () => void): () => void {
+    return window.electron.mcp.onBridgeSyncStart(callback);
+  }
+
+  onBridgeSyncDone(callback: (data: { tools: number; error?: string }) => void): () => void {
+    return window.electron.mcp.onBridgeSyncDone(callback);
   }
 }
 
