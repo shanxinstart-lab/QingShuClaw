@@ -162,6 +162,7 @@
     }
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "@tailwindcss/typography": "^0.5.16",
     "@types/dompurify": "^3.0.5",
     "@types/extract-zip": "^2.0.1",
@@ -183,8 +184,11 @@
     "electron-builder": "^24.12.0",
     "esbuild": "^0.21.5",
     "eslint": "^8.56.0",
+    "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "globals": "^17.4.0",
     "patch-package": "^8.0.1",
     "postcss": "^8.4.35",
     "rimraf": "^5.0.5",

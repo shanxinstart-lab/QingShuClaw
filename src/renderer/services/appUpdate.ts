@@ -1,5 +1,6 @@
-import { localStore } from './store';
 import type { LocalizedText, UpdateConfig } from './brandRuntime';
+import { getUpdateQueryString } from './installationId';
+import { localStore } from './store';
 
 export const APP_UPDATE_LAST_CHECKED_AT_KEY = 'app_update_last_checked_at';
 export const APP_UPDATE_CACHED_INFO_KEY = 'app_update_cached_info';
@@ -106,6 +107,13 @@ const getPlatformDownloadUrl = (value: UpdateValue | undefined, fallbackDownload
   return fallbackDownloadUrl;
 };
 
+const appendQueryString = (baseUrl: string, queryString: string): string => {
+  if (!queryString) {
+    return baseUrl;
+  }
+  return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${queryString}`;
+};
+
 export const checkForAppUpdate = async (
   currentVersion: string,
   options: {
@@ -113,7 +121,9 @@ export const checkForAppUpdate = async (
     updateConfig: UpdateConfig;
   }
 ): Promise<AppUpdateInfo | null> => {
-  const url = options.manual ? options.updateConfig.manualCheckUrl : options.updateConfig.autoCheckUrl;
+  const baseUrl = options.manual ? options.updateConfig.manualCheckUrl : options.updateConfig.autoCheckUrl;
+  const queryString = await getUpdateQueryString();
+  const url = appendQueryString(baseUrl, queryString);
   console.log(`[AppUpdate] checking update, currentVersion=${currentVersion}, url=${url}`);
 
   const response = await window.electron.api.fetch({
