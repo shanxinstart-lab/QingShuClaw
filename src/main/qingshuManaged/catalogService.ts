@@ -1,7 +1,3 @@
-import type { AuthAdapter } from '../auth/adapter';
-import type { Agent } from '../coworkStore';
-import type { McpServerManager, McpToolManifestEntry } from '../libs/mcpServerManager';
-import type { SkillManager } from '../skillManager';
 import {
   QingShuManagedToolRuntime,
   QingShuObjectSourceType,
@@ -12,6 +8,10 @@ import type {
   QingShuManagedSkillDescriptor,
   QingShuManagedToolDescriptor,
 } from '../../shared/qingshuManaged/types';
+import type { AuthAdapter } from '../auth/adapter';
+import type { Agent } from '../coworkStore';
+import type { McpServerManager, McpToolManifestEntry } from '../libs/mcpServerManager';
+import type { SkillManager } from '../skillManager';
 
 type FetchFn = (url: string, options?: RequestInit) => Promise<Response>;
 
@@ -19,6 +19,7 @@ type QingShuManagedCatalogServiceDeps = {
   fetchFn: FetchFn;
   getAuthAdapter: () => AuthAdapter;
   resolveApiBaseUrl: () => string | null;
+  isAuthenticated: () => boolean;
   skillManager: SkillManager;
   store?: {
     get<T = unknown>(key: string): T | undefined;
@@ -309,6 +310,11 @@ export class QingShuManagedCatalogService {
   }
 
   registerLocalToolRuntime(mcpServerManager: McpServerManager): void {
+    if (!this.deps.isAuthenticated()) {
+      mcpServerManager.unregisterLocalServer(QingShuManagedToolRuntime.ServerName);
+      return;
+    }
+
     const tools: McpToolManifestEntry[] = this.snapshot.tools
       .filter((tool) => tool.allowed)
       .map((tool) => {

@@ -1,69 +1,76 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { RootState, store } from './store';
-import Settings, { type SettingsOpenOptions } from './components/Settings';
-import Sidebar from './components/Sidebar';
-import LoginWelcomeOverlay from './components/LoginWelcomeOverlay';
-import Toast from './components/Toast';
-import WakeActivationOverlay from './components/WakeActivationOverlay';
-import WindowTitleBar from './components/window/WindowTitleBar';
+import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo,useRef, useState } from 'react';
+import { useDispatch,useSelector } from 'react-redux';
+
 import { CoworkView } from './components/cowork';
-import { SkillsView } from './components/skills';
-import { ScheduledTasksView } from './components/scheduledTasks';
-import { McpView } from './components/mcp';
-import AgentsView from './components/agent/AgentsView';
+import ConversationHistoryDrawer from './components/cowork/ConversationHistoryDrawer';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
 import CoworkQuestionWizard from './components/cowork/CoworkQuestionWizard';
 import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
-import { configService } from './services/config';
-import { apiService } from './services/api';
-import { themeService } from './services/theme';
-import { coworkService } from './services/cowork';
-import { authService } from './services/auth';
-import { scheduledTaskService } from './services/scheduledTask';
+import PrimarySidebar, { type WorkbenchMainView } from './components/layout/PrimarySidebar';
+import SecondarySidebar from './components/layout/SecondarySidebar';
+import LoginWelcomeOverlay from './components/LoginWelcomeOverlay';
+import PrivacyDialog from './components/PrivacyDialog';
+import { ScheduledTasksView } from './components/scheduledTasks';
+import Settings, { type SettingsOpenOptions } from './components/Settings';
+import { SkillsView } from './components/skills';
+import Toast from './components/Toast';
+import AppUpdateModal from './components/update/AppUpdateModal';
+import WakeActivationOverlay from './components/WakeActivationOverlay';
 import {
+  nextWakeActivationOverlaySequence,
+  shouldShowWakeActivationOverlay,
+  WakeActivationOverlayPhase,
+  type WakeActivationOverlayStateChange,
+} from './components/wakeActivationOverlayHelpers';
+import WindowTitleBar from './components/window/WindowTitleBar';
+import { defaultConfig, getProviderDisplayName } from './config';
+import { AppCustomEvent } from './constants/app';
+import { agentService } from './services/agent';
+import type { ApiConfig } from './services/api';
+import { apiService } from './services/api';
+import {
+  type AppUpdateDownloadProgress,
+  type AppUpdateInfo,
   checkForAppUpdate,
   clearStoredAppUpdateInfo,
   getStoredAppUpdateInfo,
   getStoredUpdateLastCheckedAt,
   setStoredAppUpdateInfo,
   setStoredUpdateLastCheckedAt,
-  type AppUpdateInfo,
-  type AppUpdateDownloadProgress,
 } from './services/appUpdate';
-import { defaultConfig, getProviderDisplayName } from './config';
-import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
-import { clearSelection } from './store/slices/quickActionSlice';
-import type { ApiConfig } from './services/api';
-import type { CoworkPermissionResult } from './types/cowork';
-import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
-import { i18nService } from './services/i18n';
-import { matchesShortcut } from './services/shortcuts';
-import AppUpdateBadge from './components/update/AppUpdateBadge';
-import AppUpdateModal from './components/update/AppUpdateModal';
-import PrivacyDialog from './components/PrivacyDialog';
-import { AppCustomEvent } from './constants/app';
+import { authService } from './services/auth';
 import {
-  WakeActivationOverlayPhase,
-  type WakeActivationOverlayStateChange,
-  nextWakeActivationOverlaySequence,
-  shouldShowWakeActivationOverlay,
-} from './components/wakeActivationOverlayHelpers';
-import {
+  type BrandRuntimeConfig,
   getCachedBrandRuntimeConfig,
   getDefaultBrandRuntimeConfig,
   getPrivacyAgreementAcceptance,
   refreshBrandRuntimeConfig,
   savePrivacyAgreementAcceptance,
-  type BrandRuntimeConfig,
 } from './services/brandRuntime';
+import { configService } from './services/config';
+import { coworkService } from './services/cowork';
+import { i18nService } from './services/i18n';
+import { scheduledTaskService } from './services/scheduledTask';
+import { matchesShortcut } from './services/shortcuts';
+import { themeService } from './services/theme';
+import { RootState, store } from './store';
+import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
+import { beginLoadSession } from './store/slices/coworkSlice';
+import { clearSelection } from './store/slices/quickActionSlice';
+import type { CoworkPermissionResult, CoworkSessionSummary } from './types/cowork';
+
+const CoworkSearchModal = lazy(() => import('./components/cowork/CoworkSearchModal'));
+const ApplicationsView = lazy(() => import('./components/apps/ApplicationsView'));
+const AgentsView = lazy(() => import('./components/agent/AgentsView'));
 
 const App: React.FC = () => {
   const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
   const platform = electronApi?.platform ?? 'unknown';
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions>({});
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'mcp' | 'agents'>('cowork');
+  const [mainView, setMainView] = useState<WorkbenchMainView>('cowork');
+  const [coworkWorkspaceView, setCoworkWorkspaceView] = useState<'conversation' | 'agents'>('conversation');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -75,7 +82,6 @@ const App: React.FC = () => {
   const [wakeActivationOverlayTranscript, setWakeActivationOverlayTranscript] = useState('');
   const [wakeActivationOverlaySequence, setWakeActivationOverlaySequence] = useState(0);
   const [, forceLanguageRefresh] = useState(0);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateModalState, setUpdateModalState] = useState<'info' | 'downloading' | 'installing' | 'error'>('info');
@@ -90,13 +96,29 @@ const App: React.FC = () => {
   } | null>(null);
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
+  const agents = useSelector((state: RootState) => state.agent.agents);
   const pendingPermissions = useSelector((state: RootState) => state.cowork.pendingPermissions);
   const pendingPermission = pendingPermissions[0] ?? null;
+  const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const toastTimerRef = useRef<number | null>(null);
   const loginWelcomeTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
+  const historyDrawerRequestIdRef = useRef(0);
+  const globalSearchRequestIdRef = useRef(0);
   const dispatch = useDispatch();
   const isWindows = platform === 'win32';
+  const [historyDrawerState, setHistoryDrawerState] = useState<{
+    title: string;
+    agentId: string;
+    sessions: CoworkSessionSummary[];
+  } | null>(null);
+  const [showCoworkSearch, setShowCoworkSearch] = useState(false);
+  const [globalSearchSessions, setGlobalSearchSessions] = useState<CoworkSessionSummary[]>([]);
+  const lazyPanelFallback = (
+    <div className="flex h-full items-center justify-center text-sm text-secondary">
+      {i18nService.t('loading')}
+    </div>
+  );
 
   const waitWithTimeout = useCallback(
     async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
@@ -197,9 +219,12 @@ const App: React.FC = () => {
         console.info('[App] initializeApp: i18nService.initialize');
         await waitWithTimeout(i18nService.initialize(), 5000, 'i18nService.initialize');
 
-        // 初始化认证服务（恢复登录状态）
-        console.info('[App] initializeApp: authService.init');
-        await authService.init();
+        // 登录态恢复内部已经把重型同步拆到后台，这里尽早并行启动，
+        // 让套餐模型和用户资料更快回到工作台，但不阻塞首屏。
+        console.info('[App] initializeApp: authService.init (parallel)');
+        void authService.init().catch((error) => {
+          console.error('[App] initializeApp: authService.init failed:', error);
+        });
 
         console.info('[App] initializeApp: configService.getConfig');
         const config = await configService.getConfig();
@@ -396,25 +421,68 @@ const App: React.FC = () => {
     setMainView('skills');
   }, []);
 
-  const handleShowCowork = useCallback(() => {
-    setMainView('cowork');
+  const loadAgentSessions = useCallback(async (agentId: string): Promise<CoworkSessionSummary[]> => {
+    const coworkApi = window.electron?.cowork;
+    if (!coworkApi) {
+      return [];
+    }
+    const result = await coworkApi.listSessions(agentId);
+    return result.success && result.sessions ? result.sessions : [];
   }, []);
 
-  const handleShowScheduledTasks = useCallback(() => {
-    setMainView('scheduledTasks');
-  }, []);
+  const refreshHistoryDrawerSessions = useCallback(async (agentId: string, title: string) => {
+    const requestId = ++historyDrawerRequestIdRef.current;
+    const sessions = await loadAgentSessions(agentId);
+    if (requestId !== historyDrawerRequestIdRef.current) {
+      return;
+    }
+    setHistoryDrawerState((current) => {
+      if (!current || current.agentId !== agentId) {
+        return current;
+      }
+      return {
+        ...current,
+        title,
+        sessions,
+      };
+    });
+  }, [loadAgentSessions]);
 
-  const handleShowMcp = useCallback(() => {
-    setMainView('mcp');
-  }, []);
+  const loadGlobalSearchSessions = useCallback(async () => {
+    const requestId = ++globalSearchRequestIdRef.current;
+    if (!window.electron?.cowork) {
+      setGlobalSearchSessions([]);
+      return;
+    }
 
-  const handleShowAgents = useCallback(() => {
-    setMainView('agents');
-  }, []);
+    const enabledAgentIds = (agents.length > 0 ? agents : [{ id: 'main', enabled: true }])
+      .filter((agent) => agent.enabled)
+      .map((agent) => agent.id);
+    const normalizedAgentIds = enabledAgentIds.includes('main')
+      ? enabledAgentIds
+      : ['main', ...enabledAgentIds];
 
-  const handleToggleSidebar = useCallback(() => {
-    setIsSidebarCollapsed((prev) => !prev);
-  }, []);
+    const sessionResults = await Promise.all(
+      normalizedAgentIds.map((agentId) => loadAgentSessions(agentId)),
+    );
+
+    const mergedSessions = sessionResults
+      .flat()
+      .sort((leftSession, rightSession) => {
+        if (leftSession.pinned !== rightSession.pinned) {
+          return leftSession.pinned ? -1 : 1;
+        }
+        if (rightSession.updatedAt !== leftSession.updatedAt) {
+          return rightSession.updatedAt - leftSession.updatedAt;
+        }
+        return rightSession.createdAt - leftSession.createdAt;
+      });
+
+    if (requestId !== globalSearchRequestIdRef.current) {
+      return;
+    }
+    setGlobalSearchSessions(mergedSessions);
+  }, [agents, loadAgentSessions]);
 
   const handleNewChat = useCallback(() => {
     disarmWakeFollowUp();
@@ -422,6 +490,8 @@ const App: React.FC = () => {
     coworkService.clearSession();
     dispatch(clearSelection());
     setMainView('cowork');
+    setCoworkWorkspaceView('conversation');
+    setHistoryDrawerState(null);
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent('cowork:focus-input', {
         detail: { clear: shouldClearInput },
@@ -431,12 +501,149 @@ const App: React.FC = () => {
 
   const handleFocusCoworkInput = useCallback((clear = false) => {
     setMainView('cowork');
+    setCoworkWorkspaceView('conversation');
+    setHistoryDrawerState(null);
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent(AppCustomEvent.FocusCoworkInput, {
         detail: { clear },
       }));
     }, 0);
   }, []);
+
+  const handleSelectMainView = useCallback((view: WorkbenchMainView) => {
+    setMainView(view);
+    if (view === 'cowork') {
+      setCoworkWorkspaceView('conversation');
+    }
+    if (view !== 'cowork') {
+      setHistoryDrawerState(null);
+    }
+  }, []);
+
+  const ensureAgentContext = useCallback(async (agentId: string) => {
+    if (!agentId || agentId === currentAgentId) {
+      return;
+    }
+    const switched = agentService.switchAgent(agentId);
+    if (switched) {
+      await coworkService.loadSessions(agentId);
+    }
+  }, [currentAgentId]);
+
+  const handleCreateConversationForAgent = useCallback(async (agentId: string) => {
+    await ensureAgentContext(agentId);
+    handleNewChat();
+  }, [ensureAgentContext, handleNewChat]);
+
+  const handleSelectConversation = useCallback(async (agentId: string, sessionId: string) => {
+    await ensureAgentContext(agentId);
+    dispatch(beginLoadSession(sessionId));
+    setMainView('cowork');
+    setCoworkWorkspaceView('conversation');
+    setHistoryDrawerState(null);
+    const loadedSession = await coworkService.loadSession(sessionId);
+    if (!loadedSession) {
+      coworkService.clearSession();
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('coworkLoadSessionFailed'),
+      }));
+    }
+  }, [dispatch, ensureAgentContext]);
+
+  const handleOpenAgentWorkspace = useCallback(() => {
+    setMainView('cowork');
+    setCoworkWorkspaceView((current) => current === 'agents' ? 'conversation' : 'agents');
+    setHistoryDrawerState(null);
+  }, []);
+
+  const handleOpenCoworkSearch = useCallback(() => {
+    setMainView('cowork');
+    void loadGlobalSearchSessions();
+    setShowCoworkSearch(true);
+  }, [loadGlobalSearchSessions]);
+
+  const handleCloseCoworkSearch = useCallback(() => {
+    setShowCoworkSearch(false);
+  }, []);
+
+  const handleOpenHistoryDrawer = useCallback((payload: {
+    title: string;
+    agentId: string;
+    sessions: CoworkSessionSummary[];
+  }) => {
+    setHistoryDrawerState(payload);
+    void refreshHistoryDrawerSessions(payload.agentId, payload.title);
+  }, [refreshHistoryDrawerSessions]);
+
+  const handleCloseHistoryDrawer = useCallback(() => {
+    setHistoryDrawerState(null);
+  }, []);
+
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    await coworkService.deleteSession(sessionId);
+    setHistoryDrawerState((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        sessions: current.sessions.filter((session) => session.id !== sessionId),
+      };
+    });
+  }, []);
+
+  const handleTogglePinSession = useCallback(async (sessionId: string, pinned: boolean) => {
+    await coworkService.setSessionPinned(sessionId, pinned);
+    setHistoryDrawerState((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        sessions: current.sessions.map((session) => (
+          session.id === sessionId ? { ...session, pinned } : session
+        )),
+      };
+    });
+  }, []);
+
+  const handleRenameSession = useCallback(async (sessionId: string, title: string) => {
+    await coworkService.renameSession(sessionId, title);
+    setHistoryDrawerState((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        sessions: current.sessions.map((session) => (
+          session.id === sessionId ? { ...session, title } : session
+        )),
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    const coworkApi = window.electron?.cowork;
+    if (!coworkApi?.onSessionsChanged) {
+      return;
+    }
+
+    const unsubscribe = coworkApi.onSessionsChanged(() => {
+      if (historyDrawerState) {
+        void refreshHistoryDrawerSessions(historyDrawerState.agentId, historyDrawerState.title);
+      }
+      if (showCoworkSearch) {
+        void loadGlobalSearchSessions();
+      }
+    });
+
+    return unsubscribe;
+  }, [
+    historyDrawerState,
+    loadGlobalSearchSessions,
+    refreshHistoryDrawerSessions,
+    showCoworkSearch,
+  ]);
 
   const triggerWakeActivationOverlay = useCallback(() => {
     setWakeActivationOverlayPhase(WakeActivationOverlayPhase.Preparing);
@@ -477,10 +684,6 @@ const App: React.FC = () => {
       toastTimerRef.current = null;
     }, 2200);
   }, []);
-
-  const handleShowLogin = useCallback(() => {
-    showToast(i18nService.t('featureInDevelopment'));
-  }, [showToast]);
 
   const runUpdateCheck = useCallback(
     async (options?: { manual?: boolean }) => {
@@ -524,14 +727,6 @@ const App: React.FC = () => {
     },
     [brandRuntimeConfig.update, electronApi, enterpriseConfig?.disableUpdate, updateInfo?.forceUpdate]
   );
-
-  const handleOpenUpdateModal = useCallback(() => {
-    if (!updateInfo) return;
-    setUpdateModalState('info');
-    setUpdateError(null);
-    setDownloadProgress(null);
-    setShowUpdateModal(true);
-  }, [updateInfo]);
 
   const handleUpdateFound = useCallback((info: AppUpdateInfo) => {
     setUpdateInfo(info);
@@ -728,7 +923,7 @@ const App: React.FC = () => {
 
       if (matchesShortcut(event, activeShortcuts.search)) {
         event.preventDefault();
-        window.dispatchEvent(new CustomEvent('cowork:shortcut:search'));
+        handleOpenCoworkSearch();
         return;
       }
 
@@ -740,7 +935,7 @@ const App: React.FC = () => {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleShowSettings, handleNewChat]);
+  }, [handleOpenCoworkSearch, handleShowSettings, handleNewChat]);
 
   useEffect(() => {
     return () => {
@@ -920,12 +1115,6 @@ const App: React.FC = () => {
 
   const isOverlayActive = showSettings || showUpdateModal || pendingPermissions.length > 0;
   const updateChecksManaged = Boolean(enterpriseConfig?.disableUpdate) || !brandRuntimeConfig.update.enabled;
-  const updateBadge = !updateChecksManaged && updateInfo ? (
-    <AppUpdateBadge
-      latestVersion={updateInfo.latestVersion}
-      onClick={handleOpenUpdateModal}
-    />
-  ) : null;
   const windowsStandaloneTitleBar = isWindows ? (
     <div className="draggable relative h-9 shrink-0 bg-surface-raised">
       <WindowTitleBar isOverlayActive={isOverlayActive} />
@@ -999,67 +1188,96 @@ const App: React.FC = () => {
         <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
       )}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <Sidebar
-          onShowLogin={handleShowLogin}
-          onShowSettings={handleShowSettings}
+        <PrimarySidebar
           activeView={mainView}
-          onShowSkills={handleShowSkills}
-          onShowCowork={handleShowCowork}
-          onShowScheduledTasks={handleShowScheduledTasks}
-          onShowMcp={handleShowMcp}
-          onShowAgents={handleShowAgents}
-          onNewChat={handleNewChat}
-          isCollapsed={isSidebarCollapsed}
-          onToggleCollapse={handleToggleSidebar}
-          updateBadge={!isSidebarCollapsed ? updateBadge : null}
-          hideLogin={enterpriseConfig?.ui?.login === 'hide'}
+          onSelectView={handleSelectMainView}
+          onOpenSettings={() => handleShowSettings()}
         />
-        <div className={`flex-1 min-w-0 py-1.5 pr-1.5 ${isSidebarCollapsed ? 'pl-1.5' : ''}`}>
-          <div className="relative h-full min-h-0 rounded-xl bg-background overflow-hidden">
+        {mainView === 'cowork' && (
+          <SecondarySidebar
+            currentSessionId={currentSessionId}
+            isAgentWorkspaceActive={coworkWorkspaceView === 'agents'}
+            onCreateConversation={handleCreateConversationForAgent}
+            onSelectConversation={handleSelectConversation}
+            onOpenHistoryDrawer={handleOpenHistoryDrawer}
+            onOpenAgentWorkspace={handleOpenAgentWorkspace}
+            onOpenGlobalSearch={handleOpenCoworkSearch}
+          />
+        )}
+        <div className="flex-1 min-w-0 p-1.5">
+          <div className="relative h-full min-h-0 overflow-hidden rounded-[28px] bg-background">
             <EngineStartupOverlay />
             {mainView === 'skills' ? (
               <SkillsView
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
                 readOnly={enterpriseConfig?.ui?.skills === 'readonly'}
               />
             ) : mainView === 'scheduledTasks' ? (
-              <ScheduledTasksView
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
-              />
-            ) : mainView === 'mcp' ? (
-              <McpView
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
-              />
-            ) : mainView === 'agents' ? (
-              <AgentsView
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
-                onShowCowork={handleShowCowork}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
-              />
+              <ScheduledTasksView />
+            ) : mainView === 'applications' ? (
+              <Suspense fallback={lazyPanelFallback}>
+                <ApplicationsView />
+              </Suspense>
+            ) : coworkWorkspaceView === 'agents' ? (
+              <Suspense fallback={lazyPanelFallback}>
+                <AgentsView onShowCowork={() => setCoworkWorkspaceView('conversation')} />
+              </Suspense>
             ) : (
               <CoworkView
                 onRequestAppSettings={handleShowSettings}
                 onShowSkills={handleShowSkills}
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
+              />
+            )}
+            {mainView === 'cowork' && historyDrawerState && (
+              <ConversationHistoryDrawer
+                isOpen={true}
+                title={historyDrawerState.title}
+                sessions={historyDrawerState.sessions}
+                currentSessionId={currentSessionId}
+                onClose={handleCloseHistoryDrawer}
+                onSelectSession={async (sessionId) => {
+                  const targetSession = historyDrawerState.sessions.find((session) => session.id === sessionId);
+                  const targetAgentId = targetSession?.agentId || 'main';
+                  await handleSelectConversation(targetAgentId, sessionId);
+                }}
+                onDeleteSession={handleDeleteSession}
+                onTogglePin={handleTogglePinSession}
+                onRenameSession={handleRenameSession}
               />
             )}
           </div>
         </div>
       </div>
+      {showCoworkSearch && (
+        <Suspense fallback={null}>
+          <CoworkSearchModal
+            isOpen={showCoworkSearch}
+            onClose={handleCloseCoworkSearch}
+            sessions={globalSearchSessions}
+            currentSessionId={currentSessionId}
+            onSelectSession={async (sessionId) => {
+              const targetSession = globalSearchSessions.find((session) => session.id === sessionId);
+              const targetAgentId = targetSession?.agentId || 'main';
+              await handleSelectConversation(targetAgentId, sessionId);
+            }}
+            onDeleteSession={async (sessionId) => {
+              await coworkService.deleteSession(sessionId);
+              setGlobalSearchSessions((current) => current.filter((session) => session.id !== sessionId));
+            }}
+            onTogglePin={async (sessionId, pinned) => {
+              await coworkService.setSessionPinned(sessionId, pinned);
+              setGlobalSearchSessions((current) => current.map((session) => (
+                session.id === sessionId ? { ...session, pinned } : session
+              )));
+            }}
+            onRenameSession={async (sessionId, title) => {
+              await coworkService.renameSession(sessionId, title);
+              setGlobalSearchSessions((current) => current.map((session) => (
+                session.id === sessionId ? { ...session, title } : session
+              )));
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* 设置窗口显示在所有主内容之上，但不影响主界面的交互 */}
       {showSettings && (

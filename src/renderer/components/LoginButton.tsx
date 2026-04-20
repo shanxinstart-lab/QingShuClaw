@@ -1,22 +1,35 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { useSelector } from 'react-redux';
 import { QRCodeSVG } from 'qrcode.react';
-import { RootState } from '../store';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useSelector } from 'react-redux';
+
+import {
+  AuthBackend,
+  type AuthBackend as AuthBackendType,
+  AuthLoginMode,
+  type AuthLoginMode as AuthLoginModeType,
+  type FeishuScanSession,
+  FeishuScanSessionStatus,
+} from '../../common/auth';
 import { AppCustomEvent } from '../constants/app';
 import { authService } from '../services/auth';
 import { i18nService } from '../services/i18n';
+import { RootState } from '../store';
 import type { CreditItem } from '../store/slices/authSlice';
-import {
-  AuthBackend,
-  AuthLoginMode,
-  FeishuScanSessionStatus,
-  type AuthBackend as AuthBackendType,
-  type AuthLoginMode as AuthLoginModeType,
-  type FeishuScanSession,
-} from '../../common/auth';
+import QingShuBrandMark from './branding/QingShuBrandMark';
 
 const FEISHU_LOGIN_WAIT_SECONDS = 60;
 const FEISHU_LOGIN_POLL_INTERVAL_MS = 1500;
+const FEISHU_SCAN_RETRY_BASE_DELAY_MS = 5000;
+const FEISHU_SCAN_RETRY_MAX_DELAY_MS = 30000;
+
+const getFeishuScanRetryDelay = (attempt: number): number => {
+  const safeAttempt = Math.max(1, attempt);
+  return Math.min(
+    FEISHU_SCAN_RETRY_BASE_DELAY_MS * 2 ** (safeAttempt - 1),
+    FEISHU_SCAN_RETRY_MAX_DELAY_MS
+  );
+};
+
 const getFeishuCountdown = (expiredAt?: number): number => {
   if (!expiredAt) {
     return FEISHU_LOGIN_WAIT_SECONDS;
@@ -178,6 +191,8 @@ const normalizeIdentityText = (value?: string | null): string => {
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
+type LoginButtonVariant = 'default' | 'sidebar';
+
 const hasLocalOnlyScanCallback = (authorizeUrl?: string | null): boolean => {
   const normalizedAuthorizeUrl = (authorizeUrl || '').trim();
   if (!normalizedAuthorizeUrl) {
@@ -315,7 +330,8 @@ const QtbLoginPanel: React.FC<{
   authBackend: AuthBackendType;
   initialScanSession?: FeishuScanSession | null;
   initialScanLoading?: boolean;
-}> = ({ onClose, authBackend, initialScanSession = null, initialScanLoading = false }) => {
+  panelClassName?: string;
+}> = ({ onClose, authBackend, initialScanSession = null, initialScanLoading = false, panelClassName }) => {
   const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -330,19 +346,38 @@ const QtbLoginPanel: React.FC<{
   );
   const [isCreatingFeishuSession, setIsCreatingFeishuSession] = useState(false);
   const [submittingMode, setSubmittingMode] = useState<'password' | 'browser' | null>(null);
+  const [autoRetryAttempt, setAutoRetryAttempt] = useState(0);
+  const [autoRetryAt, setAutoRetryAt] = useState<number | null>(null);
+  const [autoRetryCountdown, setAutoRetryCountdown] = useState(0);
   const autoScanRequestedRef = useRef(false);
   const inputsDisabled = submittingMode === 'password';
   const localOnlyScanCallback = hasLocalOnlyScanCallback(feishuScanSession?.authorizeUrl);
 
-  const completeFeishuLogin = () => {
+  const resetAutoRetryState = useCallback(() => {
+    setAutoRetryAttempt(0);
+    setAutoRetryAt(null);
+    setAutoRetryCountdown(0);
+  }, []);
+
+  const scheduleAutoRetry = useCallback((): number => {
+    const nextAttempt = autoRetryAttempt + 1;
+    const delayMs = getFeishuScanRetryDelay(nextAttempt);
+    setAutoRetryAttempt(nextAttempt);
+    setAutoRetryAt(Date.now() + delayMs);
+    setAutoRetryCountdown(Math.ceil(delayMs / 1000));
+    return delayMs;
+  }, [autoRetryAttempt]);
+
+  const completeFeishuLogin = useCallback(() => {
     autoScanRequestedRef.current = false;
+    resetAutoRetryState();
     setFeishuScanSession(null);
     setNotice('');
     setFeishuCountdown(FEISHU_LOGIN_WAIT_SECONDS);
     showLoginWelcome();
     showToast(i18nService.t('authLoginSuccess'));
     onClose();
-  };
+  }, [onClose, resetAutoRetryState]);
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -350,7 +385,7 @@ const QtbLoginPanel: React.FC<{
     }
 
     completeFeishuLogin();
-  }, [isLoggedIn, onClose]);
+  }, [completeFeishuLogin, isLoggedIn]);
 
   useEffect(() => {
     if (loginMode !== AuthLoginMode.Scan) {
@@ -376,6 +411,27 @@ const QtbLoginPanel: React.FC<{
   }, [initialScanSession, feishuScanSession, loginMode]);
 
   useEffect(() => {
+    if (autoRetryAt === null) {
+      setAutoRetryCountdown(0);
+      return;
+    }
+
+    const syncCountdown = () => {
+      const seconds = Math.max(0, Math.ceil((autoRetryAt - Date.now()) / 1000));
+      setAutoRetryCountdown(seconds);
+      if (seconds <= 0) {
+        setAutoRetryAt(null);
+      }
+    };
+
+    syncCountdown();
+    const timer = window.setInterval(syncCountdown, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [autoRetryAt]);
+
+  useEffect(() => {
     if (authBackend !== AuthBackend.Qtb || loginMode !== AuthLoginMode.Scan) {
       autoScanRequestedRef.current = false;
       return;
@@ -386,6 +442,7 @@ const QtbLoginPanel: React.FC<{
       || isReusableFeishuScanSession(initialScanSession)
       || isCreatingFeishuSession
       || feishuScanSession
+      || (autoRetryAt !== null && autoRetryAt > Date.now())
       || autoScanRequestedRef.current
     ) {
       return;
@@ -400,6 +457,7 @@ const QtbLoginPanel: React.FC<{
       try {
         const session = await createFeishuScanSession();
         if (!disposed && session) {
+          resetAutoRetryState();
           setFeishuScanSession(session);
           setNotice(i18nService.t('authFeishuScanReadyTip'));
           return;
@@ -411,10 +469,17 @@ const QtbLoginPanel: React.FC<{
           return;
         }
         autoScanRequestedRef.current = false;
+        const retryDelayMs = scheduleAutoRetry();
         setError(
           loginError instanceof Error
             ? loginError.message
             : i18nService.t('authLoginFailed')
+        );
+        setNotice(
+          i18nService.t('authFeishuScanRetryScheduled').replace(
+            '{seconds}',
+            String(Math.ceil(retryDelayMs / 1000))
+          )
         );
       }
     };
@@ -431,7 +496,33 @@ const QtbLoginPanel: React.FC<{
     loginMode,
     isCreatingFeishuSession,
     feishuScanSession,
+    autoRetryAt,
+    resetAutoRetryState,
+    scheduleAutoRetry,
   ]);
+
+  useEffect(() => {
+    if (
+      loginMode !== AuthLoginMode.Scan
+      || feishuScanSession
+      || isCreatingFeishuSession
+      || autoRetryAt === null
+    ) {
+      return;
+    }
+
+    if (autoRetryCountdown > 0) {
+      setNotice(
+        i18nService.t('authFeishuScanRetryScheduled').replace(
+          '{seconds}',
+          String(autoRetryCountdown)
+        )
+      );
+      return;
+    }
+
+    setNotice(i18nService.t('authFeishuScanLoading'));
+  }, [autoRetryAt, autoRetryCountdown, feishuScanSession, isCreatingFeishuSession, loginMode]);
 
   useEffect(() => {
     if (!feishuScanSession?.expiredAt) {
@@ -516,7 +607,7 @@ const QtbLoginPanel: React.FC<{
         window.clearTimeout(timer);
       }
     };
-  }, [authBackend, feishuScanSession?.scanSessionId, isLoggedIn, loginMode, onClose]);
+  }, [authBackend, completeFeishuLogin, feishuScanSession?.scanSessionId, isLoggedIn, loginMode]);
 
   const createFeishuScanSession = async (forceRefresh = false) => {
     setIsCreatingFeishuSession(true);
@@ -592,6 +683,7 @@ const QtbLoginPanel: React.FC<{
 
   const handleRefreshFeishuScan = async () => {
     autoScanRequestedRef.current = false;
+    resetAutoRetryState();
     setError('');
     setNotice(i18nService.t('authFeishuScanLoading'));
     const session = await createFeishuScanSession(true);
@@ -609,13 +701,14 @@ const QtbLoginPanel: React.FC<{
     setError('');
     setNotice('');
     autoScanRequestedRef.current = false;
+    resetAutoRetryState();
     if (nextMode === AuthLoginMode.Scan) {
       setFeishuScanSession(null);
     }
   };
 
   return (
-    <div className={`absolute bottom-full left-0 z-[70] mb-2 rounded-2xl border border-claude-border bg-claude-surface p-4 shadow-popover dark:border-claude-darkBorder dark:bg-claude-darkSurface popover-enter ${loginMode === AuthLoginMode.Scan ? 'w-[19rem]' : 'w-[16.5rem]'}`}>
+    <div className={`absolute z-[70] rounded-2xl border border-claude-border bg-claude-surface p-4 shadow-popover dark:border-claude-darkBorder dark:bg-claude-darkSurface popover-enter ${panelClassName ?? 'bottom-full left-0 mb-2'} ${loginMode === AuthLoginMode.Scan ? 'w-[19rem]' : 'w-[16.5rem]'}`}>
       <div className="mb-2 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium tracking-[0.02em] text-emerald-700 ring-1 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/15">
         灵工打卡
       </div>
@@ -769,7 +862,11 @@ const QtbLoginPanel: React.FC<{
   );
 };
 
-const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> = ({ onClose, authBackend }) => {
+const UserMenu: React.FC<{
+  onClose: () => void;
+  authBackend: AuthBackendType;
+  panelClassName?: string;
+}> = ({ onClose, authBackend, panelClassName }) => {
   const user = useSelector((state: RootState) => state.auth.user);
   const profileSummary = useSelector((state: RootState) => state.auth.profileSummary);
   const [creditsExpanded, setCreditsExpanded] = useState(false);
@@ -824,7 +921,7 @@ const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> 
   const hasCredits = creditItems.length > 0;
 
   return (
-    <div className="absolute bottom-full left-[-0.5rem] mb-1 w-[14.5rem] dark:bg-claude-darkSurface bg-claude-surface rounded-xl shadow-popover border dark:border-claude-darkBorder border-claude-border overflow-hidden z-[70] popover-enter">
+    <div className={`absolute w-[14.5rem] overflow-hidden rounded-xl border border-claude-border bg-claude-surface shadow-popover z-[70] popover-enter dark:border-claude-darkBorder dark:bg-claude-darkSurface ${panelClassName ?? 'bottom-full left-[-0.5rem] mb-1'}`}>
       {/* Account info */}
       {authBackend === AuthBackend.Qtb ? (
         <button
@@ -947,7 +1044,11 @@ const UserMenu: React.FC<{ onClose: () => void; authBackend: AuthBackendType }> 
   );
 };
 
-const LoginButton: React.FC = () => {
+interface LoginButtonProps {
+  variant?: LoginButtonVariant;
+}
+
+const LoginButton: React.FC<LoginButtonProps> = ({ variant = 'default' }) => {
   const { isLoggedIn, isLoading, user } = useSelector((state: RootState) => state.auth);
   const [showMenu, setShowMenu] = useState(false);
   const [authBackend, setAuthBackend] = useState<AuthBackendType>(AuthBackend.LegacyLobster);
@@ -991,6 +1092,11 @@ const LoginButton: React.FC = () => {
     return null;
   }
 
+  const isSidebarVariant = variant === 'sidebar';
+  const panelClassName = isSidebarVariant
+    ? 'left-full top-0 ml-3'
+    : undefined;
+
   const handleClick = async () => {
     if (isLoggedIn) {
       setShowMenu(!showMenu);
@@ -1023,29 +1129,68 @@ const LoginButton: React.FC = () => {
   );
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className={`relative ${isSidebarVariant ? 'w-full' : ''}`}>
       <button
         type="button"
         onClick={handleClick}
-        className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer"
+        className={
+          isSidebarVariant
+            ? 'flex w-full flex-col items-center gap-2 rounded-[22px] border border-emerald-400/14 bg-gradient-to-b from-emerald-400/10 to-background/80 px-2 py-2.5 text-center text-secondary shadow-sm transition-colors hover:border-emerald-400/22 hover:bg-surface-raised hover:text-foreground cursor-pointer'
+            : 'inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer'
+        }
       >
         {isLoggedIn ? (
           <>
-            <UserAvatar
-              avatarUrl={user?.avatarUrl}
-              displayName={primaryIdentity}
-            />
-            <span className="truncate max-w-[80px]">{primaryIdentity || `****${phoneSuffix}`}</span>
+            {isSidebarVariant ? (
+              <span className="relative">
+                <UserAvatar
+                  avatarUrl={user?.avatarUrl}
+                  displayName={primaryIdentity}
+                  className="h-11 w-11 ring-1 ring-emerald-400/12"
+                />
+                <span className="absolute -bottom-1 -right-1">
+                  <QingShuBrandMark
+                    className="relative flex h-4.5 w-4.5 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-500 shadow-sm shadow-emerald-500/25 ring-2 ring-background"
+                    iconClassName="text-[8px] font-semibold tracking-[0.08em] text-white"
+                  />
+                </span>
+              </span>
+            ) : (
+              <UserAvatar
+                avatarUrl={user?.avatarUrl}
+                displayName={primaryIdentity}
+                className="h-4 w-4"
+              />
+            )}
+            <span className={isSidebarVariant ? 'max-w-full truncate text-sm font-medium text-foreground' : 'truncate max-w-[80px]'}>
+              {primaryIdentity || `****${phoneSuffix}`}
+            </span>
           </>
         ) : (
           <>
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><circle cx="12" cy="8" r="5" /><path d="M20 21a8 8 0 0 0-16 0" /></svg>
-            {i18nService.t('login')}
+            {isSidebarVariant ? (
+              <span className="relative flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-400/12 text-emerald-600 shadow-subtle ring-1 ring-emerald-400/10">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]"><circle cx="12" cy="8" r="5" /><path d="M20 21a8 8 0 0 0-16 0" /></svg>
+                <span className="absolute -bottom-1 -right-1">
+                  <QingShuBrandMark
+                    className="relative flex h-4.5 w-4.5 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-500 shadow-sm shadow-emerald-500/25 ring-2 ring-background"
+                    iconClassName="text-[8px] font-semibold tracking-[0.08em] text-white"
+                  />
+                </span>
+              </span>
+            ) : (
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/12 text-primary shadow-subtle">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]"><circle cx="12" cy="8" r="5" /><path d="M20 21a8 8 0 0 0-16 0" /></svg>
+              </span>
+            )}
+            <span className={isSidebarVariant ? 'text-sm font-medium text-foreground' : ''}>
+              {i18nService.t('login')}
+            </span>
           </>
         )}
       </button>
       {showMenu && isLoggedIn && (
-        <UserMenu authBackend={authBackend} onClose={() => setShowMenu(false)} />
+        <UserMenu authBackend={authBackend} onClose={() => setShowMenu(false)} panelClassName={panelClassName} />
       )}
       {showMenu && !isLoggedIn && authBackend === AuthBackend.Qtb && (
         <QtbLoginPanel
@@ -1053,6 +1198,7 @@ const LoginButton: React.FC = () => {
           initialScanSession={prefetchedScanSession}
           initialScanLoading={isPrefetchingScanSession}
           onClose={() => setShowMenu(false)}
+          panelClassName={panelClassName}
         />
       )}
     </div>

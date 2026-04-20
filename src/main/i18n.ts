@@ -166,6 +166,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Xiaomifeng
     imNeteaseBeeConfigReady: '小蜜蜂配置已就绪（Client ID: {clientId}）。',
+    imNeteaseBeeStandaloneTestUnsupported: '小蜜蜂通道不支持独立连通性测试，请以 OpenClaw 网关状态为准。',
 
     // POPO
     imPopoFillWebhookCredentials: '请补全 appKey、appSecret、token 和 aesKey 后重新测试连通性。',
@@ -327,6 +328,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Netease Bee
     imNeteaseBeeConfigReady: 'Netease Bee configuration is ready (Client ID: {clientId}).',
+    imNeteaseBeeStandaloneTestUnsupported: 'Netease Bee does not support standalone connectivity testing. Please rely on the OpenClaw gateway status.',
 
     // POPO
     imPopoFillWebhookCredentials: 'Please provide the appKey, appSecret, token, and aesKey and test connectivity again.',

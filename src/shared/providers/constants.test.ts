@@ -11,13 +11,14 @@ describe('ProviderName constants', () => {
     expect(ProviderName.DeepSeek).toBe('deepseek');
     expect(ProviderName.Custom).toBe('custom');
     expect(ProviderName.LobsteraiServer).toBe('lobsterai-server');
+    expect(ProviderName.Copilot).toBe('github-copilot');
   });
 });
 
 describe('ProviderRegistry', () => {
-  test('providerIds returns 14 providers (no custom)', () => {
+  test('providerIds returns 16 providers (no custom)', () => {
     const ids = ProviderRegistry.providerIds;
-    expect(ids.length).toBe(14);
+    expect(ids.length).toBe(16);
     expect(ids).not.toContain(ProviderName.Custom);
     expect(ids).not.toContain(ProviderName.LobsteraiServer);
   });
@@ -48,17 +49,19 @@ describe('ProviderRegistry', () => {
     expect(ProviderRegistry.supportsCodingPlan('unknown')).toBe(false);
   });
 
-  test('idsByRegion china returns 10 providers', () => {
+  test('idsByRegion china returns 11 providers', () => {
     const china = ProviderRegistry.idsByRegion('china');
-    expect(china.length).toBe(10);
+    expect(china.length).toBe(11);
     expect(china).toContain(ProviderName.DeepSeek);
+    expect(china).toContain(ProviderName.Qianfan);
     expect(china).toContain(ProviderName.Ollama);
     expect(china).not.toContain(ProviderName.OpenAI);
   });
 
-  test('idsByRegion global returns 4 providers', () => {
+  test('idsByRegion global returns 5 providers', () => {
     const global = ProviderRegistry.idsByRegion('global');
-    expect(global.length).toBe(4);
+    expect(global.length).toBe(5);
+    expect(global).toContain(ProviderName.Copilot);
     expect(global).toContain(ProviderName.OpenAI);
     expect(global).toContain(ProviderName.Gemini);
     expect(global).toContain(ProviderName.Anthropic);

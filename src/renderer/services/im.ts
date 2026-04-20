@@ -3,23 +3,28 @@
  * IPC wrapper for IM gateway operations
  */
 
-import { store } from '../store';
-import { PlatformRegistry } from '@shared/platform';
 import type { Platform } from '@shared/platform';
+import { PlatformRegistry } from '@shared/platform';
+
+import { store } from '../store';
 import {
   setConfig,
-  setStatus,
-  setLoading,
   setError,
+  setLoading,
+  setStatus,
 } from '../store/slices/imSlice';
 import type {
-  IMGatewayConfig,
-  IMGatewayStatus,
+  DingTalkInstanceConfig,
+  FeishuInstanceConfig,
   IMConfigResult,
-  IMStatusResult,
-  IMGatewayResult,
-  IMConnectivityTestResult,
   IMConnectivityTestResponse,
+  IMConnectivityTestResult,
+  IMGatewayConfig,
+  IMGatewayResult,
+  IMGatewayStatus,
+  IMStatusResult,
+  QQInstanceConfig,
+  WecomInstanceConfig,
 } from '../types/im';
 
 class IMService {
@@ -255,7 +260,21 @@ class IMService {
    */
   isAnyConnected(): boolean {
     const status = this.getStatus();
-    return PlatformRegistry.platforms.some(p => status[p]?.connected);
+    return PlatformRegistry.platforms.some((platform) => {
+      if (platform === 'dingtalk') {
+        return status.dingtalk.instances.some((item) => item.connected);
+      }
+      if (platform === 'feishu') {
+        return status.feishu.instances.some((item) => item.connected);
+      }
+      if (platform === 'qq') {
+        return status.qq.instances.some((item) => item.connected);
+      }
+      if (platform === 'wecom') {
+        return status.wecom.instances.some((item) => item.connected);
+      }
+      return Boolean(status[platform]?.connected);
+    });
   }
 
   /**
@@ -277,6 +296,170 @@ class IMService {
    */
   async rejectPairingRequest(platform: string, code: string) {
     return window.electron.im.rejectPairingRequest(platform, code);
+  }
+
+  async addDingTalkInstance(name: string): Promise<DingTalkInstanceConfig | null> {
+    const result = await window.electron.im.addDingTalkInstance(name);
+    if (result.success) {
+      await this.loadConfig();
+      return result.instance ?? null;
+    }
+    store.dispatch(setError(result.error || 'Failed to add DingTalk instance'));
+    return null;
+  }
+
+  async updateDingTalkInstanceConfig(
+    instanceId: string,
+    config: Partial<DingTalkInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const result = await window.electron.im.setDingTalkInstanceConfig(instanceId, config, options);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update DingTalk instance'));
+    return false;
+  }
+
+  async persistDingTalkInstanceConfig(
+    instanceId: string,
+    config: Partial<DingTalkInstanceConfig>
+  ): Promise<boolean> {
+    return this.updateDingTalkInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deleteDingTalkInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deleteDingTalkInstance(instanceId);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete DingTalk instance'));
+    return false;
+  }
+
+  async addFeishuInstance(name: string): Promise<FeishuInstanceConfig | null> {
+    const result = await window.electron.im.addFeishuInstance(name);
+    if (result.success) {
+      await this.loadConfig();
+      return result.instance ?? null;
+    }
+    store.dispatch(setError(result.error || 'Failed to add Feishu instance'));
+    return null;
+  }
+
+  async updateFeishuInstanceConfig(
+    instanceId: string,
+    config: Partial<FeishuInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const result = await window.electron.im.setFeishuInstanceConfig(instanceId, config, options);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update Feishu instance'));
+    return false;
+  }
+
+  async persistFeishuInstanceConfig(
+    instanceId: string,
+    config: Partial<FeishuInstanceConfig>
+  ): Promise<boolean> {
+    return this.updateFeishuInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deleteFeishuInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deleteFeishuInstance(instanceId);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete Feishu instance'));
+    return false;
+  }
+
+  async addQQInstance(name: string): Promise<QQInstanceConfig | null> {
+    const result = await window.electron.im.addQQInstance(name);
+    if (result.success) {
+      await this.loadConfig();
+      return result.instance ?? null;
+    }
+    store.dispatch(setError(result.error || 'Failed to add QQ instance'));
+    return null;
+  }
+
+  async updateQQInstanceConfig(
+    instanceId: string,
+    config: Partial<QQInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const result = await window.electron.im.setQQInstanceConfig(instanceId, config, options);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update QQ instance'));
+    return false;
+  }
+
+  async persistQQInstanceConfig(
+    instanceId: string,
+    config: Partial<QQInstanceConfig>
+  ): Promise<boolean> {
+    return this.updateQQInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deleteQQInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deleteQQInstance(instanceId);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete QQ instance'));
+    return false;
+  }
+
+  async addWecomInstance(name: string): Promise<WecomInstanceConfig | null> {
+    const result = await window.electron.im.addWecomInstance(name);
+    if (result.success) {
+      await this.loadConfig();
+      return result.instance ?? null;
+    }
+    store.dispatch(setError(result.error || 'Failed to add WeCom instance'));
+    return null;
+  }
+
+  async updateWecomInstanceConfig(
+    instanceId: string,
+    config: Partial<WecomInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const result = await window.electron.im.setWecomInstanceConfig(instanceId, config, options);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update WeCom instance'));
+    return false;
+  }
+
+  async persistWecomInstanceConfig(
+    instanceId: string,
+    config: Partial<WecomInstanceConfig>
+  ): Promise<boolean> {
+    return this.updateWecomInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deleteWecomInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deleteWecomInstance(instanceId);
+    if (result.success) {
+      await this.loadConfig();
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete WeCom instance'));
+    return false;
   }
 
   /**

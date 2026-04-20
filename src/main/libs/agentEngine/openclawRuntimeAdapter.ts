@@ -1797,38 +1797,75 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   private async loadGatewayClientCtor(clientEntryPath: string): Promise<GatewayClientCtor> {
+    const resolveCtorFromExports = (loaded: Record<string, unknown>): GatewayClientCtor | null => {
+      const direct = loaded.GatewayClient;
+      if (typeof direct === 'function') {
+        return direct as GatewayClientCtor;
+      }
+
+      const exportedValues = Object.values(loaded);
+      for (const candidate of exportedValues) {
+        if (typeof candidate !== 'function') {
+          continue;
+        }
+        const maybeCtor = candidate as {
+          name?: string;
+          prototype?: {
+            start?: unknown;
+            stop?: unknown;
+            request?: unknown;
+          };
+        };
+        if (maybeCtor.name === 'GatewayClient') {
+          return candidate as GatewayClientCtor;
+        }
+        const proto = maybeCtor.prototype;
+        if (proto
+          && typeof proto.start === 'function'
+          && typeof proto.stop === 'function'
+          && typeof proto.request === 'function') {
+          return candidate as GatewayClientCtor;
+        }
+      }
+
+      return null;
+    };
+
     // Use require() with file path directly. TypeScript's CJS output downgrades
     // dynamic import() to require(), which doesn't support file:// URLs.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const loaded = require(clientEntryPath) as Record<string, unknown>;
-    const direct = loaded.GatewayClient;
-    if (typeof direct === 'function') {
-      return direct as GatewayClientCtor;
+    const directCtor = resolveCtorFromExports(loaded);
+    if (directCtor) {
+      return directCtor;
     }
 
-    const exportedValues = Object.values(loaded);
-    for (const candidate of exportedValues) {
-      if (typeof candidate !== 'function') {
-        continue;
+    // OpenClaw v2026.4.8 no longer exposes GatewayClient from the first
+    // client-*.js artifact. The actual constructor lives in a hashed
+    // method-scopes bundle, so probe sibling files before failing.
+    const distDir = path.dirname(clientEntryPath);
+    try {
+      const fallbackEntries = fs.readdirSync(distDir)
+        .filter((name) => /^method-scopes(?:-.*)?\.js$/i.test(name))
+        .sort();
+      console.log(`[ChannelSync] loadGatewayClientCtor: fallback candidates from ${distDir}: ${fallbackEntries.join(', ') || '(none)'}`);
+      for (const entry of fallbackEntries) {
+        const fallbackPath = path.join(distDir, entry);
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const fallbackLoaded = require(fallbackPath) as Record<string, unknown>;
+          const fallbackCtor = resolveCtorFromExports(fallbackLoaded);
+          if (fallbackCtor) {
+            console.log(`[ChannelSync] loadGatewayClientCtor: using fallback module ${fallbackPath}`);
+            return fallbackCtor;
+          }
+          console.log(`[ChannelSync] loadGatewayClientCtor: fallback module ${fallbackPath} did not expose GatewayClient`);
+        } catch (fallbackError) {
+          console.warn(`[ChannelSync] loadGatewayClientCtor: fallback module ${fallbackPath} failed:`, fallbackError);
+        }
       }
-      const maybeCtor = candidate as {
-        name?: string;
-        prototype?: {
-          start?: unknown;
-          stop?: unknown;
-          request?: unknown;
-        };
-      };
-      if (maybeCtor.name === 'GatewayClient') {
-        return candidate as GatewayClientCtor;
-      }
-      const proto = maybeCtor.prototype;
-      if (proto
-        && typeof proto.start === 'function'
-        && typeof proto.stop === 'function'
-        && typeof proto.request === 'function') {
-        return candidate as GatewayClientCtor;
-      }
+    } catch (fallbackScanError) {
+      console.warn(`[ChannelSync] loadGatewayClientCtor: failed to scan fallback modules in ${distDir}:`, fallbackScanError);
     }
 
     const exportKeysPreview = Object.keys(loaded).slice(0, 20).join(', ');

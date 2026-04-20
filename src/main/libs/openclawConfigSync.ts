@@ -3,14 +3,19 @@ import fs from 'fs';
 import path from 'path';
 import type { CoworkConfig, CoworkExecutionMode, Agent } from '../coworkStore';
 import type { TelegramOpenClawConfig, DiscordOpenClawConfig, IMSettings } from '../im/types';
-import type { DingTalkOpenClawConfig, FeishuOpenClawConfig, QQOpenClawConfig, WecomOpenClawConfig, PopoOpenClawConfig, NimConfig, WeixinOpenClawConfig, NeteaseBeeChanConfig } from '../im/types';
+import type { DingTalkInstanceConfig, FeishuInstanceConfig, QQInstanceConfig, WecomInstanceConfig, PopoOpenClawConfig, NimConfig, WeixinOpenClawConfig, NeteaseBeeChanConfig } from '../im/types';
 import { PlatformRegistry } from '../../shared/platform';
-import { ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiConst } from '../../shared/providers';
+import { AuthType, ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiConst } from '../../shared/providers';
 import { resolveRawApiConfig, resolveAllProviderApiKeys, resolveAllEnabledProviderConfigs, getAllServerModelMetadata } from './claudeSettings';
 import type { OpenClawEngineManager } from './openclawEngineManager';
 import { parseChannelSessionKey } from './openclawChannelSessionSync';
 import type { McpToolManifestEntry } from './mcpServerManager';
-import { hasBundledOpenClawExtension } from './openclawLocalExtensions';
+import { getCoworkOpenAICompatProxyBaseURL } from './coworkOpenAICompatProxy';
+import {
+  hasBundledOpenClawExtension,
+  resolveOpenClawExtensionConfigId,
+  resolveOpenClawExtensionLoadPath,
+} from './openclawLocalExtensions';
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
 import {
@@ -43,6 +48,12 @@ const mapExecutionModeToSandboxMode = (mode: CoworkExecutionMode): 'off' | 'non-
  * Also used by the runtime adapter's client-side timeout watchdog.
  */
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
+const DEFAULT_OPENCLAW_SESSION_KEEP_ALIVE = '30d';
+const OPENCLAW_SESSION_MAINTENANCE = {
+  pruneAfter: '365d',
+  maxEntries: 1000000,
+  rotateBytes: '1gb',
+} as const;
 
 function shouldUseOpenAIResponsesApi(providerName?: string, baseURL?: string): boolean {
   if (providerName !== ProviderName.OpenAI) return false;
@@ -69,6 +80,34 @@ const ensureDir = (dirPath: string): void => {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 };
+
+const mapKeepAliveToSessionReset = (
+  keepAlive?: string,
+): { mode: 'idle'; idleMinutes: number } => {
+  switch (keepAlive) {
+    case '1d':
+      return { mode: 'idle', idleMinutes: 1440 };
+    case '7d':
+      return { mode: 'idle', idleMinutes: 10080 };
+    case '365d':
+      return { mode: 'idle', idleMinutes: 525600 };
+    case '30d':
+    default:
+      return { mode: 'idle', idleMinutes: 43200 };
+  }
+};
+
+const buildOpenClawSessionConfig = (
+  keepAlive?: string,
+): {
+  dmScope: 'per-account-channel-peer';
+  reset: { mode: 'idle'; idleMinutes: number };
+  maintenance: typeof OPENCLAW_SESSION_MAINTENANCE;
+} => ({
+  dmScope: 'per-account-channel-peer',
+  reset: mapKeepAliveToSessionReset(keepAlive || DEFAULT_OPENCLAW_SESSION_KEEP_ALIVE),
+  maintenance: { ...OPENCLAW_SESSION_MAINTENANCE },
+});
 
 const normalizeModelName = (modelId: string): string => {
   const trimmed = modelId.trim();
@@ -312,7 +351,7 @@ type OpenClawProviderSelection = {
     baseUrl: string;
     api: OpenClawProviderApi;
     apiKey: string;
-    auth: 'api-key';
+    auth: typeof AuthType[keyof typeof AuthType];
     models: Array<{
       id: string;
       name: string;
@@ -526,6 +565,13 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
+  [ProviderName.Copilot]: {
+    providerId: OpenClawProviderId.LobsteraiCopilot,
+    resolveApi: () => OpenClawApiConst.OpenAICompletions as OpenClawProviderApi,
+    normalizeBaseUrl: stripChatCompletionsSuffix,
+    resolveApiKey: () => '${LOBSTER_PROXY_TOKEN}',
+  },
+
   [ProviderName.Ollama]: {
     providerId: OpenClawProviderId.Ollama,
     resolveApi: () => OpenClawApiConst.OpenAICompletions as OpenClawProviderApi,
@@ -571,7 +617,13 @@ export const buildProviderSelection = (options: {
   const providerName = options.providerName ?? '';
   const descriptor = resolveDescriptor(providerName, !!options.codingPlanEnabled);
 
-  const baseUrl = descriptor.normalizeBaseUrl(options.baseURL);
+  const baseUrl = (() => {
+    if (options.providerName !== ProviderName.Copilot) {
+      return descriptor.normalizeBaseUrl(options.baseURL);
+    }
+    const proxyBaseUrl = getCoworkOpenAICompatProxyBaseURL('local');
+    return proxyBaseUrl ? `${proxyBaseUrl}/v1/copilot` : descriptor.normalizeBaseUrl(options.baseURL);
+  })();
   const api = descriptor.resolveApi({
     apiType: options.apiType,
     baseURL: options.baseURL,
@@ -601,7 +653,7 @@ export const buildProviderSelection = (options: {
       baseUrl,
       api,
       apiKey,
-      auth: 'api-key',
+      auth: options.providerName === ProviderName.Copilot ? AuthType.OAuth : AuthType.ApiKey,
       models: [
         {
           id: sessionModelId,
@@ -628,22 +680,45 @@ export const buildProviderSelection = (options: {
   };
 };
 
-const readPreinstalledPluginIds = (): string[] => {
-  try {
-    const pkgPath = path.join(app.getAppPath(), 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    const plugins = pkg.openclaw?.plugins;
-    if (!Array.isArray(plugins)) return [];
-    return plugins
-      .map((p: { id?: string }) => p.id)
-      .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
-  } catch {
-    return [];
-  }
-};
-
 const isBundledPluginAvailable = (pluginId: string): boolean => {
   return hasBundledOpenClawExtension(pluginId);
+};
+
+const resolveExternalPluginLoadPaths = (pluginIds: string[]): string[] => {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+
+  for (const pluginId of pluginIds) {
+    const loadPath = resolveOpenClawExtensionLoadPath(pluginId);
+    if (!loadPath || seen.has(loadPath)) {
+      continue;
+    }
+    seen.add(loadPath);
+    paths.push(loadPath);
+  }
+
+  return paths;
+};
+
+const resolveExternalPluginConfigId = (pluginId: string): string | null => {
+  if (!hasBundledOpenClawExtension(pluginId)) {
+    return null;
+  }
+  return resolveOpenClawExtensionConfigId(pluginId) ?? pluginId;
+};
+
+const mapFeishuReplyMode = (
+  replyMode?: FeishuInstanceConfig['replyMode'],
+): Partial<{ renderMode: 'auto' | 'raw' | 'card'; streaming: boolean }> => {
+  switch (replyMode) {
+    case 'static':
+      return { renderMode: 'auto', streaming: false };
+    case 'streaming':
+      return { renderMode: 'card', streaming: true };
+    case 'auto':
+    default:
+      return {};
+  }
 };
 
 export type OpenClawConfigSyncResult = {
@@ -659,10 +734,10 @@ type OpenClawConfigSyncDeps = {
   getCoworkConfig: () => CoworkConfig;
   getTelegramOpenClawConfig?: () => TelegramOpenClawConfig | null;
   getDiscordOpenClawConfig?: () => DiscordOpenClawConfig | null;
-  getDingTalkConfig: () => DingTalkOpenClawConfig | null;
-  getFeishuConfig: () => FeishuOpenClawConfig | null;
-  getQQConfig: () => QQOpenClawConfig | null;
-  getWecomConfig: () => WecomOpenClawConfig | null;
+  getDingTalkInstances: () => DingTalkInstanceConfig[];
+  getFeishuInstances: () => FeishuInstanceConfig[];
+  getQQInstances: () => QQInstanceConfig[];
+  getWecomInstances: () => WecomInstanceConfig[];
   getPopoConfig: () => PopoOpenClawConfig | null;
   getNimConfig: () => NimConfig | null;
   getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
@@ -680,10 +755,10 @@ export class OpenClawConfigSync {
   private readonly getCoworkConfig: () => CoworkConfig;
   private readonly getTelegramOpenClawConfig?: () => TelegramOpenClawConfig | null;
   private readonly getDiscordOpenClawConfig?: () => DiscordOpenClawConfig | null;
-  private readonly getDingTalkConfig: () => DingTalkOpenClawConfig | null;
-  private readonly getFeishuConfig: () => FeishuOpenClawConfig | null;
-  private readonly getQQConfig: () => QQOpenClawConfig | null;
-  private readonly getWecomConfig: () => WecomOpenClawConfig | null;
+  private readonly getDingTalkInstances: () => DingTalkInstanceConfig[];
+  private readonly getFeishuInstances: () => FeishuInstanceConfig[];
+  private readonly getQQInstances: () => QQInstanceConfig[];
+  private readonly getWecomInstances: () => WecomInstanceConfig[];
   private readonly getPopoConfig: () => PopoOpenClawConfig | null;
   private readonly getNimConfig: () => NimConfig | null;
   private readonly getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
@@ -700,10 +775,10 @@ export class OpenClawConfigSync {
     this.getCoworkConfig = deps.getCoworkConfig;
     this.getTelegramOpenClawConfig = deps.getTelegramOpenClawConfig;
     this.getDiscordOpenClawConfig = deps.getDiscordOpenClawConfig;
-    this.getDingTalkConfig = deps.getDingTalkConfig;
-    this.getFeishuConfig = deps.getFeishuConfig;
-    this.getQQConfig = deps.getQQConfig;
-    this.getWecomConfig = deps.getWecomConfig;
+    this.getDingTalkInstances = deps.getDingTalkInstances;
+    this.getFeishuInstances = deps.getFeishuInstances;
+    this.getQQInstances = deps.getQQInstances;
+    this.getWecomInstances = deps.getWecomInstances;
     this.getPopoConfig = deps.getPopoConfig;
     this.getNimConfig = deps.getNimConfig;
     this.getNeteaseBeeChanConfig = deps.getNeteaseBeeChanConfig;
@@ -844,21 +919,21 @@ export class OpenClawConfigSync {
 
     const workspaceDir = (coworkConfig.workingDirectory || '').trim();
 
-    const preinstalledPluginIds = readPreinstalledPluginIds().filter((id) => isBundledPluginAvailable(id));
     const hasMcpBridgePlugin = isBundledPluginAvailable('mcp-bridge');
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
 
-    const dingTalkConfig = this.getDingTalkConfig();
-    // DingTalk runs through OpenClaw plugin but still needs the gateway HTTP endpoint (chatCompletions)
-    const hasDingTalkOpenClaw = !!(dingTalkConfig?.enabled && dingTalkConfig.clientId);
+    const dingTalkInstances = this.getDingTalkInstances();
+    const enabledDingTalkInstances = dingTalkInstances.filter((instance) => instance.enabled && instance.clientId);
+    const hasDingTalkOpenClaw = enabledDingTalkInstances.length > 0;
 
-    const feishuConfig = this.getFeishuConfig();
-    // Feishu now runs fully through OpenClaw plugin, handled separately below like Telegram
-    const hasFeishu = false; // Legacy in-line feishu channel disabled; OpenClaw plugin used instead
+    const feishuInstances = this.getFeishuInstances();
+    const enabledFeishuInstances = feishuInstances.filter((instance) => instance.enabled && instance.appId);
 
-    const qqConfig = this.getQQConfig();
+    const qqInstances = this.getQQInstances();
+    const enabledQQInstances = qqInstances.filter((instance) => instance.enabled && instance.appId);
 
-    const wecomConfig = this.getWecomConfig();
+    const wecomInstances = this.getWecomInstances();
+    const enabledWecomInstances = wecomInstances.filter((instance) => instance.enabled && instance.botId);
 
     const popoConfig = this.getPopoConfig();
 
@@ -868,7 +943,69 @@ export class OpenClawConfigSync {
 
     const weixinConfig = this.getWeixinConfig();
 
-    const hasAnyChannel = hasDingTalkOpenClaw;
+    const dingTalkPluginId = (
+      enabledDingTalkInstances.length > 0
+      && resolveExternalPluginConfigId('dingtalk-connector')
+    ) || null;
+    const feishuPluginId = (
+      enabledFeishuInstances.length > 0
+      && resolveExternalPluginConfigId('openclaw-lark')
+    ) || null;
+    const wecomPluginId = (
+      enabledWecomInstances.length > 0
+      && resolveExternalPluginConfigId('wecom-openclaw-plugin')
+    ) || null;
+    const popoPluginId = (
+      popoConfig?.enabled
+      && popoConfig.appKey
+      && resolveExternalPluginConfigId('moltbot-popo')
+    ) || null;
+    const nimPluginId = (
+      nimConfig?.enabled
+      && nimConfig.appKey
+      && nimConfig.account
+      && nimConfig.token
+      && resolveExternalPluginConfigId('openclaw-nim-channel')
+    ) || null;
+    const neteaseBeePluginId = (
+      neteaseBeeChanConfig?.enabled
+      && neteaseBeeChanConfig.clientId
+      && neteaseBeeChanConfig.secret
+      && resolveExternalPluginConfigId('openclaw-netease-bee')
+    ) || null;
+    const weixinPluginId = (
+      weixinConfig?.enabled
+      && resolveExternalPluginConfigId('openclaw-weixin')
+    ) || null;
+    const missingExternalPluginIds = [
+      enabledDingTalkInstances.length > 0 && !dingTalkPluginId ? 'dingtalk-connector' : null,
+      enabledFeishuInstances.length > 0 && !feishuPluginId ? 'openclaw-lark' : null,
+      enabledWecomInstances.length > 0 && !wecomPluginId ? 'wecom-openclaw-plugin' : null,
+      popoConfig?.enabled && popoConfig.appKey && !popoPluginId ? 'moltbot-popo' : null,
+      nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token && !nimPluginId ? 'openclaw-nim-channel' : null,
+      neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret && !neteaseBeePluginId ? 'openclaw-netease-bee' : null,
+      weixinConfig?.enabled && !weixinPluginId ? 'openclaw-weixin' : null,
+    ].filter((id): id is string => Boolean(id));
+    if (missingExternalPluginIds.length > 0) {
+      console.warn(
+        `[OpenClawConfigSync] skipped external plugins that are not installed: ${missingExternalPluginIds.join(', ')}`,
+      );
+    }
+
+    const enabledExternalPluginIds = [
+      dingTalkPluginId,
+      feishuPluginId,
+      wecomPluginId,
+      popoPluginId,
+      nimPluginId,
+      neteaseBeePluginId,
+      weixinPluginId,
+      hasMcpBridgePlugin ? 'mcp-bridge' : null,
+      hasAskUserPlugin ? 'ask-user-question' : null,
+    ].filter((id): id is string => Boolean(id));
+    const externalPluginLoadPaths = resolveExternalPluginLoadPaths(enabledExternalPluginIds);
+
+    const hasAnyChannel = !!dingTalkPluginId;
 
     const managedConfig: Record<string, unknown> = {
       gateway: {
@@ -899,9 +1036,7 @@ export class OpenClawConfigSync {
         ...this.buildAgentsList(),
       },
       ...this.buildBindings(),
-      session: {
-        dmScope: 'per-channel-peer',
-      },
+      session: buildOpenClawSessionConfig(coworkConfig.openClawSessionPolicy?.keepAlive),
       commands: {
         ownerAllowFrom: MANAGED_OWNER_ALLOW_FROM,
       },
@@ -928,32 +1063,35 @@ export class OpenClawConfigSync {
       },
       cron: {
         enabled: true,
+        skipMissedJobs: coworkConfig.skipMissedJobs === true,
         maxConcurrentRuns: 3,
         sessionRetention: '7d',
       },
       ...((() => {
         const pluginEntries: Record<string, unknown> = {
-          ...Object.fromEntries(
-            preinstalledPluginIds.map((id) => {
-              // Sync plugin enabled state with the corresponding channel config.
-              // When a channel is disabled in the UI, its plugin must also be
-              // disabled so OpenClaw doesn't load it at all.
-              const pluginEnabled = (() => {
-                if (id === 'dingtalk') return !!(dingTalkConfig?.enabled && dingTalkConfig.clientId);
-                if (id === 'feishu-openclaw-plugin') return !!(feishuConfig?.enabled && feishuConfig.appId);
-                if (id === 'qqbot') return !!(qqConfig?.enabled && qqConfig.appId);
-                if (id === 'wecom-openclaw-plugin') return !!(wecomConfig?.enabled && wecomConfig.botId);
-                if (id === 'moltbot-popo') return !!(popoConfig?.enabled && popoConfig.appKey);
-                if (id === 'nim') return !!(nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token);
-                if (id === 'openclaw-netease-bee') return !!(neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret);
-                if (id === 'openclaw-weixin') return true; // Always keep enabled for QR login discovery
-                return true; // other plugins stay enabled
-              })();
-              return [id, { enabled: pluginEnabled }];
-            }),
-          ),
-          ...(preinstalledPluginIds.includes('feishu-openclaw-plugin')
-            ? { feishu: { enabled: false } }
+          ...(dingTalkPluginId
+            ? { [dingTalkPluginId]: { enabled: true } }
+            : {}),
+          ...(feishuPluginId
+            ? { [feishuPluginId]: { enabled: true } }
+            : {}),
+          qqbot: {
+            enabled: enabledQQInstances.length > 0,
+          },
+          ...(wecomPluginId
+            ? { [wecomPluginId]: { enabled: true } }
+            : {}),
+          ...(popoPluginId
+            ? { [popoPluginId]: { enabled: true } }
+            : {}),
+          ...(nimPluginId
+            ? { [nimPluginId]: { enabled: true } }
+            : {}),
+          ...(neteaseBeePluginId
+            ? { [neteaseBeePluginId]: { enabled: true } }
+            : {}),
+          ...(weixinPluginId
+            ? { [weixinPluginId]: { enabled: true } }
             : {}),
           ...(hasMcpBridgePlugin
             ? { 'mcp-bridge': { enabled: true } }
@@ -966,6 +1104,12 @@ export class OpenClawConfigSync {
         return Object.keys(pluginEntries).length > 0
           ? {
               plugins: {
+                ...(externalPluginLoadPaths.length > 0
+                  ? {
+                      allow: enabledExternalPluginIds,
+                      load: { paths: externalPluginLoadPaths },
+                    }
+                  : {}),
                 entries: pluginEntries,
               },
             }
@@ -1090,106 +1234,129 @@ export class OpenClawConfigSync {
     }
 
     // Sync Feishu OpenClaw channel config (via feishu-openclaw-plugin)
-    if (feishuConfig?.enabled && feishuConfig.appId) {
-      const feishuChannel: Record<string, unknown> = {
-        enabled: true,
-        appId: feishuConfig.appId,
-        appSecret: '${LOBSTER_FEISHU_APP_SECRET}',
-        domain: feishuConfig.domain || 'feishu',
-        dmPolicy: feishuConfig.dmPolicy || 'open',
-        allowFrom: (() => {
-          const ids = feishuConfig.allowFrom?.length ? [...feishuConfig.allowFrom] : [];
-          if (feishuConfig.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groupPolicy: feishuConfig.groupPolicy || 'allowlist',
-        groupAllowFrom: (() => {
-          const ids = feishuConfig.groupAllowFrom?.length ? [...feishuConfig.groupAllowFrom] : [];
-          if (feishuConfig.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groups: feishuConfig.groups && Object.keys(feishuConfig.groups).length > 0
-          ? feishuConfig.groups
-          : { '*': { requireMention: true } },
-        historyLimit: feishuConfig.historyLimit || 50,
-        replyMode: feishuConfig.replyMode || 'auto',
-        mediaMaxMb: feishuConfig.mediaMaxMb || 30,
-      };
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), feishu: feishuChannel };
+    if (enabledFeishuInstances.length > 0) {
+      const accounts: Record<string, unknown> = {};
+      for (let index = 0; index < enabledFeishuInstances.length; index += 1) {
+        const instance = enabledFeishuInstances[index];
+        const secretEnvVar = index === 0 ? 'LOBSTER_FEISHU_APP_SECRET' : `LOBSTER_FEISHU_APP_SECRET_${index}`;
+        accounts[instance.instanceId.slice(0, 8)] = {
+          enabled: true,
+          name: instance.instanceName,
+          appId: instance.appId,
+          appSecret: `\${${secretEnvVar}}`,
+          domain: instance.domain || 'feishu',
+          dmPolicy: instance.dmPolicy || 'open',
+          allowFrom: (() => {
+            const ids = instance.allowFrom?.length ? [...instance.allowFrom] : [];
+            if (instance.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groupPolicy: instance.groupPolicy || 'allowlist',
+          groupAllowFrom: (() => {
+            const ids = instance.groupAllowFrom?.length ? [...instance.groupAllowFrom] : [];
+            if (instance.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groups: instance.groups && Object.keys(instance.groups).length > 0
+            ? instance.groups
+            : { '*': { requireMention: true } },
+          historyLimit: instance.historyLimit || 50,
+          mediaMaxMb: instance.mediaMaxMb || 30,
+          ...mapFeishuReplyMode(instance.replyMode),
+        };
+      }
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), feishu: { accounts } };
     }
 
     // Sync DingTalk OpenClaw channel config (via dingtalk-connector plugin)
-    if (dingTalkConfig?.enabled && dingTalkConfig.clientId) {
+    if (enabledDingTalkInstances.length > 0) {
       const gatewayToken = this.engineManager.getGatewayToken();
+      const accounts: Record<string, unknown> = {};
+      for (let index = 0; index < enabledDingTalkInstances.length; index += 1) {
+        const instance = enabledDingTalkInstances[index];
+        const secretEnvVar = index === 0 ? 'LOBSTER_DINGTALK_CLIENT_SECRET' : `LOBSTER_DINGTALK_CLIENT_SECRET_${index}`;
+        accounts[instance.instanceId.slice(0, 8)] = {
+          enabled: true,
+          name: instance.instanceName,
+          clientId: instance.clientId,
+          clientSecret: `\${${secretEnvVar}}`,
+          dmPolicy: instance.dmPolicy || 'open',
+          allowFrom: (() => {
+            const ids = instance.allowFrom?.length ? [...instance.allowFrom] : [];
+            if (instance.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groupPolicy: instance.groupPolicy || 'open',
+        };
+      }
       const dingtalkChannel: Record<string, unknown> = {
-        enabled: true,
-        clientId: dingTalkConfig.clientId,
-        clientSecret: '${LOBSTER_DINGTALK_CLIENT_SECRET}',
-        dmPolicy: dingTalkConfig.dmPolicy || 'open',
-        allowFrom: (() => {
-          const ids = dingTalkConfig.allowFrom?.length ? [...dingTalkConfig.allowFrom] : [];
-          if (dingTalkConfig.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groupPolicy: dingTalkConfig.groupPolicy || 'open',
-        sessionTimeout: dingTalkConfig.sessionTimeout ?? 1800000,
-        separateSessionByConversation: dingTalkConfig.separateSessionByConversation ?? true,
-        groupSessionScope: dingTalkConfig.groupSessionScope || 'group',
-        sharedMemoryAcrossConversations: dingTalkConfig.sharedMemoryAcrossConversations ?? false,
-        ...(dingTalkConfig.gatewayBaseUrl ? { gatewayBaseUrl: dingTalkConfig.gatewayBaseUrl } : {}),
+        accounts,
         ...(gatewayToken ? { gatewayToken: '${LOBSTER_DINGTALK_GW_TOKEN}' } : {}),
       };
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'dingtalk': dingtalkChannel };
     }
 
     // Sync QQ OpenClaw channel config (via qqbot plugin)
-    if (qqConfig?.enabled && qqConfig.appId) {
-      const qqChannel: Record<string, unknown> = {
-        enabled: true,
-        appId: qqConfig.appId,
-        clientSecret: '${LOBSTER_QQ_CLIENT_SECRET}',
-        dmPolicy: qqConfig.dmPolicy || 'open',
-        allowFrom: (() => {
-          const ids = qqConfig.allowFrom?.length ? [...qqConfig.allowFrom] : [];
-          if (qqConfig.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groupPolicy: qqConfig.groupPolicy || 'open',
-        groupAllowFrom: (() => {
-          const ids = qqConfig.groupAllowFrom?.length ? [...qqConfig.groupAllowFrom] : [];
-          if (qqConfig.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        historyLimit: qqConfig.historyLimit || 50,
-        markdownSupport: qqConfig.markdownSupport ?? true,
-      };
-      if (qqConfig.imageServerBaseUrl) {
-        qqChannel.imageServerBaseUrl = qqConfig.imageServerBaseUrl;
+    if (enabledQQInstances.length > 0) {
+      const accounts: Record<string, unknown> = {};
+      for (let index = 0; index < enabledQQInstances.length; index += 1) {
+        const instance = enabledQQInstances[index];
+        const secretEnvVar = index === 0 ? 'LOBSTER_QQ_CLIENT_SECRET' : `LOBSTER_QQ_CLIENT_SECRET_${index}`;
+        const account: Record<string, unknown> = {
+          enabled: true,
+          name: instance.instanceName,
+          appId: instance.appId,
+          clientSecret: `\${${secretEnvVar}}`,
+          dmPolicy: instance.dmPolicy || 'open',
+          allowFrom: (() => {
+            const ids = instance.allowFrom?.length ? [...instance.allowFrom] : [];
+            if (instance.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groupPolicy: instance.groupPolicy || 'open',
+          groupAllowFrom: (() => {
+            const ids = instance.groupAllowFrom?.length ? [...instance.groupAllowFrom] : [];
+            if (instance.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          historyLimit: instance.historyLimit || 50,
+          markdownSupport: instance.markdownSupport ?? true,
+        };
+        if (instance.imageServerBaseUrl) {
+          account.imageServerBaseUrl = instance.imageServerBaseUrl;
+        }
+        accounts[instance.instanceId.slice(0, 8)] = account;
       }
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), qqbot: qqChannel };
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), qqbot: { accounts } };
     }
 
     // Sync WeCom OpenClaw channel config (via wecom-openclaw-plugin)
-    if (wecomConfig?.enabled && wecomConfig.botId) {
-      const wecomChannel: Record<string, unknown> = {
-        enabled: true,
-        botId: wecomConfig.botId,
-        secret: '${LOBSTER_WECOM_SECRET}',
-        dmPolicy: wecomConfig.dmPolicy || 'open',
-        allowFrom: (() => {
-          const ids = wecomConfig.allowFrom?.length ? [...wecomConfig.allowFrom] : [];
-          if (wecomConfig.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groupPolicy: wecomConfig.groupPolicy || 'open',
-        groupAllowFrom: (() => {
-          const ids = wecomConfig.groupAllowFrom?.length ? [...wecomConfig.groupAllowFrom] : [];
-          if (wecomConfig.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        sendThinkingMessage: wecomConfig.sendThinkingMessage ?? true,
-      };
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: wecomChannel };
+    if (enabledWecomInstances.length > 0) {
+      const accounts: Record<string, unknown> = {};
+      for (let index = 0; index < enabledWecomInstances.length; index += 1) {
+        const instance = enabledWecomInstances[index];
+        const secretEnvVar = index === 0 ? 'LOBSTER_WECOM_SECRET' : `LOBSTER_WECOM_SECRET_${index}`;
+        accounts[instance.instanceId.slice(0, 8)] = {
+          enabled: true,
+          name: instance.instanceName,
+          botId: instance.botId,
+          secret: `\${${secretEnvVar}}`,
+          dmPolicy: instance.dmPolicy || 'open',
+          allowFrom: (() => {
+            const ids = instance.allowFrom?.length ? [...instance.allowFrom] : [];
+            if (instance.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groupPolicy: instance.groupPolicy || 'open',
+          groupAllowFrom: (() => {
+            const ids = instance.groupAllowFrom?.length ? [...instance.groupAllowFrom] : [];
+            if (instance.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          sendThinkingMessage: instance.sendThinkingMessage ?? true,
+        };
+      }
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: { accounts } };
     }
 
     // Sync POPO OpenClaw channel config (via moltbot-popo plugin)
@@ -1263,14 +1430,16 @@ export class OpenClawConfigSync {
     }
 
     // Sync Weixin OpenClaw channel config (via openclaw-weixin plugin)
-    // Always write the channel entry — use enabled:false when disabled so the
-    // Gateway stops the channel instead of falling back to plugin defaults.
-    const weixinChannelEnabled = !!(weixinConfig?.enabled);
-    const weixinChannel: Record<string, unknown> = {
-      enabled: weixinChannelEnabled,
-      ...(weixinConfig?.accountId ? { accountId: weixinConfig.accountId } : {}),
-    };
-    managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'openclaw-weixin': weixinChannel };
+    // Only write the channel when explicitly enabled. The current plugin build
+    // is not compatible with OpenClaw v2026.4.8 and causes startup-time load
+    // failures even when the channel is logically disabled.
+    if (weixinConfig?.enabled) {
+      const weixinChannel: Record<string, unknown> = {
+        enabled: true,
+        ...(weixinConfig.accountId ? { accountId: weixinConfig.accountId } : {}),
+      };
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'openclaw-weixin': weixinChannel };
+    }
 
     // Inject _agentBinding into channel configs that have a non-main binding,
     // forcing those channels to restart when the binding changes.  OpenClaw
@@ -1366,6 +1535,7 @@ export class OpenClawConfigSync {
     // after that, openclaw.json uses provider-specific placeholders and this var
     // is never resolved. Use a fixed value to avoid secretEnvVarsChanged on switch.
     env.LOBSTER_PROVIDER_API_KEY = 'legacy-unused';
+    env.LOBSTER_PROXY_TOKEN = 'proxy-managed';
 
     // MCP Bridge Secret — always set so stale openclaw.json with
     // ${LOBSTER_MCP_BRIDGE_SECRET} placeholder doesn't crash the gateway.
@@ -1388,15 +1558,17 @@ export class OpenClawConfigSync {
     }
 
     // Feishu
-    const feishuConfig = this.getFeishuConfig();
-    if (feishuConfig?.enabled && feishuConfig.appSecret) {
-      env.LOBSTER_FEISHU_APP_SECRET = feishuConfig.appSecret;
+    const enabledFeishuInstances = this.getFeishuInstances().filter((instance) => instance.enabled && instance.appSecret);
+    for (let index = 0; index < enabledFeishuInstances.length; index += 1) {
+      const key = index === 0 ? 'LOBSTER_FEISHU_APP_SECRET' : `LOBSTER_FEISHU_APP_SECRET_${index}`;
+      env[key] = enabledFeishuInstances[index].appSecret;
     }
 
     // DingTalk
-    const dingTalkConfig = this.getDingTalkConfig();
-    if (dingTalkConfig?.enabled && dingTalkConfig.clientSecret) {
-      env.LOBSTER_DINGTALK_CLIENT_SECRET = dingTalkConfig.clientSecret;
+    const enabledDingTalkInstances = this.getDingTalkInstances().filter((instance) => instance.enabled && instance.clientSecret);
+    for (let index = 0; index < enabledDingTalkInstances.length; index += 1) {
+      const key = index === 0 ? 'LOBSTER_DINGTALK_CLIENT_SECRET' : `LOBSTER_DINGTALK_CLIENT_SECRET_${index}`;
+      env[key] = enabledDingTalkInstances[index].clientSecret;
     }
     const gatewayToken = this.engineManager.getGatewayToken();
     if (gatewayToken) {
@@ -1404,15 +1576,17 @@ export class OpenClawConfigSync {
     }
 
     // QQ
-    const qqConfig = this.getQQConfig();
-    if (qqConfig?.enabled && qqConfig.appSecret) {
-      env.LOBSTER_QQ_CLIENT_SECRET = qqConfig.appSecret;
+    const enabledQQInstances = this.getQQInstances().filter((instance) => instance.enabled && instance.appSecret);
+    for (let index = 0; index < enabledQQInstances.length; index += 1) {
+      const key = index === 0 ? 'LOBSTER_QQ_CLIENT_SECRET' : `LOBSTER_QQ_CLIENT_SECRET_${index}`;
+      env[key] = enabledQQInstances[index].appSecret;
     }
 
     // WeCom
-    const wecomConfig = this.getWecomConfig();
-    if (wecomConfig?.enabled && wecomConfig.secret) {
-      env.LOBSTER_WECOM_SECRET = wecomConfig.secret;
+    const enabledWecomInstances = this.getWecomInstances().filter((instance) => instance.enabled && instance.secret);
+    for (let index = 0; index < enabledWecomInstances.length; index += 1) {
+      const key = index === 0 ? 'LOBSTER_WECOM_SECRET' : `LOBSTER_WECOM_SECRET_${index}`;
+      env[key] = enabledWecomInstances[index].secret;
     }
 
     // POPO
@@ -1749,36 +1923,66 @@ export class OpenClawConfigSync {
 
     const agents = this.getAgents?.() ?? [];
 
-    // Map openclaw channel name → platform key used in platformAgentBindings
-    const channelMap: Array<{ getter: () => { enabled: boolean } | null; channel: string; platform: string }> = [
-      { getter: () => this.getDingTalkConfig(), channel: 'dingtalk', platform: 'dingtalk' },
-      { getter: () => this.getFeishuConfig(), channel: 'feishu', platform: 'feishu' },
+    const bindings: Array<Record<string, unknown>> = [];
+
+    const multiInstanceChannels: Record<string, { channel: string; getInstances: () => Array<{ instanceId: string; enabled: boolean }> }> = {
+      dingtalk: { channel: 'dingtalk', getInstances: () => this.getDingTalkInstances() },
+      feishu: { channel: 'feishu', getInstances: () => this.getFeishuInstances() },
+      qq: { channel: 'qqbot', getInstances: () => this.getQQInstances() },
+      wecom: { channel: 'wecom', getInstances: () => this.getWecomInstances() },
+    };
+
+    for (const [platform, { channel, getInstances }] of Object.entries(multiInstanceChannels)) {
+      try {
+        const instances = getInstances();
+        for (const instance of instances) {
+          if (!instance.enabled) continue;
+          const bindingKey = `${platform}:${instance.instanceId}`;
+          const agentId = platformBindings[bindingKey];
+          if (!agentId || agentId === 'main') continue;
+          const targetAgent = agents.find((agent) => agent.id === agentId && agent.enabled);
+          if (!targetAgent) continue;
+          bindings.push({
+            agentId,
+            match: {
+              channel,
+              accountId: instance.instanceId.slice(0, 8),
+            },
+          });
+        }
+
+        const platformAgentId = platformBindings[platform];
+        if (!platformAgentId || platformAgentId === 'main') continue;
+        const targetAgent = agents.find((agent) => agent.id === platformAgentId && agent.enabled);
+        if (targetAgent && instances.some((instance) => instance.enabled)) {
+          bindings.push({ agentId: platformAgentId, match: { channel } });
+        }
+      } catch {
+        // Skip channels that fail to load config.
+      }
+    }
+
+    const singleInstanceChannels: Array<{ getter: () => { enabled: boolean } | null; channel: string; platform: string }> = [
       { getter: () => this.getTelegramOpenClawConfig?.() ?? null, channel: 'telegram', platform: 'telegram' },
       { getter: () => this.getDiscordOpenClawConfig?.() ?? null, channel: 'discord', platform: 'discord' },
-      { getter: () => this.getQQConfig(), channel: 'qqbot', platform: 'qq' },
-      { getter: () => this.getWecomConfig(), channel: 'wecom', platform: 'wecom' },
       { getter: () => this.getPopoConfig(), channel: 'moltbot-popo', platform: 'popo' },
       { getter: () => this.getNimConfig(), channel: 'nim', platform: 'nim' },
       { getter: () => this.getNeteaseBeeChanConfig(), channel: 'netease-bee', platform: 'netease-bee' },
       { getter: () => this.getWeixinConfig(), channel: 'openclaw-weixin', platform: 'weixin' },
     ];
 
-    const bindings: Array<Record<string, unknown>> = [];
-    for (const { getter, channel, platform } of channelMap) {
+    for (const { getter, channel, platform } of singleInstanceChannels) {
       const agentId = platformBindings[platform];
       if (!agentId || agentId === 'main') continue;
-
-      // Verify the target agent actually exists and is enabled
-      const targetAgent = agents.find((a) => a.id === agentId && a.enabled);
+      const targetAgent = agents.find((agent) => agent.id === agentId && agent.enabled);
       if (!targetAgent) continue;
-
       try {
-        const cfg = getter();
-        if (cfg?.enabled) {
+        const config = getter();
+        if (config?.enabled) {
           bindings.push({ agentId, match: { channel } });
         }
       } catch {
-        // Skip channels that fail to load config
+        // Skip channels that fail to load config.
       }
     }
 
@@ -1864,12 +2068,10 @@ export class OpenClawConfigSync {
 
   /**
    * Write a minimal openclaw.json that lets the gateway start without any
-   * model/provider configured.  The full config will be synced once the
-   * user sets up a model in the UI.
-   */
+  * model/provider configured.  The full config will be synced once the
+  * user sets up a model in the UI.
+  */
   private writeMinimalConfig(configPath: string, _reason: string): OpenClawConfigSyncResult {
-    const preinstalledPluginIds = readPreinstalledPluginIds().filter((id) => isBundledPluginAvailable(id));
-
     const minimalConfig: Record<string, unknown> = {
       gateway: {
         mode: 'local',

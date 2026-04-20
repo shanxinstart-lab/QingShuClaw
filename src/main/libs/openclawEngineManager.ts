@@ -6,7 +6,10 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import { getElectronNodeRuntimePath, ensureElectronNodeShim, getSkillsRoot } from './coworkUtil';
-import { syncLocalOpenClawExtensionsIntoRuntime } from './openclawLocalExtensions';
+import {
+  cleanupStaleThirdPartyPluginsFromBundledDir,
+  syncLocalOpenClawExtensionsIntoRuntime,
+} from './openclawLocalExtensions';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
 import { isSystemProxyEnabled, resolveSystemProxyUrl } from './systemProxy';
 
@@ -77,6 +80,41 @@ const findPath = (candidates: string[]): string | null => {
     }
   }
   return null;
+};
+
+const hasGatewayClientPrototype = (value: unknown): boolean => {
+  if (typeof value !== 'function') {
+    return false;
+  }
+
+  const maybeCtor = value as {
+    prototype?: {
+      start?: unknown;
+      stop?: unknown;
+      request?: unknown;
+    };
+  };
+  const proto = maybeCtor.prototype;
+  return Boolean(
+    proto
+    && typeof proto.start === 'function'
+    && typeof proto.stop === 'function'
+    && typeof proto.request === 'function',
+  );
+};
+
+const moduleExportsGatewayClient = (entryPath: string): boolean => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const loaded = require(entryPath) as Record<string, unknown>;
+    if (hasGatewayClientPrototype(loaded.GatewayClient)) {
+      return true;
+    }
+    return Object.values(loaded).some((candidate) => hasGatewayClientPrototype(candidate));
+  } catch (error) {
+    console.debug(`[OpenClaw] skipped gateway client probe for ${entryPath}:`, error);
+    return false;
+  }
 };
 
 const isPortAvailable = async (port: number): Promise<boolean> => {
@@ -287,6 +325,13 @@ export class OpenClawEngineManager extends EventEmitter {
     if (localExtensionSync.copied.length > 0) {
       console.log(`[OpenClaw] synced local extensions: ${localExtensionSync.copied.join(', ')}`);
     }
+    const removedStalePlugins = cleanupStaleThirdPartyPluginsFromBundledDir(
+      runtime.root,
+      this.getConfiguredThirdPartyPluginIds(),
+    );
+    if (removedStalePlugins.length > 0) {
+      console.log(`[OpenClaw] removed stale bundled plugin directories: ${removedStalePlugins.join(', ')}`);
+    }
 
     if (this.status.phase === 'running') {
       return this.getStatus();
@@ -405,7 +450,9 @@ export class OpenClawEngineManager extends EventEmitter {
       OPENCLAW_GATEWAY_PORT: String(port),
       OPENCLAW_NO_RESPAWN: '1',
       OPENCLAW_ENGINE_VERSION: runtime.version || DEFAULT_OPENCLAW_VERSION,
-      OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(runtime.root, 'extensions'),
+      // Point to dist/extensions for runtime-bundled plugins. Third-party and
+      // local plugins are loaded separately from third-party-extensions.
+      OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(runtime.root, 'dist', 'extensions'),
       // Enable debug-level logging so gateway emits phase-level detail during startup.
       OPENCLAW_LOG_LEVEL: 'debug',
       // Enable V8 compile cache for both CJS and ESM modules.
@@ -611,6 +658,31 @@ export class OpenClawEngineManager extends EventEmitter {
     }
 
     return null;
+  }
+
+  private getConfiguredThirdPartyPluginIds(): string[] {
+    const packageJsonCandidates = app.isPackaged
+      ? [path.join(app.getAppPath(), 'package.json')]
+      : [
+          path.join(app.getAppPath(), 'package.json'),
+          path.join(process.cwd(), 'package.json'),
+        ];
+
+    for (const packageJsonPath of packageJsonCandidates) {
+      const packageJson = parseJsonFile<{
+        openclaw?: {
+          plugins?: Array<{ id?: string }>;
+        };
+      }>(packageJsonPath);
+      const pluginIds = packageJson?.openclaw?.plugins
+        ?.map((plugin) => plugin?.id?.trim())
+        .filter((pluginId): pluginId is string => Boolean(pluginId));
+      if (pluginIds && pluginIds.length > 0) {
+        return pluginIds;
+      }
+    }
+
+    return [];
   }
 
   private ensureBareEntryFiles(runtimeRoot: string): void {
@@ -979,6 +1051,11 @@ export class OpenClawEngineManager extends EventEmitter {
   }
 
   private findGatewayClientEntryFromDistRoot(distRoot: string): string | null {
+    const pluginSdkGatewayRuntime = path.join(distRoot, 'plugin-sdk', 'gateway-runtime.js');
+    if (fs.existsSync(pluginSdkGatewayRuntime)) {
+      return pluginSdkGatewayRuntime;
+    }
+
     const gatewayClient = path.join(distRoot, 'gateway', 'client.js');
     if (fs.existsSync(gatewayClient)) {
       return gatewayClient;
@@ -994,11 +1071,33 @@ export class OpenClawEngineManager extends EventEmitter {
         return null;
       }
 
-      const candidates = fs.readdirSync(distRoot)
+      const entries = fs.readdirSync(distRoot).sort();
+      const preferredCandidates = entries
+        .filter((name) => /^method-scopes(?:-.*)?\.js$/i.test(name))
+        .map((name) => path.join(distRoot, name));
+      const fallbackCandidates = entries
         .filter((name) => /^client(?:-.*)?\.js$/i.test(name))
-        .sort();
-      if (candidates.length > 0) {
-        return path.join(distRoot, candidates[0]);
+        .map((name) => path.join(distRoot, name));
+
+      for (const candidatePath of [...preferredCandidates, ...fallbackCandidates]) {
+        if (moduleExportsGatewayClient(candidatePath)) {
+          console.log(`[OpenClaw] resolved gateway client entry: ${candidatePath}`);
+          return candidatePath;
+        }
+      }
+
+      if (preferredCandidates.length > 0) {
+        console.warn(
+          `[OpenClaw] falling back to first method-scopes bundle without verified GatewayClient export: ${preferredCandidates[0]}`,
+        );
+        return preferredCandidates[0];
+      }
+
+      if (fallbackCandidates.length > 0) {
+        console.warn(
+          `[OpenClaw] falling back to first client bundle without verified GatewayClient export: ${fallbackCandidates[0]}`,
+        );
+        return fallbackCandidates[0];
       }
     } catch {
       // ignore

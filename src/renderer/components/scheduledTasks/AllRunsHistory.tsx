@@ -1,18 +1,35 @@
+import { CheckCircleIcon, ClockIcon } from '@heroicons/react/24/outline';
 import React, { useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
-import { RootState } from '../../store';
-import { scheduledTaskService } from '../../services/scheduledTask';
-import { i18nService } from '../../services/i18n';
+
 import type { ScheduledTaskRunWithName } from '../../../scheduledTask/types';
-import { ClockIcon } from '@heroicons/react/24/outline';
+import { i18nService } from '../../services/i18n';
+import { scheduledTaskService } from '../../services/scheduledTask';
+import { RootState } from '../../store';
 import RunSessionModal from './RunSessionModal';
 import { formatDateTime, formatDuration } from './utils';
 
-const statusConfig: Record<string, { label: string; color: string }> = {
-  success: { label: 'scheduledTasksStatusSuccess', color: 'text-green-500' },
-  error: { label: 'scheduledTasksStatusError', color: 'text-red-500' },
-  skipped: { label: 'scheduledTasksStatusSkipped', color: 'text-yellow-500' },
-  running: { label: 'scheduledTasksStatusRunning', color: 'text-blue-500' },
+const statusConfig: Record<string, { label: string; tone: string; badgeClass: string }> = {
+  success: {
+    label: 'scheduledTasksStatusSuccess',
+    tone: 'text-green-600',
+    badgeClass: 'bg-green-500/12',
+  },
+  error: {
+    label: 'scheduledTasksStatusError',
+    tone: 'text-red-600',
+    badgeClass: 'bg-red-500/12',
+  },
+  skipped: {
+    label: 'scheduledTasksStatusSkipped',
+    tone: 'text-yellow-600',
+    badgeClass: 'bg-yellow-500/12',
+  },
+  running: {
+    label: 'scheduledTasksStatusRunning',
+    tone: 'text-primary',
+    badgeClass: 'bg-primary/12',
+  },
 };
 
 const AllRunsHistory: React.FC = () => {
@@ -45,67 +62,74 @@ const AllRunsHistory: React.FC = () => {
   }
 
   return (
-    <div>
-      {/* Column Headers */}
-      <div className="grid grid-cols-[1fr_1fr_80px] items-center gap-3 px-4 py-2 border-b border-border-subtle">
-        <div className="text-xs font-medium text-secondary">
-          {i18nService.t('scheduledTasksHistoryColTitle')}
-        </div>
-        <div className="text-xs font-medium text-secondary">
-          {i18nService.t('scheduledTasksHistoryColTime')}
-        </div>
-        <div className="text-xs font-medium text-secondary">
-          {i18nService.t('scheduledTasksHistoryColStatus')}
-        </div>
-      </div>
-
-      {/* Run rows */}
+    <div className="space-y-4">
       {allRuns.map((run) => {
-        const cfg = statusConfig[run.status] || { label: '', color: '' };
+        const cfg = statusConfig[run.status] || {
+          label: 'scheduledTasksStatusIdle',
+          tone: 'text-secondary',
+          badgeClass: 'bg-surface-raised',
+        };
         const hasSession = run.sessionId || run.sessionKey;
         return (
           <div
             key={run.id}
-            className={`grid grid-cols-[1fr_1fr_80px] items-center gap-3 px-4 py-3 border-b border-border-subtle transition-colors ${
+            className={`rounded-[24px] border border-border bg-surface p-5 shadow-subtle transition-colors ${
               hasSession
-                ? 'hover:bg-surface-raised/50 cursor-pointer'
+                ? 'cursor-pointer hover:border-primary/25 hover:bg-surface-raised/60'
                 : ''
             }`}
             onClick={() => handleViewSession(run)}
           >
-            {/* Task title */}
-            <div className="text-sm text-foreground truncate">
-              {run.taskName}
-              {run.status === 'running' && (
-                <svg className="inline-block w-3 h-3 ml-1.5 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
-                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" strokeLinecap="round" className="opacity-75" />
-                </svg>
-              )}
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/12 text-primary">
+                    <CheckCircleIcon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate text-base font-semibold text-foreground">
+                      {run.taskName}
+                    </div>
+                    <div className="mt-1 text-sm text-secondary">
+                      {formatDateTime(new Date(run.startedAt))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-medium ${cfg.tone} ${cfg.badgeClass}`}>
+                {i18nService.t(cfg.label)}
+              </span>
             </div>
 
-            {/* Run time + duration */}
-            <div className="text-sm text-secondary truncate">
-              {formatDateTime(new Date(run.startedAt))}
-              {run.durationMs !== null && (
-                <span className="ml-1.5 text-xs opacity-70">({formatDuration(run.durationMs)})</span>
-              )}
-            </div>
-
-            {/* Status */}
-            <div className={`text-sm font-medium ${cfg.color}`}>
-              {i18nService.t(cfg.label)}
+            <div className="mt-5 grid gap-3 text-sm md:grid-cols-2">
+              <div className="rounded-2xl bg-background px-4 py-3">
+                <div className="text-xs font-medium text-secondary">
+                  {i18nService.t('scheduledTasksHistoryColTime')}
+                </div>
+                <div className="mt-1 text-sm text-foreground">
+                  {formatDateTime(new Date(run.startedAt))}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-background px-4 py-3">
+                <div className="text-xs font-medium text-secondary">
+                  {i18nService.t('scheduledTasksHistoryColStatus')}
+                </div>
+                <div className="mt-1 text-sm text-foreground">
+                  {run.durationMs !== null
+                    ? formatDuration(run.durationMs)
+                    : i18nService.t(cfg.label)}
+                </div>
+              </div>
             </div>
           </div>
         );
       })}
 
-      {/* Load more */}
       {allRuns.length >= 50 && allRuns.length % 50 === 0 && (
         <button
           type="button"
           onClick={handleLoadMore}
-          className="w-full py-3 text-sm text-primary hover:text-primary-hover transition-colors"
+          className="w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-primary transition-colors hover:bg-surface-raised hover:text-primary-hover"
         >
           {i18nService.t('scheduledTasksLoadMore')}
         </button>

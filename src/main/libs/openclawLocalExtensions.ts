@@ -3,6 +3,13 @@ import fs from 'fs';
 import path from 'path';
 
 const LOCAL_EXTENSIONS_DIR = 'openclaw-extensions';
+const THIRD_PARTY_EXTENSIONS_DIR = 'third-party-extensions';
+
+type OpenClawExtensionInfo = {
+  id: string;
+  dirName: string;
+  rootDir: string;
+};
 
 const findLocalExtensionsSourceDir = (): string | null => {
   if (app.isPackaged) {
@@ -29,10 +36,10 @@ const findLocalExtensionsSourceDir = (): string | null => {
 
 const findBundledExtensionsDir = (): string | null => {
   const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, 'cfmind', 'extensions')]
+    ? [path.join(process.resourcesPath, 'cfmind', THIRD_PARTY_EXTENSIONS_DIR)]
     : [
-        path.join(app.getAppPath(), 'vendor', 'openclaw-runtime', 'current', 'extensions'),
-        path.join(process.cwd(), 'vendor', 'openclaw-runtime', 'current', 'extensions'),
+        path.join(app.getAppPath(), 'vendor', 'openclaw-runtime', 'current', THIRD_PARTY_EXTENSIONS_DIR),
+        path.join(process.cwd(), 'vendor', 'openclaw-runtime', 'current', THIRD_PARTY_EXTENSIONS_DIR),
       ];
 
   for (const candidate of candidates) {
@@ -48,6 +55,35 @@ const findBundledExtensionsDir = (): string | null => {
   return null;
 };
 
+const readExtensionInfos = (baseDir: string | null): OpenClawExtensionInfo[] => {
+  if (!baseDir) {
+    return [];
+  }
+
+  try {
+    return fs.readdirSync(baseDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .flatMap((entry) => {
+        const rootDir = path.join(baseDir, entry.name);
+        const manifestPath = path.join(rootDir, 'openclaw.plugin.json');
+        if (!fs.existsSync(manifestPath)) {
+          return [];
+        }
+        try {
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: string };
+          const id = typeof manifest.id === 'string' && manifest.id.trim()
+            ? manifest.id.trim()
+            : entry.name;
+          return [{ id, dirName: entry.name, rootDir }];
+        } catch {
+          return [{ id: entry.name, dirName: entry.name, rootDir }];
+        }
+      });
+  } catch {
+    return [];
+  }
+};
+
 export const syncLocalOpenClawExtensionsIntoRuntime = (
   runtimeRoot: string,
 ): { sourceDir: string | null; copied: string[] } => {
@@ -56,7 +92,7 @@ export const syncLocalOpenClawExtensionsIntoRuntime = (
     return { sourceDir: null, copied: [] };
   }
 
-  const targetExtensionsDir = path.join(runtimeRoot, 'extensions');
+  const targetExtensionsDir = path.join(runtimeRoot, THIRD_PARTY_EXTENSIONS_DIR);
   try {
     if (!fs.statSync(targetExtensionsDir).isDirectory()) {
       return { sourceDir, copied: [] };
@@ -82,38 +118,80 @@ export const syncLocalOpenClawExtensionsIntoRuntime = (
 };
 
 export const listLocalOpenClawExtensionIds = (): string[] => {
-  const sourceDir = findLocalExtensionsSourceDir();
-  if (!sourceDir) {
-    return [];
-  }
-
-  try {
-    return fs.readdirSync(sourceDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .filter((entry) => fs.existsSync(path.join(sourceDir, entry.name, 'openclaw.plugin.json')))
-      .map((entry) => entry.name);
-  } catch {
-    return [];
-  }
+  return readExtensionInfos(findLocalExtensionsSourceDir()).map((entry) => entry.id);
 };
 
 export const listBundledOpenClawExtensionIds = (): string[] => {
-  const extensionsDir = findBundledExtensionsDir();
-  if (!extensionsDir) {
-    return [];
-  }
-
-  try {
-    return fs.readdirSync(extensionsDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .filter((entry) => fs.existsSync(path.join(extensionsDir, entry.name, 'openclaw.plugin.json')))
-      .map((entry) => entry.name);
-  } catch {
-    return [];
-  }
+  return readExtensionInfos(findBundledExtensionsDir()).map((entry) => entry.id);
 };
 
 export const hasBundledOpenClawExtension = (extensionId: string): boolean => {
-  return listBundledOpenClawExtensionIds().includes(extensionId)
-    || listLocalOpenClawExtensionIds().includes(extensionId);
+  const matchesExtensionId = (entry: OpenClawExtensionInfo): boolean =>
+    entry.id === extensionId || entry.dirName === extensionId;
+
+  return readExtensionInfos(findBundledExtensionsDir()).some(matchesExtensionId)
+    || readExtensionInfos(findLocalExtensionsSourceDir()).some(matchesExtensionId);
+};
+
+export const resolveOpenClawExtensionLoadPath = (extensionId: string): string | null => {
+  const matchesExtensionId = (entry: OpenClawExtensionInfo): boolean =>
+    entry.id === extensionId || entry.dirName === extensionId;
+
+  const localMatch = readExtensionInfos(findLocalExtensionsSourceDir()).find(matchesExtensionId);
+  if (localMatch) {
+    return localMatch.rootDir;
+  }
+
+  const bundledMatch = readExtensionInfos(findBundledExtensionsDir()).find(matchesExtensionId);
+  return bundledMatch?.rootDir ?? null;
+};
+
+export const resolveOpenClawExtensionConfigId = (extensionId: string): string | null => {
+  const matchesExtensionId = (entry: OpenClawExtensionInfo): boolean =>
+    entry.id === extensionId || entry.dirName === extensionId;
+
+  const localMatch = readExtensionInfos(findLocalExtensionsSourceDir()).find(matchesExtensionId);
+  if (localMatch) {
+    return localMatch.id;
+  }
+
+  const bundledMatch = readExtensionInfos(findBundledExtensionsDir()).find(matchesExtensionId);
+  return bundledMatch?.id ?? null;
+};
+
+export const findThirdPartyExtensionsDir = (): string | null => {
+  const dir = findBundledExtensionsDir();
+  if (!dir) return null;
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+};
+
+export const cleanupStaleThirdPartyPluginsFromBundledDir = (
+  runtimeRoot: string,
+  thirdPartyPluginIds: readonly string[],
+): string[] => {
+  const staleDirs = [
+    path.join(runtimeRoot, 'dist', 'extensions'),
+    path.join(runtimeRoot, 'extensions'),
+  ];
+  const removed: string[] = [];
+
+  for (const id of thirdPartyPluginIds) {
+    for (const baseDir of staleDirs) {
+      const staleDir = path.join(baseDir, id);
+      try {
+        if (fs.statSync(staleDir).isDirectory()) {
+          fs.rmSync(staleDir, { recursive: true, force: true });
+          removed.push(id);
+        }
+      } catch {
+        // Directory doesn't exist or can't be accessed — nothing to clean up.
+      }
+    }
+  }
+
+  return removed;
 };

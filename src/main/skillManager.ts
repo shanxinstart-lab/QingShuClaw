@@ -1,17 +1,11 @@
-import { app, BrowserWindow, session } from 'electron';
 import { execSync, spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import yaml from 'js-yaml';
+import { app, BrowserWindow, session } from 'electron';
 import extractZip from 'extract-zip';
-import { SqliteStore } from './sqliteStore';
-import { cpRecursiveSync } from './fsCompat';
-import { getElectronNodeRuntimePath } from './libs/coworkUtil';
-import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
-import { scanSkillSecurity, scanMultipleSkillDirs, mergeReports } from './libs/skillSecurity/skillSecurityScanner';
-import type { SkillSecurityReport, SecurityReportAction } from './libs/skillSecurity/skillSecurityTypes';
-import { t } from './i18n';
+import fs from 'fs';
+import yaml from 'js-yaml';
+import path from 'path';
+
 import {
   QingShuManagedInstaller,
   QingShuObjectSourceType,
@@ -21,6 +15,13 @@ import type {
   QingShuManagedSkillMeta,
   QingShuSkillSourceMeta,
 } from '../shared/qingshuManaged/types';
+import { cpRecursiveSync } from './fsCompat';
+import { t } from './i18n';
+import { getElectronNodeRuntimePath } from './libs/coworkUtil';
+import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
+import { mergeReports,scanMultipleSkillDirs, scanSkillSecurity } from './libs/skillSecurity/skillSecurityScanner';
+import type { SecurityReportAction,SkillSecurityReport } from './libs/skillSecurity/skillSecurityTypes';
+import { SqliteStore } from './sqliteStore';
 
 /**
  * Resolve the user's login shell PATH on macOS/Linux.
@@ -234,6 +235,7 @@ export type SkillRecord = {
   installedBy?: string;
   toolRefs?: string[];
   policyNote?: string;
+  allowed?: boolean;
 };
 
 type SkillStateMap = Record<string, { enabled: boolean }>;
@@ -2120,6 +2122,7 @@ export class SkillManager {
         installedBy: skillMeta.installedBy,
         toolRefs: skillMeta.toolRefs,
         policyNote: skillMeta.policyNote,
+        allowed: skillMeta.allowed,
       };
     } catch (error) {
       console.warn('[skills] Failed to parse skill:', dir, error);
@@ -2178,6 +2181,7 @@ export class SkillManager {
       installedBy: QingShuManagedInstaller.QingShuSync,
       toolRefs: descriptor.toolRefs ?? [],
       policyNote: descriptor.policyNote,
+      allowed: descriptor.allowed,
     };
   }
 
@@ -2226,6 +2230,7 @@ export class SkillManager {
         installedBy,
         toolRefs: normalizeStringArray(raw.toolRefs),
         policyNote: typeof raw.policyNote === 'string' ? raw.policyNote : undefined,
+        allowed: raw.allowed === false ? false : undefined,
       };
     } catch (error) {
       console.warn('[skills] Failed to read skill meta:', metaPath, error);

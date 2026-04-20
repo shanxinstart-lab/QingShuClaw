@@ -16,11 +16,11 @@ export interface ScheduledTaskHandlerDeps {
       getSessionMapping: (conversationId: string, platform: string) => {
         coworkSessionId: string;
       } | undefined;
-      listSessionMappings: (platform: string) => Array<{
+      listSessionMappings: (platform: string, accountId?: string) => Array<{
         imConversationId: string;
         platform: string;
         coworkSessionId: string;
-        lastActiveAt: string;
+        lastActiveAt: number;
       }>;
     } | undefined;
     primeConversationReplyRoute: (
@@ -253,7 +253,7 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     }
   });
 
-  ipcMain.handle(ScheduledTaskIpc.ListChannelConversations, async (_event, channel: string) => {
+  ipcMain.handle(ScheduledTaskIpc.ListChannelConversations, async (_event, channel: string, accountId?: string) => {
     try {
       console.log('[IPC][listChannelConversations] channel:', channel);
       const platform = PlatformRegistry.platformOfChannel(channel);
@@ -267,7 +267,7 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
         console.log('[IPC][listChannelConversations] no imStore available, returning empty');
         return { success: true, conversations: [] };
       }
-      const mappings = imStore.listSessionMappings(platform);
+      const mappings = imStore.listSessionMappings(platform, accountId);
       console.log('[IPC][listChannelConversations] found', mappings.length, 'session mappings for platform:', platform);
       const conversations = mappings.map((m) => ({
         conversationId: m.imConversationId,

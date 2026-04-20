@@ -149,11 +149,15 @@ class McpService {
   }
 
   onBridgeSyncStart(callback: () => void): () => void {
-    return window.electron.mcp.onBridgeSyncStart(callback);
+    const subscribe = window.electron.mcp.onBridgeSyncStart;
+    if (!subscribe) return () => {};
+    return subscribe(callback);
   }
 
   onBridgeSyncDone(callback: (data: { tools: number; error?: string }) => void): () => void {
-    return window.electron.mcp.onBridgeSyncDone(callback);
+    const subscribe = window.electron.mcp.onBridgeSyncDone;
+    if (!subscribe) return () => {};
+    return subscribe(callback);
   }
 }
 

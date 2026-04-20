@@ -22,13 +22,16 @@ import type {
   OpenClawEngineStatus,
   CoworkUserMemoryEntry,
   CoworkMemoryStats,
+  OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValue,
 } from '../types/cowork';
+import { OpenClawSessionKeepAlive } from '../types/cowork';
 import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
 import type { WakeInputStatus } from '../../shared/wakeInput/constants';
 import { TtsEngine, TtsPrepareStatus, type TtsAvailability, type TtsVoice } from '../../shared/tts/constants';
+import { getProviderIcon } from '../providers/uiRegistry';
 import {
   DEFAULT_SPEECH_INPUT_CONFIG,
   DEFAULT_TTS_CONFIG,
@@ -47,21 +50,7 @@ import {
   DEFAULT_QTB_WEB_BASE_URL,
 } from '../../common/auth';
 import {
-  OpenAIIcon,
-  DeepSeekIcon,
-  GeminiIcon,
-  AnthropicIcon,
-  MoonshotIcon,
-  ZhipuIcon,
-  MiniMaxIcon,
-  YouDaoZhiYunIcon,
-  QwenIcon,
-  XiaomiIcon,
-  StepfunIcon,
-  VolcengineIcon,
-  OpenRouterIcon,
-  OllamaIcon,
-  CustomProviderIcon,
+  GitHubCopilotIcon,
 } from './icons/providers';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
@@ -105,9 +94,11 @@ const providerKeys = [
   'volcengine',
   'qwen',
   'youdaozhiyun',
+  'qianfan',
   'stepfun',
   'xiaomi',
   'openrouter',
+  'github-copilot',
   'ollama',
   ...CUSTOM_PROVIDER_KEYS,
 ] as const;
@@ -165,27 +156,7 @@ interface ProvidersImportPayload {
   providers?: Record<string, ProvidersImportEntry>;
 }
 
-const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode }> = {
-  openai: { label: 'OpenAI', icon: <OpenAIIcon /> },
-  deepseek: { label: 'DeepSeek', icon: <DeepSeekIcon /> },
-  gemini: { label: 'Gemini', icon: <GeminiIcon /> },
-  anthropic: { label: 'Anthropic', icon: <AnthropicIcon /> },
-  moonshot: { label: 'Moonshot', icon: <MoonshotIcon /> },
-  zhipu: { label: 'Zhipu', icon: <ZhipuIcon /> },
-  minimax: { label: 'MiniMax', icon: <MiniMaxIcon /> },
-  youdaozhiyun: { label: 'Youdao', icon: <YouDaoZhiYunIcon /> },
-  qwen: { label: 'Qwen', icon: <QwenIcon /> },
-  xiaomi: { label: 'Xiaomi', icon: <XiaomiIcon /> },
-  stepfun: { label: 'StepFun', icon: <StepfunIcon /> },
-  volcengine: { label: 'Volcengine', icon: <VolcengineIcon /> },
-  openrouter: { label: 'OpenRouter', icon: <OpenRouterIcon /> },
-  ollama: { label: 'Ollama', icon: <OllamaIcon /> },
-  ...Object.fromEntries(
-    CUSTOM_PROVIDER_KEYS.map(key => [key, { label: getCustomProviderDefaultName(key), icon: <CustomProviderIcon /> }])
-  ) as Record<(typeof CUSTOM_PROVIDER_KEYS)[number], { label: string; icon: React.ReactNode }>,
-};
-
-const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama';
+const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'github-copilot';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
 const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
   value === 'openai' ? 'openai' : 'anthropic'
@@ -260,7 +231,14 @@ const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'openai' 
   if (provider === 'openai' || provider === 'stepfun') {
     return 'openai';
   }
-  if (provider === 'youdaozhiyun') {
+  if (provider === 'youdaozhiyun' || provider === 'qianfan') {
+    return 'openai';
+  }
+  if (provider === 'github-copilot') {
+    return 'openai';
+  }
+  // Moonshot regular chat must stay on the OpenAI-compatible endpoint.
+  if (provider === 'moonshot') {
     return 'openai';
   }
   if (provider === 'anthropic') {
@@ -289,7 +267,13 @@ const resolveBaseUrl = (
   baseUrl: string,
   apiFormat: 'anthropic' | 'openai' | 'gemini'
 ): string => {
-  if (baseUrl.trim()) return baseUrl;
+  if (baseUrl.trim()) {
+    if (shouldAutoSwitchProviderBaseUrl(provider, baseUrl) && (apiFormat === 'anthropic' || apiFormat === 'openai')) {
+      const switchedUrl = ProviderRegistry.getSwitchableBaseUrl(provider, apiFormat);
+      if (switchedUrl) return switchedUrl;
+    }
+    return baseUrl;
+  }
   return getProviderDefaultBaseUrl(provider, apiFormat)
     || defaultConfig.providers?.[provider]?.baseUrl
     || '';
@@ -332,6 +316,9 @@ const buildOpenAICompatibleChatCompletionsUrl = (baseUrl: string, provider: stri
 
   // Handle /v1, /v4 etc. versioned paths
   if (/\/v\d+$/.test(normalized)) {
+    return `${normalized}/chat/completions`;
+  }
+  if (provider === 'github-copilot') {
     return `${normalized}/chat/completions`;
   }
   return `${normalized}/v1/chat/completions`;
@@ -540,6 +527,11 @@ const Settings: React.FC<SettingsProps> = ({
   const [minimaxOAuthPhase, setMinimaxOAuthPhase] = useState<MiniMaxOAuthPhase>({ kind: 'idle' });
   const [minimaxOAuthRegion, setMinimaxOAuthRegion] = useState<MiniMaxRegion>('cn');
   const minimaxOAuthCancelRef = useRef(false);
+  const [copilotAuthStatus, setCopilotAuthStatus] = useState<'idle' | 'requesting' | 'awaiting_user' | 'polling' | 'authenticated' | 'error'>('idle');
+  const [copilotUserCode, setCopilotUserCode] = useState('');
+  const [copilotVerificationUri, setCopilotVerificationUri] = useState('');
+  const [copilotGithubUser, setCopilotGithubUser] = useState('');
+  const [copilotError, setCopilotError] = useState<string | null>(null);
 
   // Add state for providers configuration
   const [providers, setProviders] = useState<ProvidersConfig>(() => getDefaultProviders());
@@ -583,6 +575,21 @@ const Settings: React.FC<SettingsProps> = ({
   useEffect(() => {
     setShowApiKey(false);
   }, [activeProvider]);
+
+  useEffect(() => {
+    return window.electron.githubCopilot.onTokenUpdated(({ token, baseUrl }) => {
+      setProviders(prev => ({
+        ...prev,
+        'github-copilot': {
+          ...prev['github-copilot'],
+          apiKey: token,
+          baseUrl: baseUrl || prev['github-copilot'].baseUrl,
+          authType: 'oauth',
+        },
+      }));
+      setCopilotAuthStatus('authenticated');
+    });
+  }, []);
 
   const handleCheckUpdate = useCallback(async () => {
     if (updateCheckManaged || updateCheckStatus === 'checking') return;
@@ -658,6 +665,10 @@ const Settings: React.FC<SettingsProps> = ({
   const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'openclaw');
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
+  const [skipMissedJobs, setSkipMissedJobs] = useState<boolean>(coworkConfig.skipMissedJobs ?? true);
+  const [openClawSessionKeepAlive, setOpenClawSessionKeepAlive] = useState<OpenClawSessionKeepAliveValue>(
+    coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays
+  );
   const [coworkMemoryEntries, setCoworkMemoryEntries] = useState<CoworkUserMemoryEntry[]>([]);
   const [coworkMemoryStats, setCoworkMemoryStats] = useState<CoworkMemoryStats | null>(null);
   const [coworkMemoryListLoading, setCoworkMemoryListLoading] = useState<boolean>(false);
@@ -675,10 +686,14 @@ const Settings: React.FC<SettingsProps> = ({
     setCoworkAgentEngine(coworkConfig.agentEngine || 'openclaw');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
+    setSkipMissedJobs(coworkConfig.skipMissedJobs ?? true);
+    setOpenClawSessionKeepAlive(coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays);
   }, [
     coworkConfig.agentEngine,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
+    coworkConfig.skipMissedJobs,
+    coworkConfig.openClawSessionPolicy?.keepAlive,
   ]);
 
   useEffect(() => () => {
@@ -1472,9 +1487,91 @@ const Settings: React.FC<SettingsProps> = ({
     setMinimaxOAuthPhase({ kind: 'idle' });
   };
 
+  const handleCopilotSignIn = async () => {
+    try {
+      setCopilotAuthStatus('requesting');
+      setCopilotError(null);
+
+      const { userCode, verificationUri, deviceCode, interval, expiresIn } =
+        await window.electron.githubCopilot.requestDeviceCode();
+
+      setCopilotUserCode(userCode);
+      setCopilotVerificationUri(verificationUri);
+      setCopilotAuthStatus('awaiting_user');
+
+      try {
+        await window.electron.shell.openExternal(verificationUri);
+      } catch {
+        // ignore
+      }
+
+      setCopilotAuthStatus('polling');
+      const result = await window.electron.githubCopilot.pollForToken(deviceCode, interval, expiresIn);
+
+      if (result.success && result.token) {
+        setCopilotGithubUser(result.githubUser || '');
+        setCopilotAuthStatus('authenticated');
+        setProviders(prev => ({
+          ...prev,
+          'github-copilot': {
+            ...prev['github-copilot'],
+            enabled: true,
+            apiKey: result.token!,
+            baseUrl: result.baseUrl || prev['github-copilot'].baseUrl,
+            apiFormat: 'openai',
+            authType: 'oauth',
+          },
+        }));
+        return;
+      }
+
+      setCopilotError(result.error || 'Authentication failed');
+      setCopilotAuthStatus('error');
+    } catch (error) {
+      setCopilotError(error instanceof Error ? error.message : String(error));
+      setCopilotAuthStatus('error');
+    }
+  };
+
+  const handleCopilotSignOut = async () => {
+    try {
+      await window.electron.githubCopilot.signOut();
+    } catch (error) {
+      console.error('[Settings] GitHub Copilot sign-out failed:', error);
+    }
+
+    setCopilotAuthStatus('idle');
+    setCopilotGithubUser('');
+    setCopilotUserCode('');
+    setCopilotVerificationUri('');
+    setCopilotError(null);
+    setProviders(prev => ({
+      ...prev,
+      'github-copilot': {
+        ...prev['github-copilot'],
+        enabled: false,
+        apiKey: '',
+      },
+    }));
+  };
+
+  const handleCopilotCancelAuth = async () => {
+    try {
+      await window.electron.githubCopilot.cancelPolling();
+    } catch (error) {
+      console.error('[Settings] GitHub Copilot cancel polling failed:', error);
+    }
+    setCopilotAuthStatus('idle');
+    setCopilotUserCode('');
+    setCopilotVerificationUri('');
+    setCopilotError(null);
+  };
+
   const hasCoworkConfigChanges = coworkAgentEngine !== coworkConfig.agentEngine
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
-    || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled;
+    || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled
+    || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? true)
+    || openClawSessionKeepAlive !== (coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays);
   const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
 
   const openClawProgressPercent = useMemo(() => {
@@ -1629,6 +1726,11 @@ const Settings: React.FC<SettingsProps> = ({
     const providerConfig = providers[provider];
     const isEnabling = !providerConfig.enabled;
     const missingApiKey = providerRequiresApiKey(provider) && !providerConfig.apiKey.trim();
+
+    if (provider === 'github-copilot' && isEnabling && !providerConfig.apiKey.trim()) {
+      void handleCopilotSignIn();
+      return;
+    }
 
     if (isEnabling && missingApiKey) {
       setError(i18nService.t('apiKeyRequired'));
@@ -1810,6 +1912,10 @@ const Settings: React.FC<SettingsProps> = ({
           agentEngine: coworkAgentEngine,
           memoryEnabled: coworkMemoryEnabled,
           memoryLlmJudgeEnabled: coworkMemoryLlmJudgeEnabled,
+          skipMissedJobs,
+          openClawSessionPolicy: {
+            keepAlive: openClawSessionKeepAlive,
+          },
         });
         if (!updated) {
           throw new Error(i18nService.t('coworkConfigSaveFailed'));
@@ -2066,6 +2172,13 @@ const Settings: React.FC<SettingsProps> = ({
         };
         if (providerConfig.apiKey) {
           headers.Authorization = `Bearer ${providerConfig.apiKey}`;
+        }
+        if (testingProvider === 'github-copilot') {
+          headers['Copilot-Integration-Id'] = 'vscode-chat';
+          headers['Editor-Version'] = 'vscode/1.96.2';
+          headers['Editor-Plugin-Version'] = 'copilot-chat/0.26.7';
+          headers['User-Agent'] = 'GitHubCopilotChat/0.26.7';
+          headers['Openai-Intent'] = 'conversation-panel';
         }
         const openAIRequestBody: Record<string, unknown> = useResponsesApi
           ? {
@@ -3219,7 +3332,7 @@ const Settings: React.FC<SettingsProps> = ({
               </div>
             </div>
             {isOpenClawAgentEngine && (
-              <div className="space-y-3 rounded-xl border px-4 py-4 border-border">
+              <div className="space-y-4 rounded-xl border px-4 py-4 border-border">
                 <div className="text-xs text-secondary">
                   {i18nService.t('coworkOpenClawInstallHint')}
                 </div>
@@ -3243,6 +3356,54 @@ const Settings: React.FC<SettingsProps> = ({
                       />
                     </div>
                   )}
+                </div>
+
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    {i18nService.t('openClawSessionKeepAlive')}
+                  </div>
+                  <div className="mt-1 text-xs text-secondary">
+                    {i18nService.t('openClawSessionKeepAliveDescription')}
+                  </div>
+                  <div className="mt-3 w-[220px]">
+                    <ThemedSelect
+                      id="openclaw-session-keepalive"
+                      value={openClawSessionKeepAlive}
+                      onChange={(value) => setOpenClawSessionKeepAlive(value as OpenClawSessionKeepAliveValue)}
+                      options={[
+                        { value: OpenClawSessionKeepAlive.OneDay, label: i18nService.t('openClawSessionKeepAlive1d') },
+                        { value: OpenClawSessionKeepAlive.SevenDays, label: i18nService.t('openClawSessionKeepAlive7d') },
+                        { value: OpenClawSessionKeepAlive.ThirtyDays, label: i18nService.t('openClawSessionKeepAlive30d') },
+                        { value: OpenClawSessionKeepAlive.OneYear, label: i18nService.t('openClawSessionKeepAlive365d') },
+                      ]}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    {i18nService.t('skipMissedJobs')}
+                  </div>
+                  <label className="mt-3 flex items-center justify-between cursor-pointer">
+                    <span className="text-sm text-secondary">
+                      {i18nService.t('skipMissedJobsDescription')}
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={skipMissedJobs}
+                      onClick={() => setSkipMissedJobs((prev) => !prev)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        skipMissedJobs ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          skipMissedJobs ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
                 </div>
               </div>
             )}
@@ -3385,12 +3546,11 @@ const Settings: React.FC<SettingsProps> = ({
               {Object.entries(visibleProviders).map(([provider, config]) => {
                 const providerKey = provider as ProviderType;
                 const isCustom = isCustomProvider(provider);
-                const providerInfo = providerMeta[providerKey];
                 const missingApiKey = providerRequiresApiKey(providerKey) && !config.apiKey.trim();
                 const canToggleProvider = config.enabled || !missingApiKey;
                 const displayLabel = isCustom
                   ? ((config as ProviderConfig).displayName || getCustomProviderDefaultName(provider))
-                  : (providerInfo?.label ?? getProviderDisplayName(provider));
+                  : (ProviderRegistry.get(providerKey)?.label ?? getProviderDisplayName(provider));
                 return (
                   <div
                     key={provider}
@@ -3404,7 +3564,7 @@ const Settings: React.FC<SettingsProps> = ({
                     <div className="flex flex-1 items-center min-w-0">
                       <div className="mr-2 flex h-7 w-7 items-center justify-center shrink-0">
                         <span className="text-foreground">
-                          {isCustom ? <CustomProviderIcon /> : providerInfo?.icon}
+                          {getProviderIcon(provider)}
                         </span>
                       </div>
                       <div className="flex flex-col min-w-0">
@@ -3481,7 +3641,7 @@ const Settings: React.FC<SettingsProps> = ({
                 <h3 className="text-base font-medium text-foreground">
                   {isCustomProvider(activeProvider)
                     ? ((providers[activeProvider] as ProviderConfig)?.displayName || getCustomProviderDefaultName(activeProvider))
-                    : (providerMeta[activeProvider]?.label ?? getProviderDisplayName(activeProvider))
+                    : (ProviderRegistry.get(activeProvider)?.label ?? getProviderDisplayName(activeProvider))
                   } {i18nService.t('providerSettings')}
                 </h3>
                 <div
@@ -3701,6 +3861,101 @@ const Settings: React.FC<SettingsProps> = ({
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {activeProvider === 'github-copilot' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-foreground mb-2">
+                      {i18nService.t('githubCopilotAuth')}
+                    </label>
+
+                    {(copilotAuthStatus === 'idle' || copilotAuthStatus === 'error') && !providers['github-copilot'].apiKey && (
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleCopilotSignIn()}
+                          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-white text-xs font-medium hover:bg-primary-hover transition-colors"
+                        >
+                          <GitHubCopilotIcon className="w-4 h-4" />
+                          {i18nService.t('githubCopilotSignIn')}
+                        </button>
+                        {copilotError && (
+                          <p className="text-xs text-red-500 dark:text-red-400">{copilotError}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {copilotAuthStatus === 'requesting' && (
+                      <div className="p-3 rounded-xl bg-surface-inset border border-border">
+                        <p className="text-xs text-secondary">
+                          {i18nService.t('githubCopilotRequesting')}
+                        </p>
+                      </div>
+                    )}
+
+                    {(copilotAuthStatus === 'awaiting_user' || copilotAuthStatus === 'polling') && (
+                      <div className="space-y-3">
+                        <div className="p-3 rounded-xl bg-surface-inset border border-border">
+                          <p className="text-xs text-secondary mb-2">
+                            {i18nService.t('githubCopilotEnterCode')}
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <code className="text-lg font-mono font-bold tracking-widest text-foreground">
+                              {copilotUserCode}
+                            </code>
+                            <button
+                              type="button"
+                              onClick={() => navigator.clipboard.writeText(copilotUserCode)}
+                              className="px-2 py-0.5 rounded text-[10px] text-secondary hover:text-primary border border-border transition-colors"
+                            >
+                              {i18nService.t('copy')}
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void window.electron.shell.openExternal(copilotVerificationUri)}
+                            className="mt-2 text-xs text-primary hover:underline break-all text-left"
+                          >
+                            {copilotVerificationUri}
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <p className="text-xs text-secondary">
+                            {i18nService.t('githubCopilotWaiting')}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => void handleCopilotCancelAuth()}
+                            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
+                          >
+                            {i18nService.t('minimaxOAuthCancel')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {(copilotAuthStatus === 'authenticated' || providers['github-copilot'].apiKey) && copilotAuthStatus !== 'requesting' && copilotAuthStatus !== 'awaiting_user' && copilotAuthStatus !== 'polling' && (
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-green-500/10 border border-green-500/20">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-green-500" />
+                          <span className="text-xs text-green-600 dark:text-green-400">
+                            {copilotGithubUser
+                              ? `${i18nService.t('githubCopilotConnected')} @${copilotGithubUser}`
+                              : i18nService.t('githubCopilotConnected')}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopilotSignOut()}
+                          className="text-xs text-foreground hover:text-red-500 transition-colors"
+                        >
+                          {i18nService.t('githubCopilotSignOut')}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -4423,7 +4678,7 @@ const Settings: React.FC<SettingsProps> = ({
               </div>
 
               <div className="flex items-center gap-2 text-xs text-secondary">
-                <span>{providerMeta[testResult.provider]?.label ?? testResult.provider}</span>
+                <span>{ProviderRegistry.get(testResult.provider)?.label ?? testResult.provider}</span>
                 <span className="text-[11px]">•</span>
                 <span className={`inline-flex items-center gap-1 ${testResult.success ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                   {testResult.success ? (

@@ -57,13 +57,38 @@ const DIRS_TO_DELETE = new Set([
   'coverage',
 ]);
 
-// ─── Strategy 2: Stub replacements ───
+// ─── Strategy 2: Remove unused bundled extensions ───
+// OpenClaw's plugin discovery scans every directory under dist/extensions/.
+// Physically removing unused bundled extensions keeps the runtime smaller and
+// reduces unnecessary startup scanning.
+
+const BUNDLED_EXTENSIONS_TO_KEEP = new Set([
+  'anthropic', 'deepseek', 'google', 'kimi-coding', 'minimax', 'moonshot',
+  'ollama', 'openai', 'openrouter', 'qianfan', 'qwen', 'stepfun', 'volcengine',
+  'telegram', 'discord', 'feishu', 'qqbot',
+  'browser', 'memory-core', 'lobster', 'llm-task', 'zai',
+  'image-generation-core', 'media-understanding-core', 'speech-core', 'talk-voice',
+  'acpx', 'thread-ownership', 'memory-lancedb', 'memory-wiki',
+]);
+
+function shouldKeepBundledExtension(extensionId) {
+  return BUNDLED_EXTENSIONS_TO_KEEP.has(extensionId);
+}
+
+// ─── Strategy 3: Stub replacements ───
 // Packages not needed in headless gateway mode, replaced with lightweight stubs.
 // The stub allows require/import to succeed but throws when actually called.
 // Callers already have try-catch protection.
 
 const PACKAGES_TO_STUB = [
   'koffi',            // Windows FFI for terminal PTY — not needed in gateway mode
+  '@tloncorp/tlon-skill',
+  '@lancedb',
+  '@jimp',
+  '@napi-rs',
+  'pdfjs-dist',
+  '@matrix-org',
+  '@img',
 ];
 
 const GENERIC_STUB_INDEX_CJS = `// Stub (CJS): this package is not needed for headless gateway operation.
@@ -173,6 +198,27 @@ function cleanDir(dirPath, stats) {
   }
 }
 
+function getDirSize(dirPath) {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        total += getDirSize(fullPath);
+      } else {
+        try {
+          total += fs.statSync(fullPath).size;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return total;
+}
+
 // ─── Main ───
 
 function main() {
@@ -192,14 +238,31 @@ function main() {
 
   console.log(`[prune-openclaw-runtime] Cleaning ${runtimeRoot} ...`);
 
-  const stats = { filesRemoved: 0, dirsRemoved: 0, bytesFreed: 0, stubbed: [] };
+  const stats = { filesRemoved: 0, dirsRemoved: 0, bytesFreed: 0, stubbed: [], extensionsPruned: [] };
 
-  // Step 1: Replace large unnecessary packages with stubs
+  // Step 1: Remove unused bundled extensions from dist/extensions/
+  const distExtDir = path.join(runtimeRoot, 'dist', 'extensions');
+  if (fs.existsSync(distExtDir)) {
+    try {
+      for (const entry of fs.readdirSync(distExtDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (shouldKeepBundledExtension(entry.name)) continue;
+        const fullPath = path.join(distExtDir, entry.name);
+        stats.bytesFreed += getDirSize(fullPath);
+        fs.rmSync(fullPath, { recursive: true, force: true });
+        stats.extensionsPruned.push(entry.name);
+      }
+    } catch (err) {
+      console.warn(`[prune-openclaw-runtime] Failed to prune dist/extensions: ${err.message}`);
+    }
+  }
+
+  // Step 2: Replace large unnecessary packages with stubs
   for (const pkgName of PACKAGES_TO_STUB) {
     stubPackage(path.join(nodeModulesDir, pkgName), pkgName, stats);
   }
 
-  // Step 1b: Remove broken .bin symlinks left behind by stubbed packages
+  // Step 2b: Remove broken .bin symlinks left behind by stubbed packages
   const binDir = path.join(nodeModulesDir, '.bin');
   if (fs.existsSync(binDir)) {
     try {
@@ -215,16 +278,16 @@ function main() {
     } catch { /* ignore */ }
   }
 
-  // Step 2: Clean unnecessary files from node_modules only
+  // Step 3: Clean unnecessary files from node_modules only
   cleanDir(nodeModulesDir, stats);
 
-  // Step 3: Clean node_modules inside extensions (but not extension source files)
-  const extensionsDir = path.join(runtimeRoot, 'extensions');
-  if (fs.existsSync(extensionsDir)) {
+  // Step 4: Clean node_modules inside third-party extensions (but not extension source files)
+  const thirdPartyExtensionsDir = path.join(runtimeRoot, 'third-party-extensions');
+  if (fs.existsSync(thirdPartyExtensionsDir)) {
     try {
-      for (const ext of fs.readdirSync(extensionsDir, { withFileTypes: true })) {
+      for (const ext of fs.readdirSync(thirdPartyExtensionsDir, { withFileTypes: true })) {
         if (!ext.isDirectory()) continue;
-        const extNodeModules = path.join(extensionsDir, ext.name, 'node_modules');
+        const extNodeModules = path.join(thirdPartyExtensionsDir, ext.name, 'node_modules');
         if (fs.existsSync(extNodeModules)) {
           cleanDir(extNodeModules, stats);
         }
@@ -235,6 +298,9 @@ function main() {
   const mbFreed = (stats.bytesFreed / 1024 / 1024).toFixed(1);
   console.log(
     `[prune-openclaw-runtime] Stubbed: ${stats.stubbed.length > 0 ? stats.stubbed.join(', ') : 'none'}`
+  );
+  console.log(
+    `[prune-openclaw-runtime] Bundled extensions pruned: ${stats.extensionsPruned.length > 0 ? stats.extensionsPruned.join(', ') : 'none'}`
   );
   console.log(
     `[prune-openclaw-runtime] Removed ${stats.filesRemoved} files, ${stats.dirsRemoved} dirs, freed ${mbFreed} MB`

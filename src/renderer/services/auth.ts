@@ -1,27 +1,27 @@
-import { store } from '../store';
-import {
-  setAuthLoading,
-  setLoggedIn,
-  setLoggedOut,
-  updateQuota,
-  setProfileSummary,
-  updateUserAvatar,
-} from '../store/slices/authSlice';
-import { setServerModels, clearServerModels } from '../store/slices/modelSlice';
-import { setAgents, setCurrentAgentId } from '../store/slices/agentSlice';
-import { clearActiveSkills, setSkills } from '../store/slices/skillSlice';
-import { clearCurrentSession } from '../store/slices/coworkSlice';
-import type { Model } from '../store/slices/modelSlice';
 import {
   AuthBackend,
-  BridgeTarget,
-  DEFAULT_QTB_API_BASE_URL,
-  type CreateBridgeTicketRequest,
   type AuthBackend as AuthBackendType,
+  BridgeTarget,
+  type CreateBridgeTicketRequest,
+  DEFAULT_QTB_API_BASE_URL,
   type FeishuScanSession,
   type FeishuScanSessionPollResult,
 } from '../../common/auth';
 import { AppCustomEvent } from '../constants/app';
+import { store } from '../store';
+import { setAgents, setCurrentAgentId } from '../store/slices/agentSlice';
+import {
+  setAuthLoading,
+  setLoggedIn,
+  setLoggedOut,
+  setProfileSummary,
+  updateQuota,
+  updateUserAvatar,
+} from '../store/slices/authSlice';
+import { clearCurrentSession } from '../store/slices/coworkSlice';
+import type { Model } from '../store/slices/modelSlice';
+import { clearServerModels,setServerModels } from '../store/slices/modelSlice';
+import { clearActiveSkills, setSkills } from '../store/slices/skillSlice';
 import { configService } from './config';
 import { i18nService } from './i18n';
 import { qingshuManagedService } from './qingshuManaged';
@@ -33,6 +33,8 @@ class AuthService {
   private unsubQuotaChanged: (() => void) | null = null;
   private unsubWindowState: (() => void) | null = null;
   private lastRefreshTime = 0;
+  private authSessionVersion = 0;
+  private backgroundHydrationPromise: Promise<void> | null = null;
   private pendingFeishuScanSessionPromise: Promise<FeishuScanSession> | null = null;
   private cachedFeishuScanSession: FeishuScanSession | null = null;
 
@@ -134,6 +136,8 @@ class AuthService {
   }
 
   private clearLocalSessionState() {
+    this.authSessionVersion += 1;
+    this.backgroundHydrationPromise = null;
     this.pendingFeishuScanSessionPromise = null;
     this.cachedFeishuScanSession = null;
     this.lastRefreshTime = 0;
@@ -163,19 +167,64 @@ class AuthService {
     store.dispatch(clearServerModels());
   }
 
-  private async applyAuthenticatedUser(result: { user?: any; quota?: any }) {
+  private beginAuthenticatedSession(result: { user: any; quota?: any }): number {
+    this.authSessionVersion += 1;
+    store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
+    return this.authSessionVersion;
+  }
+
+  private isAuthSessionCurrent(version: number): boolean {
+    return this.authSessionVersion === version && store.getState().auth.isLoggedIn;
+  }
+
+  private async hydrateAuthenticatedUser(version: number): Promise<void> {
+    const shouldApply = () => this.isAuthSessionCurrent(version);
+    const results = await Promise.allSettled([
+      this.loadServerModels(shouldApply),
+      qingshuManagedService.syncCatalog({ shouldApply }),
+    ]);
+
+    const catalogResult = results[1];
+    if (catalogResult.status === 'rejected') {
+      console.warn('[AuthService] failed to sync QingShu managed catalog:', catalogResult.reason);
+    }
+
+    if (!shouldApply()) {
+      return;
+    }
+
+    void this.fetchProfileSummary(shouldApply);
+  }
+
+  private scheduleAuthenticatedHydration(version: number) {
+    const task = this.hydrateAuthenticatedUser(version)
+      .catch((error) => {
+        console.warn('[AuthService] background hydration failed:', error);
+      })
+      .finally(() => {
+        if (this.backgroundHydrationPromise === task) {
+          this.backgroundHydrationPromise = null;
+        }
+      });
+
+    this.backgroundHydrationPromise = task;
+  }
+
+  private async applyAuthenticatedUser(
+    result: { user?: any; quota?: any },
+    options: { backgroundHydration?: boolean } = {},
+  ) {
     if (!result.user) {
       return false;
     }
 
-    store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
-    await this.loadServerModels();
-    try {
-      await qingshuManagedService.syncCatalog();
-    } catch (error) {
-      console.warn('[AuthService] failed to sync QingShu managed catalog:', error);
+    const version = this.beginAuthenticatedSession(result as { user: any; quota?: any });
+    if (options.backgroundHydration) {
+      this.scheduleAuthenticatedHydration(version);
+      return true;
     }
-    void this.fetchProfileSummary();
+
+    await this.hydrateAuthenticatedUser(version);
     return true;
   }
 
@@ -189,7 +238,9 @@ class AuthService {
     store.dispatch(setAuthLoading(true));
     try {
       const result = await window.electron.auth.getUser();
-      const restored = result.success && await this.applyAuthenticatedUser(result);
+      const restored = result.success && await this.applyAuthenticatedUser(result, {
+        backgroundHydration: true,
+      });
       if (!restored) {
         store.dispatch(setLoggedOut());
       }
@@ -471,9 +522,12 @@ class AuthService {
   /**
    * Fetch profile summary (credits breakdown).
    */
-  async fetchProfileSummary() {
+  async fetchProfileSummary(shouldApply?: () => boolean) {
     try {
       const result = await window.electron.auth.getProfileSummary();
+      if (shouldApply && !shouldApply()) {
+        return;
+      }
       if (result.success && result.data) {
         store.dispatch(setProfileSummary(result.data));
         if (result.data.avatarUrl) {
@@ -512,9 +566,12 @@ class AuthService {
   /**
    * Load available models from server and dispatch to store.
    */
-  private async loadServerModels() {
+  private async loadServerModels(shouldApply?: () => boolean) {
     try {
       const modelsResult = await window.electron.auth.getModels();
+      if (shouldApply && !shouldApply()) {
+        return;
+      }
       if (modelsResult.success && modelsResult.models) {
         const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; apiFormat: string; supportsImage?: boolean }) => ({
           id: m.modelId,
@@ -537,6 +594,9 @@ class AuthService {
         store.dispatch(clearServerModels());
       }
     } catch (error) {
+      if (shouldApply && !shouldApply()) {
+        return;
+      }
       console.error('[AuthService] clearing server models because request crashed:', error);
       store.dispatch(clearServerModels());
     }

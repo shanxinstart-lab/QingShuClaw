@@ -1,17 +1,22 @@
+import {
+  QingShuManagedAccessState,
+  resolveQingShuManagedAccessState,
+} from '@shared/qingshuManaged/access';
+
+import { AppCustomEvent } from '../constants/app';
 import { store } from '../store';
 import {
+  addAgent,
+  removeAgent,
   setAgents,
   setCurrentAgentId,
   setLoading,
-  addAgent,
   updateAgent as updateAgentAction,
-  removeAgent,
 } from '../store/slices/agentSlice';
-import { setActiveSkillIds, clearActiveSkills } from '../store/slices/skillSlice';
 import { clearCurrentSession } from '../store/slices/coworkSlice';
+import { clearActiveSkills,setActiveSkillIds } from '../store/slices/skillSlice';
 import type { Agent, PresetAgent } from '../types/agent';
 import { i18nService } from './i18n';
-import { AppCustomEvent } from '../constants/app';
 
 class AgentService {
   private showManagedUnavailableToast() {
@@ -26,41 +31,57 @@ class AgentService {
     }));
   }
 
-  async loadAgents(): Promise<void> {
+  private resolveManagedAccessState(sourceType?: string, allowed?: boolean) {
+    return resolveQingShuManagedAccessState({
+      sourceType,
+      allowed,
+      isLoggedIn: store.getState().auth.isLoggedIn,
+    });
+  }
+
+  async loadAgents(options?: { shouldApply?: () => boolean }): Promise<void> {
+    const shouldApply = options?.shouldApply;
+    if (shouldApply && !shouldApply()) {
+      return;
+    }
     store.dispatch(setLoading(true));
     try {
       const agents = await window.electron?.agents?.list();
+      if (shouldApply && !shouldApply()) {
+        return;
+      }
       if (agents) {
-        const isLoggedIn = store.getState().auth.isLoggedIn;
-        const normalizedAgents = agents.map((a) => ({
-          id: a.id,
-          name: a.name,
-          description: a.description,
-          icon: a.icon,
-          enabled: a.sourceType === 'qingshu-managed'
-            ? (a.allowed === false ? false : (isLoggedIn ? a.enabled : false))
-            : a.enabled,
-          isDefault: a.isDefault,
-          source: a.source,
-          sourceType: a.sourceType,
-          readOnly: a.readOnly,
-          allowed: a.allowed,
-          backendAgentId: a.backendAgentId,
-          managedToolNames: a.managedToolNames ?? [],
-          managedBaseSkillIds: a.managedBaseSkillIds ?? [],
-          managedExtraSkillIds: a.managedExtraSkillIds ?? [],
-          policyNote: a.policyNote,
-          skillIds: a.skillIds ?? [],
-          toolBundleIds: a.toolBundleIds ?? [],
-        }));
+        const normalizedAgents = agents.map((a) => {
+          const accessState = this.resolveManagedAccessState(a.sourceType, a.allowed);
+          return {
+            id: a.id,
+            name: a.name,
+            description: a.description,
+            icon: a.icon,
+            model: a.model ?? '',
+            enabled: accessState === QingShuManagedAccessState.Available ? a.enabled : false,
+            isDefault: a.isDefault,
+            source: a.source,
+            sourceType: a.sourceType,
+            readOnly: a.readOnly,
+            allowed: a.allowed,
+            backendAgentId: a.backendAgentId,
+            managedToolNames: a.managedToolNames ?? [],
+            managedBaseSkillIds: a.managedBaseSkillIds ?? [],
+            managedExtraSkillIds: a.managedExtraSkillIds ?? [],
+            policyNote: a.policyNote,
+            skillIds: a.skillIds ?? [],
+            toolBundleIds: a.toolBundleIds ?? [],
+          };
+        });
         store.dispatch(setAgents(normalizedAgents));
 
         const currentAgentId = store.getState().agent.currentAgentId;
         const currentAgent = normalizedAgents.find((agent) => agent.id === currentAgentId);
         if (
           currentAgent
-          && currentAgent.sourceType === 'qingshu-managed'
-          && (!isLoggedIn || currentAgent.allowed === false)
+          && this.resolveManagedAccessState(currentAgent.sourceType, currentAgent.allowed)
+            !== QingShuManagedAccessState.Available
         ) {
           store.dispatch(setCurrentAgentId('main'));
           store.dispatch(clearActiveSkills());
@@ -92,6 +113,7 @@ class AgentService {
           name: agent.name,
           description: agent.description,
           icon: agent.icon,
+          model: agent.model ?? '',
           enabled: agent.enabled,
           isDefault: agent.isDefault,
           source: agent.source,
@@ -135,6 +157,7 @@ class AgentService {
             name: agent.name,
             description: agent.description,
             icon: agent.icon,
+            model: agent.model ?? '',
             enabled: agent.enabled,
             sourceType: agent.sourceType,
             readOnly: agent.readOnly,
@@ -165,7 +188,7 @@ class AgentService {
       if (wasCurrentAgent) {
         this.switchAgent('main');
         const { coworkService } = await import('./cowork');
-        coworkService.loadSessions('main');
+        await coworkService.loadSessions('main');
       }
       return true;
     } catch (error) {
@@ -193,6 +216,7 @@ class AgentService {
           name: agent.name,
           description: agent.description,
           icon: agent.icon,
+          model: agent.model ?? '',
           enabled: agent.enabled,
           isDefault: agent.isDefault,
           source: agent.source,
@@ -218,12 +242,13 @@ class AgentService {
 
   switchAgent(agentId: string): boolean {
     const targetAgent = store.getState().agent.agents.find((a) => a.id === agentId);
-    if (targetAgent?.sourceType === 'qingshu-managed' && !store.getState().auth.isLoggedIn) {
+    const accessState = this.resolveManagedAccessState(targetAgent?.sourceType, targetAgent?.allowed);
+    if (accessState === QingShuManagedAccessState.LoginRequired) {
       this.showManagedUnavailableToast();
       return false;
     }
-    if (targetAgent?.sourceType === 'qingshu-managed' && targetAgent.allowed === false) {
-      this.showManagedForbiddenToast(targetAgent.policyNote);
+    if (accessState === QingShuManagedAccessState.Forbidden) {
+      this.showManagedForbiddenToast(targetAgent?.policyNote);
       return false;
     }
     store.dispatch(setCurrentAgentId(agentId));

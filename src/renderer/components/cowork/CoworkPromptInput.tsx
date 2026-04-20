@@ -1,30 +1,32 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { PaperAirplaneIcon, StopIcon, FolderIcon } from '@heroicons/react/24/solid';
-import { PhotoIcon, ExclamationTriangleIcon, MicrophoneIcon } from '@heroicons/react/24/outline';
-import PaperClipIcon from '../icons/PaperClipIcon';
-import XMarkIcon from '../icons/XMarkIcon';
-import ModelSelector from '../ModelSelector';
-import FolderSelectorPopover from './FolderSelectorPopover';
-import { SkillsButton, ActiveSkillBadge } from '../skills';
-import { i18nService } from '../../services/i18n';
-import { skillService } from '../../services/skill';
-import { configService } from '../../services/config';
-import { RootState } from '../../store';
-import { setDraftPrompt, setDraftAttachments, clearDraftAttachments, type DraftAttachment } from '../../store/slices/coworkSlice';
-import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
-import { Skill } from '../../types/skill';
-import { CoworkImageAttachment } from '../../types/cowork';
-import { getCompactFolderName } from '../../utils/path';
-import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
+import { ExclamationTriangleIcon, MicrophoneIcon } from '@heroicons/react/24/outline';
+import { FolderIcon,PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid';
+import React, { useCallback,useEffect, useRef, useState } from 'react';
+import { useDispatch,useSelector } from 'react-redux';
+
 import { SpeechErrorCode } from '../../../shared/speech/constants';
 import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_VOICE_POST_PROCESS_CONFIG, DEFAULT_WAKE_INPUT_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
+import { configService } from '../../services/config';
+import { i18nService } from '../../services/i18n';
+import { skillService } from '../../services/skill';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
+import { RootState } from '../../store';
+import { clearDraftAttachments, type DraftAttachment,setDraftAttachments, setDraftPrompt } from '../../store/slices/coworkSlice';
+import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
+import { CoworkImageAttachment } from '../../types/cowork';
+import { Skill } from '../../types/skill';
+import { getCompactFolderName } from '../../utils/path';
+import AttachmentCard from './AttachmentCard';
+import PaperClipIcon from '../icons/PaperClipIcon';
+import XMarkIcon from '../icons/XMarkIcon';
+import ModelSelector from '../ModelSelector';
+import { ActiveSkillBadge,SkillsButton } from '../skills';
 import {
   WakeActivationOverlayPhase,
   type WakeActivationOverlayStateChange,
 } from '../wakeActivationOverlayHelpers';
+import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
+import FolderSelectorPopover from './FolderSelectorPopover';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -82,6 +84,8 @@ const buildInlinedSkillPrompt = (skill: Skill): string => {
 export interface CoworkPromptInputRef {
   /** 设置输入框值 */
   setValue: (value: string) => void;
+  /** 设置图片附件 */
+  setImageAttachments: (attachments: CoworkImageAttachment[]) => void;
   /** 聚焦输入框 */
   focus: () => void;
 }
@@ -158,6 +162,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const pendingWakeDictationStartRef = useRef<WakeDictationCommandConfig | null>(null);
     const activeWakeOverlayRef = useRef(false);
 
+    const isLarge = size === 'large';
+    const minHeight = isLarge ? 60 : 24;
+    const maxHeight = isLarge ? 200 : 200;
+
   // 暴露方法给父组件
   React.useImperativeHandle(ref, () => ({
     setValue: (newValue: string) => {
@@ -171,19 +179,27 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         }
       });
     },
+    setImageAttachments: (imageAttachments: CoworkImageAttachment[]) => {
+      const nextAttachments: CoworkAttachment[] = imageAttachments.map((attachment, index) => ({
+        path: `inline:${attachment.name}:${index}`,
+        name: attachment.name,
+        isImage: true,
+        dataUrl: `data:${attachment.mimeType};base64,${attachment.base64Data}`,
+      }));
+      dispatch(setDraftAttachments({
+        draftKey,
+        attachments: nextAttachments,
+      }));
+    },
     focus: () => {
       textareaRef.current?.focus();
     },
-  }));
+  }), [dispatch, draftKey, maxHeight, minHeight]);
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
   const isMac = window.electron.platform === 'darwin';
   const isSpeechActive = speechStatus !== 'idle';
-
-  const isLarge = size === 'large';
-  const minHeight = isLarge ? 60 : 24;
-  const maxHeight = isLarge ? 200 : 200;
 
   const getSpeechVoiceCommandConfig = useCallback(() => ({
     ...DEFAULT_SPEECH_INPUT_CONFIG,
@@ -1144,29 +1160,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   return (
     <div className="relative">
       {attachments.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2">
+        <div className="mb-2 flex max-h-[136px] flex-wrap gap-2 overflow-y-auto">
           {attachments.map((attachment) => (
-              <div
-                key={attachment.path}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-foreground max-w-full"
-                title={attachment.path}
-              >
-                {attachment.isImage ? (
-                  <PhotoIcon className="h-3.5 w-3.5 flex-shrink-0 text-blue-500" />
-                ) : (
-                  <PaperClipIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                )}
-                <span className="truncate max-w-[180px]">{attachment.name}</span>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveAttachment(attachment.path)}
-                  className="ml-0.5 rounded-full p-0.5 hover:bg-surface-raised"
-                  aria-label={i18nService.t('coworkAttachmentRemove')}
-                  title={i18nService.t('coworkAttachmentRemove')}
-                >
-                  <XMarkIcon className="h-3 w-3" />
-                </button>
-              </div>
+            <AttachmentCard
+              key={attachment.path}
+              attachment={attachment}
+              onRemove={handleRemoveAttachment}
+            />
           ))}
         </div>
       )}

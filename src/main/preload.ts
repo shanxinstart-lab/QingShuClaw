@@ -1,9 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
+
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
-import { WakeInputIpcChannel } from '../shared/wakeInput/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
+import { WakeInputIpcChannel } from '../shared/wakeInput/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -154,6 +155,11 @@ contextBridge.exposeInMainWorld('electron', {
         return () => ipcRenderer.removeListener('openclaw:engine:onProgress', handler);
       },
     },
+    sessionPolicy: {
+      get: () => ipcRenderer.invoke('openclaw:sessionPolicy:get'),
+      set: (config: { keepAlive: '1d' | '7d' | '30d' | '365d' }) =>
+        ipcRenderer.invoke('openclaw:sessionPolicy:set', config),
+    },
   },
   agents: {
     list: async () => {
@@ -213,6 +219,8 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('cowork:session:captureImageChunk', options),
     saveResultImage: (options: { pngBase64: string; defaultFileName?: string }) =>
       ipcRenderer.invoke('cowork:session:saveResultImage', options),
+    exportSessionText: (options: { content: string; defaultFileName?: string; fileExtension?: string }) =>
+      ipcRenderer.invoke('cowork:session:exportText', options),
 
     // Permission handling
     respondToPermission: (options: { requestId: string; result: any }) =>
@@ -230,6 +238,8 @@ contextBridge.exposeInMainWorld('electron', {
       memoryLlmJudgeEnabled?: boolean;
       memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
       memoryUserMemoriesMaxItems?: number;
+      skipMissedJobs?: boolean;
+      openClawSessionPolicy?: { keepAlive: '1d' | '7d' | '30d' | '365d' };
     }) =>
       ipcRenderer.invoke('cowork:config:set', config),
     listMemoryEntries: (input: {
@@ -415,11 +425,37 @@ contextBridge.exposeInMainWorld('electron', {
     // Weixin QR login
     weixinQrLoginStart: () => ipcRenderer.invoke('im:weixin:qr-login-start'),
     weixinQrLoginWait: (accountId?: string) => ipcRenderer.invoke('im:weixin:qr-login-wait', accountId),
+    popoQrLoginStart: () => ipcRenderer.invoke('im:popo:qr-login-start'),
+    popoQrLoginPoll: (taskToken: string) => ipcRenderer.invoke('im:popo:qr-login-poll', taskToken),
 
     // Pairing
     listPairingRequests: (platform: string) => ipcRenderer.invoke('im:pairing:list', platform),
     approvePairingCode: (platform: string, code: string) => ipcRenderer.invoke('im:pairing:approve', platform, code),
     rejectPairingRequest: (platform: string, code: string) => ipcRenderer.invoke('im:pairing:reject', platform, code),
+
+    // DingTalk Multi-Instance
+    addDingTalkInstance: (name: string) => ipcRenderer.invoke('im:dingtalk:instance:add', name),
+    deleteDingTalkInstance: (instanceId: string) => ipcRenderer.invoke('im:dingtalk:instance:delete', instanceId),
+    setDingTalkInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:dingtalk:instance:config:set', instanceId, config, options),
+
+    // Feishu Multi-Instance
+    addFeishuInstance: (name: string) => ipcRenderer.invoke('im:feishu:instance:add', name),
+    deleteFeishuInstance: (instanceId: string) => ipcRenderer.invoke('im:feishu:instance:delete', instanceId),
+    setFeishuInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:feishu:instance:config:set', instanceId, config, options),
+
+    // QQ Multi-Instance
+    addQQInstance: (name: string) => ipcRenderer.invoke('im:qq:instance:add', name),
+    deleteQQInstance: (instanceId: string) => ipcRenderer.invoke('im:qq:instance:delete', instanceId),
+    setQQInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:qq:instance:config:set', instanceId, config, options),
+
+    // WeCom Multi-Instance
+    addWecomInstance: (name: string) => ipcRenderer.invoke('im:wecom:instance:add', name),
+    deleteWecomInstance: (instanceId: string) => ipcRenderer.invoke('im:wecom:instance:delete', instanceId),
+    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:wecom:instance:config:set', instanceId, config, options),
 
     // Event listeners
     onStatusChange: (callback: (status: any) => void) => {
@@ -457,7 +493,8 @@ contextBridge.exposeInMainWorld('electron', {
 
     // Delivery channels
     listChannels: () => ipcRenderer.invoke(ScheduledTaskIpc.ListChannels),
-    listChannelConversations: (channel: string) => ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel),
+    listChannelConversations: (channel: string, accountId?: string) =>
+      ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel, accountId),
 
     // Stream event listeners
     onStatusUpdate: (callback: (data: any) => void) => {
@@ -546,6 +583,38 @@ contextBridge.exposeInMainWorld('electron', {
           success: boolean;
           error?: string;
         }>,
+    },
+  },
+  githubCopilot: {
+    requestDeviceCode: () =>
+      ipcRenderer.invoke('github-copilot:request-device-code') as Promise<{
+        userCode: string;
+        verificationUri: string;
+        deviceCode: string;
+        interval: number;
+        expiresIn: number;
+      }>,
+    pollForToken: (deviceCode: string, interval: number, expiresIn: number) =>
+      ipcRenderer.invoke('github-copilot:poll-for-token', { deviceCode, interval, expiresIn }) as Promise<{
+        success: boolean;
+        token?: string;
+        githubUser?: string;
+        baseUrl?: string;
+        error?: string;
+      }>,
+    cancelPolling: () => ipcRenderer.invoke('github-copilot:cancel-polling') as Promise<void>,
+    signOut: () => ipcRenderer.invoke('github-copilot:sign-out') as Promise<void>,
+    refreshToken: () =>
+      ipcRenderer.invoke('github-copilot:refresh-token') as Promise<{
+        success: boolean;
+        token?: string;
+        baseUrl?: string;
+        error?: string;
+      }>,
+    onTokenUpdated: (callback: (data: { token: string; baseUrl: string }) => void) => {
+      const handler = (_event: any, data: { token: string; baseUrl: string }) => callback(data);
+      ipcRenderer.on('github-copilot:token-updated', handler);
+      return () => ipcRenderer.removeListener('github-copilot:token-updated', handler);
     },
   },
 });

@@ -1,7 +1,7 @@
 import { store } from '../store';
 import { configService } from './config';
 import { ChatMessagePayload, ChatUserMessageInput, ImageAttachment } from '../types/chat';
-import { resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { ProviderName, resolveCodingPlanBaseUrl } from '../../shared/providers';
 
 export interface ApiConfig {
   apiKey: string;
@@ -55,6 +55,26 @@ class ApiService {
       return 'gemini';
     }
     return 'anthropic';
+  }
+
+  private getEffectiveApiFormat(provider: string, apiFormat: unknown): 'anthropic' | 'openai' | 'gemini' {
+    if (
+      provider === ProviderName.OpenAI
+      || provider === ProviderName.StepFun
+      || provider === ProviderName.Youdaozhiyun
+      || provider === ProviderName.Qianfan
+      || provider === ProviderName.Copilot
+      || provider === ProviderName.Moonshot
+    ) {
+      return 'openai';
+    }
+    if (provider === ProviderName.Anthropic) {
+      return 'anthropic';
+    }
+    if (provider === ProviderName.Gemini) {
+      return 'gemini';
+    }
+    return this.normalizeApiFormat(apiFormat);
   }
 
   private buildOpenAICompatibleChatCompletionsUrl(baseUrl: string): string {
@@ -241,7 +261,7 @@ class ApiService {
   }
 
   private providerRequiresApiKey(provider: string): boolean {
-    return provider !== 'ollama';
+    return provider !== 'ollama' && provider !== ProviderName.Copilot;
   }
 
   // 检测当前选择的模型属于哪个 provider
@@ -250,7 +270,7 @@ class ApiService {
     if (
       normalizedHint
       && (
-        ['openai', 'deepseek', 'moonshot', 'zhipu', 'minimax', 'youdaozhiyun', 'qwen', 'openrouter', 'gemini', 'anthropic', 'xiaomi', 'stepfun', 'volcengine', 'ollama'].includes(normalizedHint)
+        ['openai', 'deepseek', 'moonshot', 'zhipu', 'minimax', 'youdaozhiyun', 'qianfan', 'qwen', 'openrouter', 'gemini', 'anthropic', 'xiaomi', 'stepfun', 'volcengine', 'ollama', ProviderName.Copilot].includes(normalizedHint)
         || normalizedHint.startsWith('custom_')
       )
     ) {
@@ -271,6 +291,8 @@ class ApiService {
       return 'zhipu';
     } else if (normalizedModelId.startsWith('minimax')) {
       return 'minimax';
+    } else if (normalizedModelId.startsWith('ernie')) {
+      return 'qianfan';
     } else if (normalizedModelId.startsWith('qwen') || normalizedModelId.startsWith('qvq')) {
       return 'qwen';
     } else if (normalizedModelId.startsWith('mimo') || normalizedModelId.includes('xiaomi')) {
@@ -291,7 +313,7 @@ class ApiService {
       const providerConfig = appConfig.providers[provider];
       if (providerConfig.enabled && (providerConfig.apiKey || !this.providerRequiresApiKey(provider))) {
         let baseUrl = providerConfig.baseUrl;
-        let apiFormat = this.normalizeApiFormat(providerConfig.apiFormat);
+        let apiFormat = this.getEffectiveApiFormat(provider, providerConfig.apiFormat);
 
         if (providerConfig.codingPlanEnabled && (apiFormat === 'anthropic' || apiFormat === 'openai')) {
           const resolved = resolveCodingPlanBaseUrl(provider, true, apiFormat, baseUrl);
@@ -356,7 +378,40 @@ class ApiService {
       return this.chatWithAnthropic(userMessage, onProgress, history, selectedModel.id, effectiveConfig, supportsImages);
     }
 
-    return this.chatWithOpenAICompatible(userMessage, onProgress, history, selectedModel.id, effectiveConfig, supportsImages, provider);
+    try {
+      return await this.chatWithOpenAICompatible(userMessage, onProgress, history, selectedModel.id, effectiveConfig, supportsImages, provider);
+    } catch (error) {
+      if (
+        provider === ProviderName.Copilot
+        && error instanceof ApiError
+        && (error.statusCode === 401 || error.statusCode === 403)
+      ) {
+        console.log('[api-chat] Copilot auth error detected, attempting token refresh and retry');
+        try {
+          const result = await window.electron.githubCopilot.refreshToken();
+          if (result.success && result.token) {
+            const refreshedConfig: ApiConfig = {
+              ...effectiveConfig,
+              apiKey: result.token,
+              ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+            };
+            return await this.chatWithOpenAICompatible(
+              userMessage,
+              onProgress,
+              history,
+              selectedModel.id,
+              refreshedConfig,
+              supportsImages,
+              provider
+            );
+          }
+        } catch (refreshError) {
+          console.warn('[api-chat] Copilot token refresh failed:', refreshError);
+        }
+      }
+
+      throw error;
+    }
   }
 
   // Anthropic API 调用

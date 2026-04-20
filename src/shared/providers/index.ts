@@ -1,4 +1,4 @@
-export type { ProviderDef } from './constants';
+export type { ProviderConfig, ProviderDef, ProviderModelConfig } from './constants';
 export {
   ProviderName,
   OpenClawProviderId,

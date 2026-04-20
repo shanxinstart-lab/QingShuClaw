@@ -31,12 +31,39 @@ export interface DingTalkGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+// ==================== DingTalk Multi-Instance Types ====================
+
+export const MAX_DINGTALK_INSTANCES = 5;
+
+export interface DingTalkInstanceConfig extends DingTalkOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface DingTalkInstanceStatus extends DingTalkGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface DingTalkMultiInstanceConfig {
+  instances: DingTalkInstanceConfig[];
+}
+
+export interface DingTalkMultiInstanceStatus {
+  instances: DingTalkInstanceStatus[];
+}
+
 // ==================== Feishu Types ====================
 
 export interface FeishuOpenClawGroupConfig {
   requireMention?: boolean;
   allowFrom?: string[];
   systemPrompt?: string;
+}
+
+export interface FeishuOpenClawFooterConfig {
+  status?: boolean;
+  elapsed?: boolean;
 }
 
 export interface FeishuOpenClawConfig {
@@ -50,7 +77,10 @@ export interface FeishuOpenClawConfig {
   groupAllowFrom: string[];
   groups: Record<string, FeishuOpenClawGroupConfig>;
   historyLimit: number;
+  streaming: boolean;
   replyMode: 'auto' | 'static' | 'streaming';
+  blockStreaming: boolean;
+  footer: FeishuOpenClawFooterConfig;
   mediaMaxMb: number;
   debug: boolean;
 }
@@ -62,6 +92,28 @@ export interface FeishuGatewayStatus {
   error: string | null;
   lastInboundAt: number | null;
   lastOutboundAt: number | null;
+}
+
+// ==================== Feishu Multi-Instance Types ====================
+
+export const MAX_FEISHU_INSTANCES = 5;
+
+export interface FeishuInstanceConfig extends FeishuOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface FeishuInstanceStatus extends FeishuGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface FeishuMultiInstanceConfig {
+  instances: FeishuInstanceConfig[];
+}
+
+export interface FeishuMultiInstanceStatus {
+  instances: FeishuInstanceStatus[];
 }
 
 // ==================== Telegram Types ====================
@@ -214,15 +266,34 @@ export interface QQOpenClawConfig {
   debug: boolean;
 }
 
-/** @deprecated Use QQOpenClawConfig instead */
-export type QQConfig = QQOpenClawConfig;
-
 export interface QQGatewayStatus {
   connected: boolean;
   startedAt: number | null;
   lastError: string | null;
   lastInboundAt: number | null;
   lastOutboundAt: number | null;
+}
+
+// ==================== QQ Multi-Instance Types ====================
+
+export const MAX_QQ_INSTANCES = 5;
+
+export interface QQInstanceConfig extends QQOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface QQInstanceStatus extends QQGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface QQMultiInstanceConfig {
+  instances: QQInstanceConfig[];
+}
+
+export interface QQMultiInstanceStatus {
+  instances: QQInstanceStatus[];
 }
 
 // ==================== WeCom (企业微信) Types ====================
@@ -239,9 +310,6 @@ export interface WecomOpenClawConfig {
   debug: boolean;
 }
 
-/** @deprecated Use WecomOpenClawConfig instead */
-export type WecomConfig = WecomOpenClawConfig;
-
 export interface WecomGatewayStatus {
   connected: boolean;
   startedAt: number | null;
@@ -249,6 +317,28 @@ export interface WecomGatewayStatus {
   botId: string | null;
   lastInboundAt: number | null;
   lastOutboundAt: number | null;
+}
+
+// ==================== WeCom Multi-Instance Types ====================
+
+export const MAX_WECOM_INSTANCES = 5;
+
+export interface WecomInstanceConfig extends WecomOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface WecomInstanceStatus extends WecomGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface WecomMultiInstanceConfig {
+  instances: WecomInstanceConfig[];
+}
+
+export interface WecomMultiInstanceStatus {
+  instances: WecomInstanceStatus[];
 }
 
 // ==================== POPO Types ====================
@@ -305,14 +395,14 @@ export interface WeixinGatewayStatus {
 export type IMPlatform = keyof Omit<IMGatewayConfig, 'settings'> | 'xiaomifeng';
 
 export interface IMGatewayConfig {
-  dingtalk: DingTalkOpenClawConfig;
-  feishu: FeishuOpenClawConfig;
+  dingtalk: DingTalkMultiInstanceConfig;
+  feishu: FeishuMultiInstanceConfig;
   telegram: TelegramOpenClawConfig;
-  qq: QQOpenClawConfig;
+  qq: QQMultiInstanceConfig;
   discord: DiscordOpenClawConfig;
   nim: NimConfig;
   'netease-bee': NeteaseBeeChanConfig;
-  wecom: WecomOpenClawConfig;
+  wecom: WecomMultiInstanceConfig;
   popo: PopoOpenClawConfig;
   weixin: WeixinOpenClawConfig;
   settings: IMSettings;
@@ -326,14 +416,14 @@ export interface IMSettings {
 }
 
 export interface IMGatewayStatus {
-  dingtalk: DingTalkGatewayStatus;
-  feishu: FeishuGatewayStatus;
-  qq: QQGatewayStatus;
+  dingtalk: DingTalkMultiInstanceStatus;
+  feishu: FeishuMultiInstanceStatus;
+  qq: QQMultiInstanceStatus;
   telegram: TelegramGatewayStatus;
   discord: DiscordGatewayStatus;
   nim: NimGatewayStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
-  wecom: WecomGatewayStatus;
+  wecom: WecomMultiInstanceStatus;
   popo: PopoGatewayStatus;
   weixin: WeixinGatewayStatus;
 }
@@ -461,6 +551,10 @@ export const DEFAULT_DINGTALK_OPENCLAW_CONFIG: DingTalkOpenClawConfig = {
   debug: false,
 };
 
+export const DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG: DingTalkMultiInstanceConfig = {
+  instances: [],
+};
+
 export const DEFAULT_FEISHU_OPENCLAW_CONFIG: FeishuOpenClawConfig = {
   enabled: false,
   appId: '',
@@ -472,9 +566,16 @@ export const DEFAULT_FEISHU_OPENCLAW_CONFIG: FeishuOpenClawConfig = {
   groupAllowFrom: [],
   groups: { '*': { requireMention: true } },
   historyLimit: 50,
+  streaming: true,
   replyMode: 'auto',
+  blockStreaming: false,
+  footer: { status: true, elapsed: true },
   mediaMaxMb: 30,
   debug: false,
+};
+
+export const DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG: FeishuMultiInstanceConfig = {
+  instances: [],
 };
 
 export const DEFAULT_DISCORD_OPENCLAW_CONFIG: DiscordOpenClawConfig = {
@@ -539,6 +640,10 @@ export const DEFAULT_QQ_CONFIG: QQOpenClawConfig = {
   debug: false,
 };
 
+export const DEFAULT_QQ_MULTI_INSTANCE_CONFIG: QQMultiInstanceConfig = {
+  instances: [],
+};
+
 export const DEFAULT_WECOM_CONFIG: WecomOpenClawConfig = {
   enabled: false,
   botId: '',
@@ -549,6 +654,10 @@ export const DEFAULT_WECOM_CONFIG: WecomOpenClawConfig = {
   groupAllowFrom: [],
   sendThinkingMessage: true,
   debug: true,
+};
+
+export const DEFAULT_WECOM_MULTI_INSTANCE_CONFIG: WecomMultiInstanceConfig = {
+  instances: [],
 };
 
 export const DEFAULT_POPO_CONFIG: PopoOpenClawConfig = {
@@ -586,14 +695,14 @@ export const DEFAULT_IM_SETTINGS: IMSettings = {
 };
 
 export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
-  dingtalk: DEFAULT_DINGTALK_OPENCLAW_CONFIG,
-  feishu: DEFAULT_FEISHU_OPENCLAW_CONFIG,
+  dingtalk: DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
+  feishu: DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
   telegram: DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
-  qq: DEFAULT_QQ_CONFIG,
+  qq: DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
   discord: DEFAULT_DISCORD_OPENCLAW_CONFIG,
   nim: DEFAULT_NIM_CONFIG,
   'netease-bee': DEFAULT_NETEASE_BEE_CONFIG,
-  wecom: DEFAULT_WECOM_CONFIG,
+  wecom: DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
   popo: DEFAULT_POPO_CONFIG,
   weixin: DEFAULT_WEIXIN_CONFIG,
   settings: DEFAULT_IM_SETTINGS,
@@ -601,19 +710,10 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
 
 export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   dingtalk: {
-    connected: false,
-    startedAt: null,
-    lastError: null,
-    lastInboundAt: null,
-    lastOutboundAt: null,
+    instances: [],
   },
   feishu: {
-    connected: false,
-    startedAt: null,
-    botOpenId: null,
-    error: null,
-    lastInboundAt: null,
-    lastOutboundAt: null,
+    instances: [],
   },
   telegram: {
     connected: false,
@@ -649,19 +749,10 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
     lastOutboundAt: null,
   },
   qq: {
-    connected: false,
-    startedAt: null,
-    lastError: null,
-    lastInboundAt: null,
-    lastOutboundAt: null,
+    instances: [],
   },
   wecom: {
-    connected: false,
-    startedAt: null,
-    lastError: null,
-    botId: null,
-    lastInboundAt: null,
-    lastOutboundAt: null,
+    instances: [],
   },
   popo: {
     connected: false,

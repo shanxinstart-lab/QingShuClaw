@@ -31,6 +31,7 @@ export const ProviderName = {
   Zhipu: 'zhipu',
   Minimax: 'minimax',
   Youdaozhiyun: 'youdaozhiyun',
+  Qianfan: 'qianfan',
   Qwen: 'qwen',
   Xiaomi: 'xiaomi',
   StepFun: 'stepfun',
@@ -39,6 +40,7 @@ export const ProviderName = {
   Ollama: 'ollama',
   Custom: 'custom',
   LobsteraiServer: 'lobsterai-server',
+  Copilot: 'github-copilot',
 } as const;
 export type ProviderName = typeof ProviderName[keyof typeof ProviderName];
 
@@ -58,9 +60,12 @@ export const OpenClawProviderId = {
   VolcenginePlan: 'volcengine-plan', // OpenClaw coding plan provider for Volcengine
   Minimax: 'minimax',
   Youdaozhiyun: 'youdaozhiyun',
+  Qianfan: 'qianfan',
   StepFun: 'stepfun',
   Xiaomi: 'xiaomi',
   OpenRouter: 'openrouter',
+  Copilot: 'github-copilot',
+  LobsteraiCopilot: 'lobsterai-copilot',
   Ollama: 'ollama',
   Lobster: 'lobster', // Fallback ID for unknown providers
 } as const;
@@ -86,6 +91,7 @@ export type ApiFormat = typeof ApiFormat[keyof typeof ApiFormat];
 // ─── Auth Type ──────────────────────────────────────────────────────────
 export const AuthType = {
   ApiKey: 'api-key',
+  OAuth: 'oauth',
 } as const;
 export type AuthType = typeof AuthType[keyof typeof AuthType];
 
@@ -96,6 +102,12 @@ export type AuthType = typeof AuthType[keyof typeof AuthType];
 interface ProviderDefInput {
   /** Provider identifier (e.g. 'openai', 'moonshot') */
   readonly id: string;
+  /** Human-readable display name shown in UI */
+  readonly label?: string;
+  /** Provider console / product website URL */
+  readonly website?: string;
+  /** API key creation page URL */
+  readonly apiKeyUrl?: string;
   /** Default base URL */
   readonly defaultBaseUrl: string;
   /** Default API format */
@@ -136,6 +148,8 @@ interface ProviderDefInput {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
+  /** OpenClaw provider ID override when it differs from provider id */
+  readonly openClawProviderId?: OpenClawProviderId;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -163,13 +177,16 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Moonshot,
-    defaultBaseUrl: 'https://api.moonshot.cn/anthropic',
-    defaultApiFormat: ApiFormat.Anthropic,
+    // Moonshot regular chat is forced to OpenAI-compatible mode because
+    // its Anthropic-compatible endpoint is incomplete for our cowork flow.
+    defaultBaseUrl: 'https://api.moonshot.cn/v1',
+    defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: true,
     codingPlanUrls: {
       openai: 'https://api.kimi.com/coding/v1',
       anthropic: 'https://api.kimi.com/coding',
     },
+    preferredCodingPlanFormat: 'anthropic',
     switchableBaseUrls: {
       anthropic: 'https://api.moonshot.cn/anthropic',
       openai: 'https://api.moonshot.cn/v1',
@@ -274,6 +291,20 @@ const PROVIDER_DEFINITIONS = [
     ],
   },
   {
+    id: ProviderName.Qianfan,
+    defaultBaseUrl: 'https://qianfan.baidubce.com/v2',
+    defaultApiFormat: ApiFormat.OpenAI,
+    codingPlanSupported: false,
+    region: 'china',
+    enPriority: 0,
+    defaultModels: [
+      { id: 'deepseek-v3.2', name: 'DeepSeek V3.2', supportsImage: false },
+      { id: 'deepseek-r1', name: 'DeepSeek R1', supportsImage: false },
+      { id: 'ernie-4.5-8k', name: 'ERNIE 4.5 8K', supportsImage: false },
+      { id: 'ernie-4.5-turbo-8k', name: 'ERNIE 4.5 Turbo', supportsImage: false },
+    ],
+  },
+  {
     id: ProviderName.StepFun,
     defaultBaseUrl: 'https://api.stepfun.com/v1',
     defaultApiFormat: ApiFormat.OpenAI,
@@ -301,6 +332,7 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Ollama,
+    label: 'Ollama',
     defaultBaseUrl: 'http://localhost:11434/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -316,6 +348,22 @@ const PROVIDER_DEFINITIONS = [
     ],
   },
   // ── Global ──
+  {
+    id: ProviderName.Copilot,
+    label: 'GitHub Copilot',
+    defaultBaseUrl: 'https://api.individual.githubcopilot.com',
+    defaultApiFormat: ApiFormat.OpenAI,
+    codingPlanSupported: false,
+    region: 'global',
+    enPriority: 0,
+    openClawProviderId: OpenClawProviderId.LobsteraiCopilot,
+    defaultModels: [
+      { id: 'gpt-5-mini', name: 'GPT-5 mini', supportsImage: true },
+      { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', supportsImage: true },
+      { id: 'gpt-4.1', name: 'GPT-4.1', supportsImage: true },
+      { id: 'gpt-4o', name: 'GPT-4o', supportsImage: true },
+    ],
+  },
   {
     id: ProviderName.OpenAI,
     defaultBaseUrl: 'https://api.openai.com/v1',
@@ -383,6 +431,12 @@ const PROVIDER_DEFINITIONS = [
 export interface ProviderDef {
   /** Provider identifier (e.g. 'openai', 'moonshot') */
   readonly id: string;
+  /** Human-readable display name shown in UI */
+  readonly label?: string;
+  /** Provider console / product website URL */
+  readonly website?: string;
+  /** API key creation page URL */
+  readonly apiKeyUrl?: string;
   /** Default base URL */
   readonly defaultBaseUrl: string;
   /** Default API format */
@@ -411,6 +465,29 @@ export interface ProviderDef {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
+  /** OpenClaw provider ID override when it differs from provider id */
+  readonly openClawProviderId?: OpenClawProviderId;
+}
+
+export interface ProviderModelConfig {
+  id: string;
+  name: string;
+  supportsImage?: boolean;
+}
+
+export interface ProviderConfig {
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string;
+  apiFormat?: ApiFormat | 'native';
+  codingPlanEnabled?: boolean;
+  authType?: 'apikey' | 'oauth';
+  oauthRefreshToken?: string;
+  oauthTokenExpiresAt?: number;
+  oauthAccessToken?: string;
+  oauthBaseUrl?: string;
+  displayName?: string;
+  models?: ProviderModelConfig[];
 }
 
 // ═══════════════════════════════════════════════════════

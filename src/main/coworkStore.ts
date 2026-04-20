@@ -1,15 +1,17 @@
-import { app } from 'electron';
 import crypto from 'crypto';
+import { app } from 'electron';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+
+import type { Platform } from '../shared/platform';
 import { QingShuObjectSourceType, type QingShuObjectSourceType as QingShuObjectSourceTypeValue } from '../shared/qingshuManaged/constants';
 import {
+  type CoworkMemoryGuardLevel,
   extractTurnMemoryChanges,
   isQuestionLikeMemoryText,
-  type CoworkMemoryGuardLevel,
 } from './libs/coworkMemoryExtractor';
 import { judgeMemoryCandidate } from './libs/coworkMemoryJudge';
 
@@ -35,6 +37,15 @@ const DEFAULT_MEMORY_IMPLICIT_UPDATE_ENABLED = true;
 const DEFAULT_MEMORY_LLM_JUDGE_ENABLED = false;
 const DEFAULT_MEMORY_GUARD_LEVEL: CoworkMemoryGuardLevel = 'strict';
 const DEFAULT_MEMORY_USER_MEMORIES_MAX_ITEMS = 12;
+const DEFAULT_SKIP_MISSED_JOBS = true;
+const OPENCLAW_SESSION_KEEP_ALIVE_VALUES = ['1d', '7d', '30d', '365d'] as const;
+type OpenClawSessionKeepAlive = typeof OPENCLAW_SESSION_KEEP_ALIVE_VALUES[number];
+type OpenClawSessionPolicyConfig = {
+  keepAlive: OpenClawSessionKeepAlive;
+};
+const DEFAULT_OPENCLAW_SESSION_POLICY_CONFIG: OpenClawSessionPolicyConfig = {
+  keepAlive: '30d',
+};
 const MIN_MEMORY_USER_MEMORIES_MAX_ITEMS = 1;
 const MAX_MEMORY_USER_MEMORIES_MAX_ITEMS = 60;
 const MEMORY_NEAR_DUPLICATE_MIN_SCORE = 0.82;
@@ -60,6 +71,14 @@ function clampMemoryUserMemoriesMaxItems(value: number): number {
     MIN_MEMORY_USER_MEMORIES_MAX_ITEMS,
     Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(value))
   );
+}
+
+function normalizeOpenClawSessionPolicyConfig(value: unknown): OpenClawSessionPolicyConfig {
+  const keepAlive = (value as { keepAlive?: string } | null)?.keepAlive;
+  if (keepAlive && OPENCLAW_SESSION_KEEP_ALIVE_VALUES.includes(keepAlive as OpenClawSessionKeepAlive)) {
+    return { keepAlive: keepAlive as OpenClawSessionKeepAlive };
+  }
+  return DEFAULT_OPENCLAW_SESSION_POLICY_CONFIG;
 }
 
 function normalizeMemoryText(value: string): string {
@@ -405,6 +424,9 @@ export interface CoworkSessionSummary {
   status: CoworkSessionStatus;
   pinned: boolean;
   agentId: string;
+  source: 'chat' | 'im';
+  platform?: Platform;
+  conversationId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -466,6 +488,8 @@ export interface CoworkConfig {
   memoryLlmJudgeEnabled: boolean;
   memoryGuardLevel: CoworkMemoryGuardLevel;
   memoryUserMemoriesMaxItems: number;
+  skipMissedJobs: boolean;
+  openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
@@ -478,6 +502,8 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'memoryLlmJudgeEnabled'
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
+  | 'skipMissedJobs'
+  | 'openClawSessionPolicy'
 >>;
 
 export interface ApplyTurnMemoryUpdatesOptions {
@@ -752,12 +778,23 @@ export class CoworkStore {
 
     let rows: SessionSummaryRow[];
     if (agentId) {
-      rows = this.getAll<SessionSummaryRow>(`
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
-        FROM cowork_sessions
-        WHERE agent_id = ?
-        ORDER BY pinned DESC, updated_at DESC
-      `, [agentId]);
+      if (agentId === 'main') {
+        rows = this.getAll<SessionSummaryRow>(`
+          SELECT id, title, status, pinned, agent_id, created_at, updated_at
+          FROM cowork_sessions
+          WHERE agent_id = ?
+            OR agent_id IS NULL
+            OR TRIM(agent_id) = ''
+          ORDER BY pinned DESC, updated_at DESC
+        `, [agentId]);
+      } else {
+        rows = this.getAll<SessionSummaryRow>(`
+          SELECT id, title, status, pinned, agent_id, created_at, updated_at
+          FROM cowork_sessions
+          WHERE agent_id = ?
+          ORDER BY pinned DESC, updated_at DESC
+        `, [agentId]);
+      }
     } else {
       rows = this.getAll<SessionSummaryRow>(`
         SELECT id, title, status, pinned, agent_id, created_at, updated_at
@@ -772,6 +809,7 @@ export class CoworkStore {
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
       agentId: row.agent_id || 'main',
+      source: 'chat' as const,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
@@ -1032,8 +1070,18 @@ export class CoworkStore {
     const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
     const memoryGuardLevelRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryGuardLevel']);
     const memoryUserMemoriesMaxItemsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryUserMemoriesMaxItems']);
+    const skipMissedJobsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['skipMissedJobs']);
+    const openClawSessionPolicyRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['openClawSessionPolicy']);
 
     const normalizedAgentEngine = normalizeCoworkAgentEngineValue(agentEngineRow?.value);
+    let openClawSessionPolicy = DEFAULT_OPENCLAW_SESSION_POLICY_CONFIG;
+    if (openClawSessionPolicyRow?.value) {
+      try {
+        openClawSessionPolicy = normalizeOpenClawSessionPolicyConfig(JSON.parse(openClawSessionPolicyRow.value));
+      } catch {
+        openClawSessionPolicy = DEFAULT_OPENCLAW_SESSION_POLICY_CONFIG;
+      }
+    }
 
     return {
       workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),
@@ -1051,6 +1099,8 @@ export class CoworkStore {
       ),
       memoryGuardLevel: normalizeMemoryGuardLevel(memoryGuardLevelRow?.value),
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(memoryUserMemoriesMaxItemsRow?.value)),
+      skipMissedJobs: parseBooleanConfig(skipMissedJobsRow?.value, DEFAULT_SKIP_MISSED_JOBS),
+      openClawSessionPolicy,
     };
   }
 
@@ -1136,6 +1186,26 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [String(clampMemoryUserMemoriesMaxItems(config.memoryUserMemoriesMaxItems)), now]);
+    }
+
+    if (config.skipMissedJobs !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('skipMissedJobs', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [config.skipMissedJobs ? '1' : '0', now]);
+    }
+
+    if (config.openClawSessionPolicy !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('openClawSessionPolicy', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [JSON.stringify(normalizeOpenClawSessionPolicyConfig(config.openClawSessionPolicy)), now]);
     }
 
     this.saveDb();

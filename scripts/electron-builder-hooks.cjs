@@ -9,6 +9,7 @@ const { syncLocalOpenClawExtensions } = require('./sync-local-openclaw-extension
 const { packMultipleSources } = require('./pack-openclaw-tar.cjs');
 const { buildMacosSpeechHelper } = require('./build-macos-speech-helper.cjs');
 const { buildMacosTtsHelper } = require('./build-macos-tts-helper.cjs');
+const { DIST_DIFFS_EXTENSION_DIR, DIST_EXTENSIONS_DIR, summarizeGatewayAsarEntries } = require('./openclaw-runtime-packaging.cjs');
 
 function isWindowsTarget(context) {
   return context?.electronPlatformName === 'win32';
@@ -103,7 +104,7 @@ function verifyPreinstalledPlugins(runtimeRoot, buildHint) {
     return;
   }
 
-  const extensionsDir = path.join(runtimeRoot, 'extensions');
+  const extensionsDir = path.join(runtimeRoot, 'third-party-extensions');
   const missing = [];
 
   for (const plugin of plugins) {
@@ -126,14 +127,61 @@ function verifyPreinstalledPlugins(runtimeRoot, buildHint) {
   console.log(`[electron-builder-hooks] Verified ${plugins.length} preinstalled OpenClaw plugin(s).`);
 }
 
+function hasCompiledLocalExtension(runtimeRoot, extensionId) {
+  const pluginDir = path.join(runtimeRoot, 'third-party-extensions', extensionId);
+  return existsSync(path.join(pluginDir, 'openclaw.plugin.json'))
+    && existsSync(path.join(pluginDir, 'index.js'));
+}
+
+function precompileLocalExtensions(runtimeRoot, buildHint) {
+  const scriptPath = path.join(__dirname, 'precompile-openclaw-extensions.cjs');
+  const result = spawnSync(process.execPath, [scriptPath, runtimeRoot], {
+    cwd: path.join(__dirname, '..'),
+    stdio: 'inherit',
+  });
+
+  if (result.status !== 0) {
+    throw new Error(
+      '[electron-builder-hooks] Failed to precompile local OpenClaw extensions. '
+      + `Run \`${buildHint}\` before packaging.`,
+    );
+  }
+}
+
+function ensureBundledLocalExtensions(runtimeRoot, buildHint) {
+  const requiredLocalExtensions = ['mcp-bridge', 'ask-user-question'];
+  const missingCompiledExtensions = requiredLocalExtensions.filter(
+    (extensionId) => !hasCompiledLocalExtension(runtimeRoot, extensionId),
+  );
+
+  if (missingCompiledExtensions.length === 0) {
+    return;
+  }
+
+  console.log(
+    '[electron-builder-hooks] Restoring local OpenClaw extensions before packaging: '
+    + missingCompiledExtensions.join(', '),
+  );
+  syncLocalOpenClawExtensions(runtimeRoot);
+  precompileLocalExtensions(runtimeRoot, buildHint);
+
+  const stillMissing = requiredLocalExtensions.filter(
+    (extensionId) => !hasCompiledLocalExtension(runtimeRoot, extensionId),
+  );
+  if (stillMissing.length > 0) {
+    throw new Error(
+      '[electron-builder-hooks] Bundled OpenClaw runtime is missing compiled local extensions: '
+      + stillMissing.join(', ')
+      + `. Run \`${buildHint}\` before packaging.`,
+    );
+  }
+}
+
 function ensureBundledOpenClawRuntime(context) {
   const { runtimeRoot, targetId } = syncCurrentOpenClawRuntimeForTarget(context);
   const buildHint = getOpenClawRuntimeBuildHint(targetId);
 
-  const localMcpBridgeDir = path.join(runtimeRoot, 'extensions', 'mcp-bridge');
-  if (!existsSync(localMcpBridgeDir)) {
-    syncLocalOpenClawExtensions(runtimeRoot);
-  }
+  ensureBundledLocalExtensions(runtimeRoot, buildHint);
 
   const requiredExternalPaths = [
     path.join(runtimeRoot, 'node_modules'),
@@ -172,10 +220,9 @@ function ensureBundledOpenClawRuntime(context) {
 
   const gatewayAsarPath = path.join(runtimeRoot, 'gateway.asar');
   if (existsSync(gatewayAsarPath)) {
-    let entries;
+    let summary;
     try {
-      // Normalize paths: on Windows, asar.listPackage may return backslash paths
-      entries = new Set(asar.listPackage(gatewayAsarPath).map(e => e.replace(/\\/g, '/')));
+      summary = summarizeGatewayAsarEntries(asar.listPackage(gatewayAsarPath));
     } catch (error) {
       throw new Error(
         '[electron-builder-hooks] Failed to read OpenClaw gateway.asar: '
@@ -183,14 +230,26 @@ function ensureBundledOpenClawRuntime(context) {
       );
     }
 
-    const hasOpenClawEntry = entries.has('/openclaw.mjs');
-    const hasControlUiIndex = entries.has('/dist/control-ui/index.html');
-    const hasGatewayEntry = entries.has('/dist/entry.js') || entries.has('/dist/entry.mjs');
-
-    if (!hasOpenClawEntry || !hasControlUiIndex || !hasGatewayEntry) {
+    if (!summary.hasOpenClawEntry || !summary.hasControlUiIndex || !summary.hasGatewayEntry || summary.hasBundledExtensions) {
       throw new Error(
         '[electron-builder-hooks] OpenClaw gateway.asar is incomplete. '
-        + `openclaw.mjs=${hasOpenClawEntry}, control-ui=${hasControlUiIndex}, entry=${hasGatewayEntry}.`,
+        + `openclaw.mjs=${summary.hasOpenClawEntry}, control-ui=${summary.hasControlUiIndex}, entry=${summary.hasGatewayEntry}, extensions=${summary.hasBundledExtensions}.`,
+      );
+    }
+
+    const bundledExtensionsDir = path.join(runtimeRoot, DIST_EXTENSIONS_DIR);
+    if (!existsSync(bundledExtensionsDir)) {
+      throw new Error(
+        '[electron-builder-hooks] Bundled OpenClaw runtime is missing bare dist/extensions. '
+        + `Expected ${bundledExtensionsDir} after gateway.asar packing.`,
+      );
+    }
+
+    const diffsExtensionDir = path.join(runtimeRoot, DIST_DIFFS_EXTENSION_DIR);
+    if (existsSync(diffsExtensionDir)) {
+      throw new Error(
+        '[electron-builder-hooks] Bundled OpenClaw runtime still contains the diffs extension. '
+        + `Expected ${diffsExtensionDir} to be removed before packaging.`,
       );
     }
 

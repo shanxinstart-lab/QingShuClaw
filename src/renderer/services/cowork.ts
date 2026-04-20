@@ -1,36 +1,38 @@
+import { QingShuManagedCapabilityErrorCode } from '@shared/qingshuManaged/access';
+
+import { classifyErrorKey } from '../../common/coworkErrorClassify';
 import { store } from '../store';
 import {
-  setSessions,
-  setCurrentSession,
+  addMessage,
   addSession,
-  updateSessionStatus,
+  clearCurrentSession,
+  clearPendingPermissions,
   deleteSession as deleteSessionAction,
   deleteSessions as deleteSessionsAction,
-  addMessage,
-  updateMessageContent,
-  setStreaming,
-  setRemoteManaged,
-  updateSessionPinned,
-  updateSessionTitle,
-  enqueuePendingPermission,
   dequeuePendingPermission,
-  clearPendingPermissions,
+  enqueuePendingPermission,
   setConfig,
-  clearCurrentSession,
+  setCurrentSession,
+  setRemoteManaged,
+  setSessions,
+  setStreaming,
+  updateMessageContent,
+  updateSessionPinned,
+  updateSessionStatus,
+  updateSessionTitle,
 } from '../store/slices/coworkSlice';
 import type {
-  CoworkSession,
-  CoworkConfigUpdate,
   CoworkApiConfig,
-  CoworkUserMemoryEntry,
+  CoworkConfigUpdate,
+  CoworkContinueOptions,
   CoworkMemoryStats,
   CoworkPermissionResult,
-  OpenClawEngineStatus,
+  CoworkSession,
   CoworkStartOptions,
-  CoworkContinueOptions,
+  CoworkUserMemoryEntry,
+  OpenClawEngineStatus,
 } from '../types/cowork';
 import { i18nService } from './i18n';
-import { classifyErrorKey } from '../../common/coworkErrorClassify';
 
 const classifyError = (error: string): string => {
   const key = classifyErrorKey(error);
@@ -259,7 +261,11 @@ class CoworkService {
     if (result.error) {
       const errorContent = result.code === 'ENGINE_NOT_READY'
         ? i18nService.t('coworkErrorEngineNotReady')
-        : classifyError(result.error);
+        : result.code === QingShuManagedCapabilityErrorCode.AuthRequired
+          ? i18nService.t('managedUnavailableHint')
+          : result.code === QingShuManagedCapabilityErrorCode.Forbidden
+            ? result.error || i18nService.t('managedForbiddenHint')
+            : classifyError(result.error);
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: errorContent }));
     }
 
@@ -293,12 +299,17 @@ class CoworkService {
       if (result.code !== 'ENGINE_NOT_READY') {
         store.dispatch(updateSessionStatus({ sessionId: options.sessionId, status: 'error' }));
         if (result.error) {
+          const sessionErrorContent = result.code === QingShuManagedCapabilityErrorCode.AuthRequired
+            ? i18nService.t('managedUnavailableHint')
+            : result.code === QingShuManagedCapabilityErrorCode.Forbidden
+              ? result.error || i18nService.t('managedForbiddenHint')
+              : i18nService.t('coworkErrorSessionContinueFailed').replace('{error}', result.error);
           store.dispatch(addMessage({
             sessionId: options.sessionId,
             message: {
               id: `error-${Date.now()}`,
               type: 'system',
-              content: i18nService.t('coworkErrorSessionContinueFailed').replace('{error}', result.error),
+              content: sessionErrorContent,
               timestamp: Date.now(),
             },
           }));
@@ -308,7 +319,11 @@ class CoworkService {
       if (result.error) {
         const errorContent = result.code === 'ENGINE_NOT_READY'
           ? i18nService.t('coworkErrorEngineNotReady')
-          : classifyError(result.error);
+          : result.code === QingShuManagedCapabilityErrorCode.AuthRequired
+            ? i18nService.t('managedUnavailableHint')
+            : result.code === QingShuManagedCapabilityErrorCode.Forbidden
+              ? result.error || i18nService.t('managedForbiddenHint')
+              : classifyError(result.error);
         store.dispatch(addMessage({
           sessionId: options.sessionId,
           message: {

@@ -32,6 +32,7 @@ interface FormState {
   payloadText: string;
   notifyChannel: string;
   notifyTo: string;
+  notifyAccountId?: string;
 }
 
 function nowDefaults() {
@@ -56,6 +57,7 @@ const DEFAULT_FORM_STATE: FormState = {
   payloadText: '',
   notifyChannel: 'none',
   notifyTo: '',
+  notifyAccountId: undefined,
 };
 
 function isIMChannel(channel: string): boolean {
@@ -81,6 +83,7 @@ function createFormState(task?: ScheduledTask): FormState {
     payloadText: task.payload.kind === 'systemEvent' ? task.payload.text : task.payload.message,
     notifyChannel: task.delivery.channel || 'none',
     notifyTo: task.delivery.to || '',
+    notifyAccountId: task.delivery.accountId,
   };
 }
 
@@ -114,13 +117,31 @@ const WEEKDAY_KEYS = [
   'scheduledTasksFormWeekSat',
 ] as const;
 
+function getChannelOptionValue(channel: string, accountId?: string): string {
+  return `${channel}::${accountId ?? ''}`;
+}
+
+function parseChannelOptionValue(value: string): { channel: string; accountId?: string } {
+  const separatorIndex = value.indexOf('::');
+  if (separatorIndex === -1) {
+    return { channel: value };
+  }
+
+  const channel = value.slice(0, separatorIndex);
+  const accountId = value.slice(separatorIndex + 2) || undefined;
+  return { channel, accountId };
+}
+
 const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) => {
   const [form, setForm] = useState<FormState>(() => createFormState(task));
   const [channelOptions, setChannelOptions] = useState<ScheduledTaskChannelOption[]>(() => {
     const base: ScheduledTaskChannelOption[] = [];
     const savedChannel = task?.delivery.channel;
-    if (savedChannel && isIMChannel(savedChannel) && !base.some((o) => o.value === savedChannel)) {
-      base.push({ value: savedChannel, label: savedChannel });
+    const savedAccountId = task?.delivery.accountId;
+    if (savedChannel && isIMChannel(savedChannel) && !base.some((option) => (
+      option.value === savedChannel && option.accountId === savedAccountId
+    ))) {
+      base.push({ value: savedChannel, label: savedChannel, accountId: savedAccountId });
     }
     return base;
   });
@@ -143,7 +164,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
       setChannelOptions((current) => {
         const next = [...current];
         for (const channel of channels) {
-          if (!next.some((item) => item.value === channel.value)) {
+          if (!next.some((item) => item.value === channel.value && item.accountId === channel.accountId)) {
             next.push(channel);
           }
         }
@@ -163,7 +184,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
 
     let cancelled = false;
     setConversationsLoading(true);
-    void scheduledTaskService.listChannelConversations(form.notifyChannel).then((result) => {
+    void scheduledTaskService.listChannelConversations(form.notifyChannel, form.notifyAccountId).then((result) => {
       if (cancelled) return;
       setConversations(result);
       setConversationsLoading(false);
@@ -176,7 +197,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
     return () => {
       cancelled = true;
     };
-  }, [form.notifyChannel]);
+  }, [form.notifyChannel, form.notifyAccountId]);
 
   const updateForm = (patch: Partial<FormState>) => {
     setForm((current) => ({ ...current, ...patch }));
@@ -233,6 +254,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
               mode: 'announce',
               channel: form.notifyChannel,
               ...(form.notifyTo ? { to: form.notifyTo } : {}),
+              ...(form.notifyAccountId ? { accountId: form.notifyAccountId } : {}),
             },
       };
 
@@ -398,20 +420,31 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   };
 
   const renderNotifyRow = () => {
+    const notifyChannelValue = form.notifyChannel === 'none'
+      ? 'none'
+      : getChannelOptionValue(form.notifyChannel, form.notifyAccountId);
+
     return (
       <div>
         <label className={labelClass}>{i18nService.t('scheduledTasksFormNotifyChannel')}</label>
         <div className="flex items-center gap-3">
           <select
-            value={form.notifyChannel}
-            onChange={(event) => updateForm({ notifyChannel: event.target.value, notifyTo: '' })}
+            value={notifyChannelValue}
+            onChange={(event) => {
+              const { channel, accountId } = parseChannelOptionValue(event.target.value);
+              updateForm({ notifyChannel: channel, notifyTo: '', notifyAccountId: accountId });
+            }}
             className={`${inputClass} ${showConversationSelector ? 'flex-1 min-w-0' : ''}`}
           >
             <option value="none">{i18nService.t('scheduledTasksFormNotifyChannelNone')}</option>
             {channelOptions.map((channel) => {
-              const unsupported = channel.value === 'openclaw-weixin' || channel.value === 'qqbot' || channel.value === 'netease-bee';
+              const unsupported = channel.value === 'openclaw-weixin';
               return (
-                <option key={channel.value} value={channel.value} disabled={unsupported}>
+                <option
+                  key={getChannelOptionValue(channel.value, channel.accountId)}
+                  value={getChannelOptionValue(channel.value, channel.accountId)}
+                  disabled={unsupported}
+                >
                   {unsupported
                     ? `${channel.label} (${i18nService.t('scheduledTasksChannelUnsupported')})`
                     : channel.label}

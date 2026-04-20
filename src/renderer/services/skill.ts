@@ -1,12 +1,17 @@
-import { Skill, MarketplaceSkill, MarketTag, LocalSkillInfo, LocalizedText, WorkspaceSkillInstall } from '../types/skill';
-import { getSkillStoreUrl } from './endpoints';
-import { i18nService } from './i18n';
-import { store } from '../store';
-import { AppCustomEvent } from '../constants/app';
+import {
+  QingShuManagedAccessState,
+  resolveQingShuManagedAccessState,
+} from '@shared/qingshuManaged/access';
 import type {
   QingShuManagedCatalogSnapshot,
   QingShuManagedSkillDescriptor,
 } from '@shared/qingshuManaged/types';
+
+import { AppCustomEvent } from '../constants/app';
+import { store } from '../store';
+import { LocalizedText, LocalSkillInfo, MarketplaceSkill, MarketTag, Skill, WorkspaceSkillInstall } from '../types/skill';
+import { getSkillStoreUrl } from './endpoints';
+import { i18nService } from './i18n';
 
 export function resolveLocalizedText(text: string | LocalizedText): string {
   if (!text) return '';
@@ -52,6 +57,14 @@ class SkillService {
     }));
   }
 
+  private resolveManagedAccessState(sourceType?: string, allowed?: boolean) {
+    return resolveQingShuManagedAccessState({
+      sourceType,
+      allowed,
+      isLoggedIn: store.getState().auth.isLoggedIn,
+    });
+  }
+
   private async loadManagedCatalog(): Promise<QingShuManagedCatalogSnapshot | null> {
     try {
       const result = await window.electron.qingshuManaged.getCatalog();
@@ -95,7 +108,6 @@ class SkillService {
   private mergeManagedCatalogSkills(
     installedSkills: Skill[],
     catalog: QingShuManagedCatalogSnapshot | null,
-    isLoggedIn: boolean,
   ): Skill[] {
     const descriptorById = new Map<string, QingShuManagedSkillDescriptor>();
     if (catalog?.skills?.length) {
@@ -108,16 +120,18 @@ class SkillService {
       const descriptor = descriptorById.get(skill.backendSkillId || skill.id);
       if (!descriptor) {
         if (skill.sourceType === 'qingshu-managed') {
+          const accessState = this.resolveManagedAccessState(skill.sourceType, skill.allowed);
           return {
             ...skill,
             allowed: true,
-            enabled: isLoggedIn ? skill.enabled : false,
+            enabled: accessState === QingShuManagedAccessState.Available ? skill.enabled : false,
           };
         }
         return skill;
       }
 
       const isAllowed = descriptor.allowed === true;
+      const accessState = this.resolveManagedAccessState(descriptor.sourceType, isAllowed);
       return {
         ...skill,
         name: descriptor.name || skill.name,
@@ -134,7 +148,7 @@ class SkillService {
         toolRefs: descriptor.toolRefs ?? skill.toolRefs,
         policyNote: descriptor.policyNote,
         allowed: isAllowed,
-        enabled: isAllowed ? (isLoggedIn ? skill.enabled : false) : false,
+        enabled: accessState === QingShuManagedAccessState.Available ? skill.enabled : false,
       };
     });
 
@@ -174,9 +188,8 @@ class SkillService {
     try {
       const result = await window.electron.skills.list();
       if (result.success && result.skills) {
-        const isLoggedIn = store.getState().auth.isLoggedIn;
         const catalog = await this.loadManagedCatalog();
-        this.skills = this.mergeManagedCatalogSkills(result.skills, catalog, isLoggedIn);
+        this.skills = this.mergeManagedCatalogSkills(result.skills, catalog);
       } else {
         this.skills = [];
       }
@@ -191,13 +204,13 @@ class SkillService {
   async setSkillEnabled(id: string, enabled: boolean): Promise<Skill[]> {
     try {
       const targetSkill = this.skills.find((skill) => skill.id === id);
-      const isLoggedIn = store.getState().auth.isLoggedIn;
-      if (targetSkill?.sourceType === 'qingshu-managed' && !isLoggedIn) {
+      const accessState = this.resolveManagedAccessState(targetSkill?.sourceType, targetSkill?.allowed);
+      if (accessState === QingShuManagedAccessState.LoginRequired) {
         this.showManagedUnavailableToast();
         return this.skills;
       }
-      if (targetSkill?.sourceType === 'qingshu-managed' && targetSkill.allowed === false) {
-        this.showManagedUnavailableToast(targetSkill.policyNote || i18nService.t('managedForbiddenHint'));
+      if (accessState === QingShuManagedAccessState.Forbidden) {
+        this.showManagedUnavailableToast(targetSkill?.policyNote || i18nService.t('managedForbiddenHint'));
         return this.skills;
       }
       const result = await window.electron.skills.setEnabled({ id, enabled });

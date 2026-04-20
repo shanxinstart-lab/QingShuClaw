@@ -75,6 +75,7 @@ export interface QingShuManagedSkillMeta {
   installedBy: QingShuManagedInstaller;
   toolRefs?: string[];
   policyNote?: string;
+  allowed?: boolean;
 }
 
 export interface QingShuSkillSourceMeta {
@@ -89,4 +90,5 @@ export interface QingShuSkillSourceMeta {
   installedBy?: QingShuManagedInstaller;
   toolRefs?: string[];
   policyNote?: string;
+  allowed?: boolean;
 }
