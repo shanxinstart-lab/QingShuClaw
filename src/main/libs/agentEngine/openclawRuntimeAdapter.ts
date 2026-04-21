@@ -279,6 +279,94 @@ const stripQQBotSystemPrompt = (text: string): string => {
   return text;
 };
 
+interface PlatformFlags {
+  isDiscord: boolean;
+  isQQ: boolean;
+  isPopo: boolean;
+  isFeishu: boolean;
+}
+
+/**
+ * Apply platform-specific text normalization to a message entry.
+ * Used for both gateway (authoritative) and local entries so that
+ * alignment comparisons work even when local messages still carry
+ * raw platform prefixes.
+ */
+const normalizeEntryText = (
+  role: 'user' | 'assistant',
+  text: string,
+  flags: PlatformFlags,
+): string => {
+  let result = text.trim();
+  if (!result) return result;
+  if (flags.isDiscord) result = stripDiscordMentions(result);
+  if (flags.isQQ && role === 'user') result = stripQQBotSystemPrompt(result);
+  if (flags.isPopo && role === 'user') result = stripPopoSystemHeader(result);
+  if (flags.isFeishu && role === 'user') result = stripFeishuSystemHeader(result);
+  return result;
+};
+
+/**
+ * Find the tail-alignment point between local and authoritative entries.
+ *
+ * Uses user-message texts as anchors (they are immutable in IM), avoiding
+ * false mismatches caused by assistant streaming partials.
+ *
+ * Returns the index in `localEntries` where the authoritative window begins,
+ * or -1 when no overlap is found.
+ *
+ * The search finds the **largest** k such that the last k user-message texts
+ * in local equal the first k user-message texts in auth.  Larger overlap
+ * means a wider correction window, which maximises consistency with the
+ * OpenClaw dashboard.
+ */
+const findTailAlignmentIndex = (
+  localEntries: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>,
+  authEntries: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>,
+): number => {
+  if (authEntries.length === 0) return -1;
+  if (localEntries.length === 0) return 0;
+
+  // Extract user-only entries with their original indices
+  const localUsers: Array<{ idx: number; text: string }> = [];
+  for (let i = 0; i < localEntries.length; i++) {
+    if (localEntries[i].role === 'user') {
+      localUsers.push({ idx: i, text: localEntries[i].text });
+    }
+  }
+
+  const authUsers: string[] = [];
+  for (const e of authEntries) {
+    if (e.role === 'user') authUsers.push(e.text);
+  }
+
+  if (authUsers.length === 0 || localUsers.length === 0) {
+    // No user messages to anchor on — fall back to full replace
+    return 0;
+  }
+
+  // Find largest k where localUsers tail-k texts == authUsers head-k texts
+  const maxK = Math.min(localUsers.length, authUsers.length);
+  for (let k = maxK; k >= 1; k--) {
+    const localStart = localUsers.length - k;
+    let match = true;
+    for (let j = 0; j < k; j++) {
+      if (localUsers[localStart + j].text !== authUsers[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      // The alignment point is the original index of the first overlapping
+      // user message in local.
+      return localUsers[localStart].idx;
+    }
+  }
+
+  // No overlap found
+  return -1;
+};
+
 const extractMessageText = extractGatewayMessageText;
 
 const summarizeGatewayMessageShape = (message: unknown): string => {
@@ -3269,17 +3357,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       const isPopo = sessionKey.includes(':moltbot-popo:');
       const isFeishu = sessionKey.includes(':feishu:');
 
+      // Platform flags for text normalization (shared by auth + local)
+      const platformFlags: PlatformFlags = { isDiscord, isQQ, isPopo, isFeishu };
+
       // Extract authoritative user/assistant entries from gateway history
       const authoritativeEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
       for (const entry of extractGatewayHistoryEntries(history.messages)) {
         const role = entry.role;
         if (role !== 'user' && role !== 'assistant') continue;
-        let text = entry.text.trim();
-        if (!text) continue;
-        if (isDiscord) text = stripDiscordMentions(text);
-        if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
-        if (isPopo && role === 'user') text = stripPopoSystemHeader(text);
-        if (isFeishu && role === 'user') text = stripFeishuSystemHeader(text);
+        const text = normalizeEntryText(role, entry.text, platformFlags);
         if (!text || shouldSuppressHeartbeatText(role, text)) continue;
         authoritativeEntries.push({ role: role as 'user' | 'assistant', text });
       }
@@ -3308,18 +3394,20 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
 
       // Collect local user/assistant messages for comparison
+      // Apply the same normalization as authoritativeEntries so alignment
+      // works even when local messages still carry raw platform prefixes.
       const session = this.store.getSession(sessionId);
       const localEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
       if (session) {
         for (const msg of session.messages) {
           if (msg.type !== 'user' && msg.type !== 'assistant') continue;
-          const text = msg.content.trim();
-          if (!text) continue;
+          const text = normalizeEntryText(msg.type, msg.content, platformFlags);
+          if (!text || shouldSuppressHeartbeatText(msg.type, text)) continue;
           localEntries.push({ role: msg.type, text });
         }
       }
 
-      // Compare: if already in sync, skip the expensive replace
+      // Fast path: if already in sync, skip
       const isInSync = localEntries.length === authoritativeEntries.length
         && localEntries.every((entry, idx) =>
           entry.role === authoritativeEntries[idx].role
@@ -3332,33 +3420,46 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         return;
       }
 
-      // Guard: only skip if the raw gateway history is suspiciously small,
-      // suggesting the gateway lost data (e.g., after restart).
-      // Comparing filtered entry counts is wrong because assistant messages
-      // with only thinking/toolCall blocks (no visible text) are excluded
-      // from authoritativeEntries but may exist locally as streaming messages,
-      // causing a permanent deadlock where user messages never sync.
-      const rawGatewayCount = history.messages.length;
-      if (
-        !options?.isFullSync
-        && localEntries.length > 0
-        && rawGatewayCount < localEntries.length / 2
-      ) {
+      // Tail-alignment: find where the gateway window starts in local
+      const alignIdx = findTailAlignmentIndex(localEntries, authoritativeEntries);
+
+      let entriesToStore: Array<{ role: 'user' | 'assistant'; text: string }>;
+
+      if (alignIdx > 0) {
+        // Gateway covers only the tail — preserve older local messages
+        const tail = localEntries.slice(alignIdx);
+        const tailInSync = tail.length === authoritativeEntries.length
+          && tail.every((entry, idx) =>
+            entry.role === authoritativeEntries[idx].role
+            && entry.text === authoritativeEntries[idx].text,
+          );
+        if (tailInSync) {
+          console.log(
+            '[Reconcile] tail in sync — sessionId:', sessionId,
+            'preserved:', alignIdx, 'tail:', tail.length,
+          );
+          this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+          return;
+        }
+        // Concat preserved prefix with authoritative tail
+        entriesToStore = [...localEntries.slice(0, alignIdx), ...authoritativeEntries];
         console.log(
-          '[Reconcile] skipping — gateway raw history suspiciously small, preserving local. sessionId:',
-          sessionId, 'local:', localEntries.length, 'rawGateway:', rawGatewayCount,
-          'authoritative:', authoritativeEntries.length,
+          '[Reconcile] tail replace — sessionId:', sessionId,
+          'preserved:', alignIdx, 'auth:', authoritativeEntries.length,
+          'total:', entriesToStore.length,
         );
-        this.channelSyncCursor.set(sessionId, localEntries.length);
-        return;
+      } else {
+        // alignIdx === 0 (gateway covers full range) or -1 (no overlap)
+        // In both cases: full replace to ensure dashboard consistency
+        entriesToStore = authoritativeEntries;
+        console.log(
+          '[Reconcile] full replace — sessionId:', sessionId,
+          'local:', localEntries.length, '→ auth:', authoritativeEntries.length,
+          'alignIdx:', alignIdx,
+        );
       }
 
-      // Replace local messages with authoritative ones
-      console.log(
-        '[Reconcile] replacing messages — sessionId:', sessionId,
-        'local:', localEntries.length, '→ authoritative:', authoritativeEntries.length,
-      );
-      this.store.replaceConversationMessages(sessionId, authoritativeEntries);
+      this.store.replaceConversationMessages(sessionId, entriesToStore);
       this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
 
       // Notify renderer to refresh
