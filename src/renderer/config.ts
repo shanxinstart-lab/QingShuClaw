@@ -142,5 +142,7 @@ export const getProviderDisplayName = (
       : '';
     return name || getCustomProviderDefaultName(providerKey);
   }
+  const def = ProviderRegistry.get(providerKey);
+  if (def) return def.label;
   return providerKey.charAt(0).toUpperCase() + providerKey.slice(1);
 };

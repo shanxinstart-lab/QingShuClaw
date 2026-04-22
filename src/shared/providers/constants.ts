@@ -38,6 +38,7 @@ export const ProviderName = {
   Volcengine: 'volcengine',
   OpenRouter: 'openrouter',
   Ollama: 'ollama',
+  LmStudio: 'lm-studio',
   Custom: 'custom',
   LobsteraiServer: 'lobsterai-server',
   Copilot: 'github-copilot',
@@ -65,6 +66,7 @@ export const OpenClawProviderId = {
   Copilot: 'github-copilot',
   LobsteraiCopilot: 'lobsterai-copilot',
   Ollama: 'ollama',
+  LmStudio: 'lm-studio',
   Lobster: 'lobster',
 } as const;
 export type OpenClawProviderId = typeof OpenClawProviderId[keyof typeof OpenClawProviderId];
@@ -401,6 +403,22 @@ const PROVIDER_DEFINITIONS = [
       { id: 'glm-4.7-flash', name: 'GLM 4.7 Flash', supportsImage: false },
     ],
   },
+  {
+    id: ProviderName.LmStudio,
+    label: 'LM Studio',
+    website: 'https://lmstudio.ai',
+    openClawProviderId: OpenClawProviderId.LmStudio,
+    defaultBaseUrl: 'http://localhost:1234/v1',
+    defaultApiFormat: ApiFormat.OpenAI,
+    codingPlanSupported: false,
+    switchableBaseUrls: {
+      anthropic: 'http://localhost:1234',
+      openai: 'http://localhost:1234/v1',
+    },
+    region: 'china',
+    enPriority: 0,
+    defaultModels: [],
+  },
   // ── Global ──
   {
     id: ProviderName.Copilot,
@@ -615,12 +633,17 @@ class ProviderRegistryImpl {
     const orderedProviders = [...priority, ...china, ...global];
     const unique = [...new Set(orderedProviders)];
 
-    // Move ollama to the end (custom providers are appended dynamically by Settings)
+    // Move local providers (ollama, lm-studio) to the end
     const ollamaIdx = unique.indexOf(ProviderName.Ollama);
     if (ollamaIdx !== -1) {
       unique.splice(ollamaIdx, 1);
     }
+    const lmStudioIdx = unique.indexOf(ProviderName.LmStudio);
+    if (lmStudioIdx !== -1) {
+      unique.splice(lmStudioIdx, 1);
+    }
     unique.push(ProviderName.Ollama);
+    unique.push(ProviderName.LmStudio);
     return unique;
   }
 }
