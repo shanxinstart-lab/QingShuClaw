@@ -413,16 +413,19 @@ export class IMGatewayManager extends EventEmitter {
         lastOutboundAt: null as number | null,
       })),
     };
-    // Discord runs via OpenClaw; reflect enabled+configured state as connected
-    const dcConfig = config.discord;
+    // Discord runs via OpenClaw; reflect enabled+configured state per instance
     const discordStatus = {
-      connected: Boolean(dcConfig?.enabled && dcConfig.botToken),
-      starting: false,
-      startedAt: null as number | null,
-      lastError: null as string | null,
-      botUsername: null as string | null,
-      lastInboundAt: null as number | null,
-      lastOutboundAt: null as number | null,
+      instances: (config.discord?.instances || []).map(inst => ({
+        instanceId: inst.instanceId,
+        instanceName: inst.instanceName,
+        connected: Boolean(inst.enabled && inst.botToken),
+        starting: false,
+        startedAt: null as number | null,
+        lastError: null as string | null,
+        botUsername: null as string | null,
+        lastInboundAt: null as number | null,
+        lastOutboundAt: null as number | null,
+      })),
     };
     // DingTalk runs via OpenClaw; reflect enabled+configured state per instance
     const dingtalkStatus = {
@@ -918,7 +921,8 @@ export class IMGatewayManager extends EventEmitter {
     if (telegramInstances.some(i => i.enabled && i.botToken)) {
       openClawPlatformsToStart.push('telegram');
     }
-    if (config.discord.enabled && config.discord.botToken) {
+    const discordInstances = config.discord?.instances || [];
+    if (discordInstances.some(i => i.enabled && i.botToken)) {
       openClawPlatformsToStart.push('discord');
     }
     const qqInstances = config.qq?.instances || [];
@@ -982,9 +986,10 @@ export class IMGatewayManager extends EventEmitter {
       return telegramInstances.some(i => i.enabled && i.botToken);
     }
     if (platform === 'discord') {
-      // Discord runs via OpenClaw; consider it connected when enabled and configured
+      // Discord runs via OpenClaw; consider it connected when any instance is enabled and configured
       const config = this.getConfig();
-      return Boolean(config.discord?.enabled && config.discord.botToken);
+      const discordInstances = config.discord?.instances || [];
+      return discordInstances.some(i => i.enabled && i.botToken);
     }
     if (platform === 'nim') {
       // NIM runs via OpenClaw; consider it connected when enabled and configured
@@ -1171,7 +1176,8 @@ export class IMGatewayManager extends EventEmitter {
     const platform: Platform = 'discord';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
-    const dcConfig = mergedConfig.discord;
+    const discordInstances = mergedConfig.discord?.instances || [];
+    const dcConfig = discordInstances.find(i => i.enabled) || discordInstances[0];
     const botToken = dcConfig?.botToken || '';
 
     // Check 1: Bot token present
@@ -1844,7 +1850,7 @@ export class IMGatewayManager extends EventEmitter {
       feishu: configOverride.feishu || current.feishu,
       qq: configOverride.qq || current.qq,
       telegram: configOverride.telegram || current.telegram,
-      discord: { ...current.discord, ...(configOverride.discord || {}) },
+      discord: configOverride.discord || current.discord,
       nim: { ...current.nim, ...(configOverride.nim || {}) },
       'netease-bee': { ...current['netease-bee'], ...(configOverride['netease-bee'] || {}) },
       wecom: configOverride.wecom || current.wecom,
@@ -1927,7 +1933,9 @@ export class IMGatewayManager extends EventEmitter {
       if (!config.popo?.aesKey) fields.push('aesKey');
       return fields;
     }
-    return config.discord.botToken ? [] : ['botToken'];
+    const discordInstances = config.discord?.instances || [];
+    const dcInst = discordInstances.find(i => i.enabled);
+    return dcInst?.botToken ? [] : ['botToken'];
   }
 
   private async runAuthProbe(platform: Platform, config: IMGatewayConfig): Promise<string> {
@@ -2488,7 +2496,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'wecom') return status.wecom.instances?.[0]?.startedAt ?? null;
     if (platform === 'weixin') return status.weixin.startedAt;
     if (platform === 'popo') return status.popo.startedAt;
-    return status.discord.startedAt;
+    return status.discord.instances?.[0]?.startedAt ?? null;
   }
 
   private getLastInboundAt(platform: Platform, status: IMGatewayStatus): number | null {
@@ -2501,7 +2509,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'wecom') return status.wecom.instances?.[0]?.lastInboundAt ?? null;
     if (platform === 'weixin') return status.weixin.lastInboundAt;
     if (platform === 'popo') return status.popo.lastInboundAt;
-    return status.discord.lastInboundAt;
+    return status.discord.instances?.[0]?.lastInboundAt ?? null;
   }
 
   private getLastOutboundAt(platform: Platform, status: IMGatewayStatus): number | null {
@@ -2514,7 +2522,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'wecom') return status.wecom.instances?.[0]?.lastOutboundAt ?? null;
     if (platform === 'weixin') return status.weixin.lastOutboundAt;
     if (platform === 'popo') return status.popo.lastOutboundAt;
-    return status.discord.lastOutboundAt;
+    return status.discord.instances?.[0]?.lastOutboundAt ?? null;
   }
 
   private getLastError(platform: Platform, status: IMGatewayStatus): string | null {
@@ -2527,7 +2535,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'wecom') return status.wecom.instances?.[0]?.lastError ?? null;
     if (platform === 'weixin') return status.weixin.lastError;
     if (platform === 'popo') return status.popo.lastError;
-    return status.discord.lastError;
+    return status.discord.instances?.[0]?.lastError ?? null;
   }
 
   // ==================== Feishu Bot Install Helpers ====================

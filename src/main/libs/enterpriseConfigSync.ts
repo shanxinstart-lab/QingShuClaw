@@ -428,7 +428,13 @@ function syncIMChannels(configPath: string, imStore: IMStore): void {
         }
         imStore.setTelegramOpenClawConfig(cfg);
       },
-      'discord': (cfg) => imStore.setDiscordOpenClawConfig(cfg),
+      'discord': (cfg) => {
+        if (cfg && Array.isArray(cfg.instances)) {
+          imStore.setDiscordMultiInstanceConfig(cfg);
+          return;
+        }
+        imStore.setDiscordOpenClawConfig(cfg);
+      },
       'feishu': (cfg) => {
         const instances = imStore.getFeishuInstances();
         if (syncAccountConfigs(

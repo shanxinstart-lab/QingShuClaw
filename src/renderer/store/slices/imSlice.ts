@@ -9,6 +9,8 @@ import type {
   DingTalkInstanceConfig,
   DingTalkMultiInstanceConfig,
   DingTalkOpenClawConfig,
+  DiscordInstanceConfig,
+  DiscordMultiInstanceConfig,
   DiscordOpenClawConfig,
   EmailInstanceConfig,
   EmailMultiInstanceConfig,
@@ -163,8 +165,30 @@ const imSlice = createSlice({
         i => i.instanceId !== action.payload
       );
     },
+    /** @deprecated Use setDiscordInstanceConfig instead */
     setDiscordConfig: (state, action: PayloadAction<Partial<DiscordOpenClawConfig>>) => {
-      state.config.discord = { ...state.config.discord, ...action.payload };
+      const first = state.config.discord.instances[0];
+      if (first) {
+        Object.assign(first, action.payload);
+      }
+    },
+    setDiscordInstances: (state, action: PayloadAction<DiscordInstanceConfig[]>) => {
+      state.config.discord = { instances: action.payload };
+    },
+    setDiscordMultiInstanceConfig: (state, action: PayloadAction<DiscordMultiInstanceConfig>) => {
+      state.config.discord = action.payload;
+    },
+    setDiscordInstanceConfig: (state, action: PayloadAction<{ instanceId: string; config: Partial<DiscordOpenClawConfig> }>) => {
+      const inst = state.config.discord.instances.find(i => i.instanceId === action.payload.instanceId);
+      if (inst) Object.assign(inst, action.payload.config);
+    },
+    addDiscordInstance: (state, action: PayloadAction<DiscordInstanceConfig>) => {
+      state.config.discord.instances.push(action.payload);
+    },
+    removeDiscordInstance: (state, action: PayloadAction<string>) => {
+      state.config.discord.instances = state.config.discord.instances.filter(
+        i => i.instanceId !== action.payload
+      );
     },
     /** @deprecated Use setNimInstanceConfig instead */
     setNimConfig: (state, action: PayloadAction<Partial<NimConfig>>) => {
@@ -289,6 +313,11 @@ export const {
   addQQInstance,
   removeQQInstance,
   setDiscordConfig,
+  setDiscordInstances,
+  setDiscordMultiInstanceConfig,
+  setDiscordInstanceConfig,
+  addDiscordInstance,
+  removeDiscordInstance,
   setNimConfig,
   setNimInstances,
   setNimMultiInstanceConfig,

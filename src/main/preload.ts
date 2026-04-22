@@ -446,6 +446,12 @@ contextBridge.exposeInMainWorld('electron', {
     setTelegramInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:telegram:instance:config:set', instanceId, config, options),
 
+    // Discord Multi-Instance
+    addDiscordInstance: (name: string) => ipcRenderer.invoke('im:discord:instance:add', name),
+    deleteDiscordInstance: (instanceId: string) => ipcRenderer.invoke('im:discord:instance:delete', instanceId),
+    setDiscordInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:discord:instance:config:set', instanceId, config, options),
+
     // Event listeners
     onStatusChange: (callback: (status: any) => void) => {
       const handler = (_event: any, status: any) => callback(status);

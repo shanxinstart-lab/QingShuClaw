@@ -16,13 +16,14 @@ import { useDispatch, useSelector } from 'react-redux';
 import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
 import { RootState } from '../../store';
-import { clearError,setDingTalkConfig, setDingTalkInstanceConfig, setDiscordConfig, setEmailInstanceConfig, setFeishuConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimConfig, setNimInstanceConfig, setPopoConfig, setQQConfig, setQQInstanceConfig, setTelegramInstanceConfig, setTelegramOpenClawConfig, setWecomConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
-import type { DiscordOpenClawConfig, EmailInstanceConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, PopoOpenClawConfig } from '../../types/im';
-import { MAX_DINGTALK_INSTANCES, MAX_EMAIL_INSTANCES, MAX_FEISHU_INSTANCES, MAX_NIM_INSTANCES, MAX_QQ_INSTANCES, MAX_TELEGRAM_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
+import { clearError,setDingTalkConfig, setDingTalkInstanceConfig, setDiscordConfig, setDiscordInstanceConfig, setEmailInstanceConfig, setFeishuConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimConfig, setNimInstanceConfig, setPopoConfig, setQQConfig, setQQInstanceConfig, setTelegramInstanceConfig, setTelegramOpenClawConfig, setWecomConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
+import type { EmailInstanceConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, PopoOpenClawConfig } from '../../types/im';
+import { MAX_DINGTALK_INSTANCES, MAX_DISCORD_INSTANCES, MAX_EMAIL_INSTANCES, MAX_FEISHU_INSTANCES, MAX_NIM_INSTANCES, MAX_QQ_INSTANCES, MAX_TELEGRAM_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import Modal from '../common/Modal';
 import TrashIcon from '../icons/TrashIcon';
 import DingTalkInstanceSettings from './DingTalkInstanceSettings';
+import DiscordInstanceSettings from './DiscordInstanceSettings';
 import FeishuInstanceSettings from './FeishuInstanceSettings';
 import NimInstanceSettings from './NimInstanceSettings';
 import { nimFallbackInstanceSchema, nimFallbackUiHints } from './nimSchemaFallback';
@@ -111,6 +112,8 @@ const IMSettings: React.FC = () => {
   const [nimExpanded, setNimExpanded] = useState(false);
   const [activeTelegramInstanceId, setActiveTelegramInstanceId] = useState<string | null>(null);
   const [telegramExpanded, setTelegramExpanded] = useState(false);
+  const [activeDiscordInstanceId, setActiveDiscordInstanceId] = useState<string | null>(null);
+  const [discordExpanded, setDiscordExpanded] = useState(false);
   const [testingPlatform, setTestingPlatform] = useState<Platform | null>(null);
   const [connectivityResults, setConnectivityResults] = useState<Partial<Record<Platform, IMConnectivityTestResult>>>({});
   const [connectivityModalPlatform, setConnectivityModalPlatform] = useState<Platform | null>(null);
@@ -395,22 +398,7 @@ const IMSettings: React.FC = () => {
 
   const qqMultiConfig = config.qq;
 
-  // Handle Discord OpenClaw config change
-  const dcOpenClawConfig = config.discord;
-  const handleDiscordOpenClawChange = (update: Partial<DiscordOpenClawConfig>) => {
-    dispatch(setDiscordConfig(update));
-  };
-  const handleSaveDiscordOpenClawConfig = async (override?: Partial<DiscordOpenClawConfig>) => {
-    if (!configLoaded) return;
-    const configToSave = override
-      ? { ...dcOpenClawConfig, ...override }
-      : dcOpenClawConfig;
-    await imService.persistConfig({ discord: configToSave });
-  };
-
-  // State for Discord allow-from inputs
-  const [discordAllowedUserIdInput, setDiscordAllowedUserIdInput] = useState('');
-  const [discordServerAllowIdInput, setDiscordServerAllowIdInput] = useState('');
+  const discordMultiConfig = config.discord;
 
   // State for POPO allow-from inputs
   const [popoAllowedUserIdInput, setPopoAllowedUserIdInput] = useState('');
@@ -560,7 +548,7 @@ const IMSettings: React.FC = () => {
 
     // For Discord, save discord config directly
     if (activePlatform === 'discord') {
-      await imService.persistConfig({ discord: dcOpenClawConfig });
+      await imService.persistConfig({ discord: discordMultiConfig });
       return;
     }
 
@@ -686,13 +674,7 @@ const IMSettings: React.FC = () => {
       }
 
       if (platform === 'discord') {
-        const newEnabled = !dcOpenClawConfig.enabled;
-        const success = await imService.updateConfig({ discord: { ...dcOpenClawConfig, enabled: newEnabled } });
-        if (success) {
-          dispatch(setDiscordConfig({ enabled: newEnabled }));
-          if (newEnabled) dispatch(clearError());
-          await imService.loadStatus();
-        }
+        // Discord multi-instance: toggle is handled per-instance in DiscordInstanceSettings
         return;
       }
 
@@ -758,7 +740,7 @@ const IMSettings: React.FC = () => {
   const dingtalkConnected = status.dingtalk?.instances?.some(i => i.connected) ?? false;
   const feishuConnected = status.feishu?.instances?.some(i => i.connected) ?? false;
   const telegramConnected = status.telegram?.instances?.some(i => i.connected) ?? false;
-  const discordConnected = status.discord.connected;
+  const discordConnected = status.discord?.instances?.some(i => i.connected) ?? false;
   const nimConnected = status.nim?.instances?.some(i => i.connected) ?? false;
   const neteaseBeeChanConnected = status['netease-bee']?.connected ?? false;
   const qqConnected = status.qq?.instances?.some(i => i.connected) ?? false;
@@ -789,7 +771,7 @@ const IMSettings: React.FC = () => {
       return config.telegram.instances.some(i => !!i.botToken);
     }
     if (platform === 'discord') {
-      return !!config.discord.botToken;
+      return config.discord.instances.some(i => !!i.botToken);
     }
     if (platform === 'nim') {
       return config.nim.instances.some(i => !!(i.nimToken || (i.appKey && i.account && i.token)));
@@ -835,6 +817,9 @@ const IMSettings: React.FC = () => {
     if (platform === 'telegram') {
       return config.telegram.instances?.some(i => i.enabled);
     }
+    if (platform === 'discord') {
+      return config.discord.instances?.some(i => i.enabled);
+    }
     return (config[platform] as { enabled: boolean }).enabled;
   };
 
@@ -855,7 +840,7 @@ const IMSettings: React.FC = () => {
 
   // Get platform transient starting status
   const getPlatformStarting = (platform: Platform): boolean => {
-    if (platform === 'discord') return status.discord.starting;
+    if (platform === 'discord') return status.discord.instances?.[0]?.starting ?? false;
     return false;
   };
 
@@ -1009,6 +994,25 @@ const IMSettings: React.FC = () => {
           if (authCheck && authCheck.level === 'pass') {
             dispatch(setNimInstanceConfig({ instanceId: activeNimInstanceId, config: { enabled: true } }));
             await imService.updateNimInstanceConfig(activeNimInstanceId, { enabled: true });
+          }
+        }
+      }
+      return;
+    }
+
+    // For Discord, persist discord config and test (OpenClaw mode)
+    if (platform === 'discord') {
+      await imService.persistConfig({ discord: discordMultiConfig });
+      const result = await runConnectivityTest(platform, {
+        discord: discordMultiConfig,
+      } as Partial<IMGatewayConfig>);
+      if (activeDiscordInstanceId && result) {
+        const inst = discordMultiConfig.instances.find(i => i.instanceId === activeDiscordInstanceId);
+        if (inst && !inst.enabled) {
+          const authCheck = result.checks.find((c) => c.code === 'auth_check');
+          if (authCheck && authCheck.level === 'pass') {
+            dispatch(setDiscordInstanceConfig({ instanceId: activeDiscordInstanceId, config: { enabled: true } }));
+            await imService.updateDiscordInstanceConfig(activeDiscordInstanceId, { enabled: true });
           }
         }
       }
@@ -1544,6 +1548,58 @@ const IMSettings: React.FC = () => {
             );
           }
 
+          if (platform === 'discord') {
+            return (
+              <div key="discord">
+                {/* Discord Platform Header - clickable to expand/collapse */}
+                <div
+                  onClick={() => { setActivePlatform('discord'); setActiveDiscordInstanceId(null); setDiscordExpanded(!discordExpanded); }}
+                  className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    activePlatform === 'discord'
+                      ? 'bg-primary-muted border border-primary shadow-subtle'
+                      : 'bg-surface hover:bg-surface-raised border border-transparent'
+                  }`}
+                >
+                  <div className="flex flex-1 items-center">
+                    <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                      <img src={PlatformRegistry.logo('discord')} alt="Discord" className="w-6 h-6 object-contain rounded-md" />
+                    </div>
+                    <span className={`text-sm font-medium truncate ${activePlatform === 'discord' ? 'text-primary' : 'text-foreground'}`}>
+                      {i18nService.t('discord')}
+                    </span>
+                  </div>
+                  <span className="text-xs opacity-50">{discordExpanded ? '▼' : '▶'}</span>
+                </div>
+                {/* Discord Instance Sub-items */}
+                {discordExpanded && (
+                  <div className="ml-5 mt-1 space-y-1">
+                    {config.discord.instances.map((inst) => {
+                      const instStatus = status.discord?.instances?.find(s => s.instanceId === inst.instanceId);
+                      const isSelected = activePlatform === 'discord' && activeDiscordInstanceId === inst.instanceId;
+                      const dotColor = !inst.enabled ? 'bg-gray-400' : (instStatus?.connected ? 'bg-green-500' : 'bg-yellow-500');
+                      return (
+                        <div
+                          key={inst.instanceId}
+                          onClick={() => { setActivePlatform('discord'); setActiveDiscordInstanceId(inst.instanceId); }}
+                          className={`flex items-center p-1.5 pl-2 rounded-lg cursor-pointer transition-colors text-sm ${
+                            isSelected
+                              ? 'bg-primary/10 dark:bg-primary/20'
+                              : 'hover:bg-surface-raised'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
+                          <span className={`truncate flex-1 ${isSelected ? 'text-primary font-medium' : 'text-foreground'}`}>
+                            {inst.instanceName}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           return (
             <div
               key={platform}
@@ -1597,7 +1653,7 @@ const IMSettings: React.FC = () => {
       {/* Platform Settings - Right Side */}
       <div className="flex-1 min-w-0 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
         {/* Header with status (hidden for multi-instance platforms that render per-instance headers) */}
-        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && activePlatform !== 'email' && activePlatform !== 'wecom' && activePlatform !== 'nim' && activePlatform !== 'telegram' && (
+        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && activePlatform !== 'email' && activePlatform !== 'wecom' && activePlatform !== 'nim' && activePlatform !== 'telegram' && activePlatform !== 'discord' && (
         <div className="flex items-center gap-3 pb-3 border-b border-border-subtle">
           <div className="flex items-center gap-2">
              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-surface border border-border-subtle p-1">
@@ -2252,336 +2308,75 @@ const IMSettings: React.FC = () => {
         })()}
 
         {/* Discord Settings */}
-        {activePlatform === 'discord' && (
-          <div className="space-y-3">
-            <PlatformGuide
-              steps={[
-                i18nService.t('imDiscordGuideStep1'),
-                i18nService.t('imDiscordGuideStep2'),
-                i18nService.t('imDiscordGuideStep3'),
-                i18nService.t('imDiscordGuideStep4'),
-                i18nService.t('imDiscordGuideStep5'),
-                i18nService.t('imDiscordGuideStep6'),
-              ]}
-                guideUrl={PlatformRegistry.guideUrl('discord')}
-            />
-            {/* Bot Token */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-secondary">
-                Bot Token
-              </label>
-              <div className="relative">
-                <input
-                  type={showSecrets['discord.botToken'] ? 'text' : 'password'}
-                  value={dcOpenClawConfig.botToken}
-                  onChange={(e) => handleDiscordOpenClawChange({ botToken: e.target.value })}
-                  onBlur={() => handleSaveDiscordOpenClawConfig()}
-                  className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-sm transition-colors"
-                  placeholder="MTIzNDU2Nzg5MDEyMzQ1Njc4OQ..."
-                />
-                <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                  {dcOpenClawConfig.botToken && (
-                    <button
-                      type="button"
-                      onClick={() => { handleDiscordOpenClawChange({ botToken: '' }); void imService.persistConfig({ discord: { ...dcOpenClawConfig, botToken: '' } }); }}
-                      className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                      title={i18nService.t('clear') || 'Clear'}
-                    >
-                      <XCircleIconSolid className="h-4 w-4" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setShowSecrets(prev => ({ ...prev, 'discord.botToken': !prev['discord.botToken'] }))}
-                    className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                    title={showSecrets['discord.botToken'] ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                  >
-                    {showSecrets['discord.botToken'] ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-              <p className="text-xs text-secondary">
-                {i18nService.t('imDiscordTokenHint')}
-              </p>
-            </div>
-
-            {/* Advanced Settings (collapsible) */}
-            <details className="group">
-              <summary className="cursor-pointer text-xs font-medium text-secondary hover:text-primary transition-colors">
-                {i18nService.t('imAdvancedSettings')}
-              </summary>
-              <div className="mt-2 space-y-3 pl-2 border-l-2 border-border-subtle">
-                {/* DM Policy */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    DM Policy
-                  </label>
-                  <select
-                    value={dcOpenClawConfig.dmPolicy}
-                    onChange={(e) => {
-                      const update = { dmPolicy: e.target.value as DiscordOpenClawConfig['dmPolicy'] };
-                      handleDiscordOpenClawChange(update);
-                      void handleSaveDiscordOpenClawConfig(update);
-                    }}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  >
-                    <option value="pairing">{i18nService.t('imDmPolicyPairing')}</option>
-                    <option value="allowlist">{i18nService.t('imDmPolicyAllowlist')}</option>
-                    <option value="open">{i18nService.t('imDmPolicyOpen')}</option>
-                    <option value="disabled">{i18nService.t('imDmPolicyDisabled')}</option>
-                  </select>
-                </div>
-
-                {/* Pairing Requests (shown when dmPolicy is 'pairing') */}
-                {dcOpenClawConfig.dmPolicy === 'pairing' && renderPairingSection('discord')}
-
-                {/* Allow From (User IDs) */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Allow From (User IDs)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={discordAllowedUserIdInput}
-                      onChange={(e) => setDiscordAllowedUserIdInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          const id = discordAllowedUserIdInput.trim();
-                          if (id && !dcOpenClawConfig.allowFrom.includes(id)) {
-                            const newIds = [...dcOpenClawConfig.allowFrom, id];
-                            handleDiscordOpenClawChange({ allowFrom: newIds });
-                            setDiscordAllowedUserIdInput('');
-                            void imService.persistConfig({ discord: { ...dcOpenClawConfig, allowFrom: newIds } });
-                          }
-                        }
-                      }}
-                      className="block flex-1 rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                      placeholder={i18nService.t('imDiscordUserIdPlaceholder')}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const id = discordAllowedUserIdInput.trim();
-                        if (id && !dcOpenClawConfig.allowFrom.includes(id)) {
-                          const newIds = [...dcOpenClawConfig.allowFrom, id];
-                          handleDiscordOpenClawChange({ allowFrom: newIds });
-                          setDiscordAllowedUserIdInput('');
-                          void imService.persistConfig({ discord: { ...dcOpenClawConfig, allowFrom: newIds } });
-                        }
-                      }}
-                      className="px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                    >
-                      {i18nService.t('add') || '添加'}
-                    </button>
-                  </div>
-                  {dcOpenClawConfig.allowFrom.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
-                      {dcOpenClawConfig.allowFrom.map((id) => (
-                        <span
-                          key={id}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-surface border-border-subtle border text-foreground"
-                        >
-                          {id}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newIds = dcOpenClawConfig.allowFrom.filter((uid) => uid !== id);
-                              handleDiscordOpenClawChange({ allowFrom: newIds });
-                              void imService.persistConfig({ discord: { ...dcOpenClawConfig, allowFrom: newIds } });
-                            }}
-                            className="text-secondary hover:text-red-500 transition-colors"
-                          >
-                            <XMarkIcon className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Streaming */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Streaming
-                  </label>
-                  <select
-                    value={dcOpenClawConfig.streaming}
-                    onChange={(e) => {
-                      const update = { streaming: e.target.value as DiscordOpenClawConfig['streaming'] };
-                      handleDiscordOpenClawChange(update);
-                      void handleSaveDiscordOpenClawConfig(update);
-                    }}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  >
-                    <option value="off">Off</option>
-                    <option value="partial">Partial</option>
-                    <option value="block">Block</option>
-                    <option value="progress">Progress</option>
-                  </select>
-                </div>
-
-                {/* Proxy */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Proxy
-                  </label>
-                  <input
-                    type="text"
-                    value={dcOpenClawConfig.proxy}
-                    onChange={(e) => handleDiscordOpenClawChange({ proxy: e.target.value })}
-                    onBlur={() => handleSaveDiscordOpenClawConfig()}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                    placeholder="http://proxy:port"
-                  />
-                </div>
-
-                {/* Group Policy */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Group Policy
-                  </label>
-                  <select
-                    value={dcOpenClawConfig.groupPolicy}
-                    onChange={(e) => {
-                      const update = { groupPolicy: e.target.value as DiscordOpenClawConfig['groupPolicy'] };
-                      handleDiscordOpenClawChange(update);
-                      void handleSaveDiscordOpenClawConfig(update);
-                    }}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  >
-                    <option value="allowlist">{i18nService.t('imGroupPolicyAllowlist')}</option>
-                    <option value="open">{i18nService.t('imGroupPolicyOpen')}</option>
-                    <option value="disabled">{i18nService.t('imGroupPolicyDisabled')}</option>
-                  </select>
-                </div>
-
-                {/* Group Allow From (Server IDs) */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Group Allow From (Server IDs)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={discordServerAllowIdInput}
-                      onChange={(e) => setDiscordServerAllowIdInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          const id = discordServerAllowIdInput.trim();
-                          if (id && !dcOpenClawConfig.groupAllowFrom.includes(id)) {
-                            const newIds = [...dcOpenClawConfig.groupAllowFrom, id];
-                            handleDiscordOpenClawChange({ groupAllowFrom: newIds });
-                            setDiscordServerAllowIdInput('');
-                            void imService.persistConfig({ discord: { ...dcOpenClawConfig, groupAllowFrom: newIds } });
-                          }
-                        }
-                      }}
-                      className="block flex-1 rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                      placeholder={i18nService.t('imDiscordServerIdPlaceholder')}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const id = discordServerAllowIdInput.trim();
-                        if (id && !dcOpenClawConfig.groupAllowFrom.includes(id)) {
-                          const newIds = [...dcOpenClawConfig.groupAllowFrom, id];
-                          handleDiscordOpenClawChange({ groupAllowFrom: newIds });
-                          setDiscordServerAllowIdInput('');
-                          void imService.persistConfig({ discord: { ...dcOpenClawConfig, groupAllowFrom: newIds } });
-                        }
-                      }}
-                      className="px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                    >
-                      {i18nService.t('add') || '添加'}
-                    </button>
-                  </div>
-                  {dcOpenClawConfig.groupAllowFrom.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
-                      {dcOpenClawConfig.groupAllowFrom.map((id) => (
-                        <span
-                          key={id}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-surface border-border-subtle border text-foreground"
-                        >
-                          {id}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newIds = dcOpenClawConfig.groupAllowFrom.filter((gid) => gid !== id);
-                              handleDiscordOpenClawChange({ groupAllowFrom: newIds });
-                              void imService.persistConfig({ discord: { ...dcOpenClawConfig, groupAllowFrom: newIds } });
-                            }}
-                            className="text-secondary hover:text-red-500 transition-colors"
-                          >
-                            <XMarkIcon className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* History Limit */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    History Limit
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={200}
-                    value={dcOpenClawConfig.historyLimit}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value) || 50;
-                      handleDiscordOpenClawChange({ historyLimit: val });
-                    }}
-                    onBlur={() => handleSaveDiscordOpenClawConfig()}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  />
-                </div>
-
-                {/* Media Max MB */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">
-                    Media Max MB
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={dcOpenClawConfig.mediaMaxMb}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value) || 25;
-                      handleDiscordOpenClawChange({ mediaMaxMb: val });
-                    }}
-                    onBlur={() => handleSaveDiscordOpenClawConfig()}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                  />
-                </div>
-              </div>
-            </details>
-
-            <div className="pt-1">
-              {renderConnectivityTestButton('discord')}
-            </div>
-
-            {/* Bot username display */}
-            {status.discord.botUsername && (
-              <div className="text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
-                Bot: {status.discord.botUsername}
-              </div>
-            )}
-
-            {/* Error display */}
-            {status.discord.lastError && (
-              <div className="text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
-                {status.discord.lastError}
-              </div>
+        {activePlatform === 'discord' && !activeDiscordInstanceId && (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <img src={PlatformRegistry.logo('discord')} alt="Discord" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
+            <p className="text-sm text-secondary mb-4">
+              {config.discord.instances.length === 0
+                ? (language === 'zh' ? '尚未添加 Discord 实例，点击下方按钮添加' : 'No Discord instances yet. Click below to add one.')
+                : (language === 'zh' ? '请在左侧选择一个 Discord 实例' : 'Select a Discord instance from the sidebar.')}
+            </p>
+            {config.discord.instances.length < MAX_DISCORD_INSTANCES && (
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const inst = await imService.addDiscordInstance(`Discord Bot ${config.discord.instances.length + 1}`);
+                  if (inst) { setActiveDiscordInstanceId(inst.instanceId); setDiscordExpanded(true); }
+                }}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+              >
+                + {language === 'zh' ? '添加 Discord 实例' : 'Add Discord Instance'}
+              </button>
             )}
           </div>
         )}
+        {activePlatform === 'discord' && activeDiscordInstanceId && (() => {
+          const selectedInstance = config.discord.instances.find(i => i.instanceId === activeDiscordInstanceId);
+          if (!selectedInstance) return null;
+          const selectedStatus = status.discord?.instances?.find(s => s.instanceId === activeDiscordInstanceId);
+          return (
+            <DiscordInstanceSettings
+              instance={selectedInstance}
+              instanceStatus={selectedStatus}
+              onConfigChange={(update) => {
+                dispatch(setDiscordInstanceConfig({ instanceId: activeDiscordInstanceId, config: update }));
+              }}
+              onSave={async (override) => {
+                const configToSave = override ? { ...selectedInstance, ...override } : selectedInstance;
+                if (selectedInstance.enabled) {
+                  await imService.updateDiscordInstanceConfig(activeDiscordInstanceId, configToSave);
+                } else {
+                  await imService.persistDiscordInstanceConfig(activeDiscordInstanceId, configToSave);
+                }
+              }}
+              onRename={async (newName) => {
+                dispatch(setDiscordInstanceConfig({ instanceId: activeDiscordInstanceId, config: { instanceName: newName } as any }));
+                await imService.persistDiscordInstanceConfig(activeDiscordInstanceId, { instanceName: newName } as any);
+              }}
+              onDelete={async () => {
+                await imService.deleteDiscordInstance(activeDiscordInstanceId);
+                const remaining = config.discord.instances.filter(i => i.instanceId !== activeDiscordInstanceId);
+                setActiveDiscordInstanceId(remaining.length > 0 ? remaining[0].instanceId : null);
+              }}
+              onToggleEnabled={async () => {
+                const newEnabled = !selectedInstance.enabled;
+                if (newEnabled && !selectedInstance.botToken) return;
+                const success = await imService.updateDiscordInstanceConfig(activeDiscordInstanceId, { enabled: newEnabled });
+                if (success) {
+                  dispatch(setDiscordInstanceConfig({ instanceId: activeDiscordInstanceId, config: { enabled: newEnabled } }));
+                  if (newEnabled) dispatch(clearError());
+                }
+              }}
+              onTestConnectivity={() => {
+                void handleConnectivityTest('discord');
+              }}
+              testingPlatform={testingPlatform}
+              connectivityResults={connectivityResults}
+              language={language}
+            />
+          );
+        })()}
 
         {/* NIM (NetEase IM) Settings */}
         {activePlatform === 'nim' && !activeNimInstanceId && (

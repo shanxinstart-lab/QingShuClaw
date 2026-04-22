@@ -217,6 +217,26 @@ export interface DiscordGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+export const MAX_DISCORD_INSTANCES = 5;
+
+export interface DiscordInstanceConfig extends DiscordOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface DiscordInstanceStatus extends DiscordGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface DiscordMultiInstanceConfig {
+  instances: DiscordInstanceConfig[];
+}
+
+export interface DiscordMultiInstanceStatus {
+  instances: DiscordInstanceStatus[];
+}
+
 // ==================== NIM (NetEase IM) Types ====================
 
 export type NimTeamPolicy = 'open' | 'allowlist' | 'disabled';
@@ -542,7 +562,7 @@ export interface IMGatewayConfig {
   feishu: FeishuMultiInstanceConfig;
   telegram: TelegramMultiInstanceConfig;
   qq: QQMultiInstanceConfig;
-  discord: DiscordOpenClawConfig;
+  discord: DiscordMultiInstanceConfig;
   nim: NimMultiInstanceConfig;
   'netease-bee': NeteaseBeeChanConfig;
   wecom: WecomMultiInstanceConfig;
@@ -564,7 +584,7 @@ export interface IMGatewayStatus {
   feishu: FeishuMultiInstanceStatus;
   qq: QQMultiInstanceStatus;
   telegram: TelegramMultiInstanceStatus;
-  discord: DiscordGatewayStatus;
+  discord: DiscordMultiInstanceStatus;
   nim: NimMultiInstanceStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
   wecom: WecomMultiInstanceStatus;
@@ -738,6 +758,10 @@ export const DEFAULT_DISCORD_OPENCLAW_CONFIG: DiscordOpenClawConfig = {
   debug: false,
 };
 
+export const DEFAULT_DISCORD_MULTI_INSTANCE_CONFIG: DiscordMultiInstanceConfig = {
+  instances: [],
+};
+
 export const DEFAULT_NIM_OPENCLAW_CONFIG: NimOpenClawConfig = {
   enabled: false,
   nimToken: '',
@@ -860,7 +884,7 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
   feishu: DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
   telegram: DEFAULT_TELEGRAM_MULTI_INSTANCE_CONFIG,
   qq: DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
-  discord: DEFAULT_DISCORD_OPENCLAW_CONFIG,
+  discord: DEFAULT_DISCORD_MULTI_INSTANCE_CONFIG,
   nim: DEFAULT_NIM_MULTI_INSTANCE_CONFIG,
   'netease-bee': DEFAULT_NETEASE_BEE_CONFIG,
   wecom: DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
@@ -957,7 +981,7 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   feishu: { instances: [] },
   telegram: { instances: [] },
   qq: { instances: [] },
-  discord: DEFAULT_DISCORD_STATUS,
+  discord: { instances: [] },
   nim: DEFAULT_NIM_MULTI_INSTANCE_STATUS,
   'netease-bee': DEFAULT_NETEASE_BEE_STATUS,
   wecom: { instances: [] },

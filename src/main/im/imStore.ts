@@ -11,6 +11,7 @@ import { PlatformRegistry } from '../../shared/platform';
 import {
   DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
   DEFAULT_DINGTALK_OPENCLAW_CONFIG,
+  DEFAULT_DISCORD_MULTI_INSTANCE_CONFIG,
   DEFAULT_DISCORD_OPENCLAW_CONFIG,
   DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
   DEFAULT_FEISHU_OPENCLAW_CONFIG,
@@ -29,6 +30,8 @@ import {
   DingTalkInstanceConfig,
   DingTalkMultiInstanceConfig,
   DingTalkOpenClawConfig,
+  DiscordInstanceConfig,
+  DiscordMultiInstanceConfig,
   DiscordOpenClawConfig,
   FeishuInstanceConfig,
   FeishuMultiInstanceConfig,
@@ -330,6 +333,59 @@ export class IMStore {
           this.db.prepare('DELETE FROM im_config WHERE key = ?').run('discord');
           console.log('[IMStore] Migrated old Discord config to OpenClaw format');
         }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Migrate single discordOpenClaw config to multi-instance format
+    const oldDiscordSingleRow = this.db
+      .prepare('SELECT value FROM im_config WHERE key = ?')
+      .get('discordOpenClaw') as { value: string } | undefined;
+    const existingDiscordInstances = this.db
+      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
+      .all('discord:%') as Array<{ key: string }>;
+    if (oldDiscordSingleRow && !existingDiscordInstances.length) {
+      try {
+        const oldConfig = JSON.parse(oldDiscordSingleRow.value) as DiscordOpenClawConfig;
+        const instanceId = randomUUID();
+        const instanceConfig: DiscordInstanceConfig = {
+          ...DEFAULT_DISCORD_OPENCLAW_CONFIG,
+          ...oldConfig,
+          instanceId,
+          instanceName: 'Discord Bot 1',
+        };
+        const now = Date.now();
+        this.db
+          .prepare(
+            'INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+          )
+          .run(`discord:${instanceId}`, JSON.stringify(instanceConfig), now);
+        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('discordOpenClaw');
+        // Migrate session mappings
+        this.db
+          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
+          .run(`discord:${instanceId}`, 'discord');
+        // Migrate agent bindings
+        const settingsRow4 = this.db
+          .prepare('SELECT value FROM im_config WHERE key = ?')
+          .get('settings') as { value: string } | undefined;
+        if (settingsRow4) {
+          try {
+            const settings = JSON.parse(settingsRow4.value) as IMSettings;
+            if (settings.platformAgentBindings?.['discord']) {
+              settings.platformAgentBindings[`discord:${instanceId}`] =
+                settings.platformAgentBindings['discord'];
+              delete settings.platformAgentBindings['discord'];
+              this.db
+                .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
+                .run(JSON.stringify(settings), now, 'settings');
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        console.log('[IMStore] Migrated single Discord config to multi-instance format');
       } catch {
         // Ignore parse errors
       }
@@ -710,9 +766,7 @@ export class IMStore {
   getConfig(): IMGatewayConfig {
     const dingtalkMulti = this.getDingTalkMultiInstanceConfig();
     const telegramMulti = this.getTelegramMultiInstanceConfig();
-    const discord =
-      this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw') ??
-      DEFAULT_DISCORD_OPENCLAW_CONFIG;
+    const discordMulti = this.getDiscordMultiInstanceConfig();
     const nimMulti = this.getNimMultiInstanceConfig();
     const neteaseBeeChan =
       this.getConfigValue<NeteaseBeeChanConfig>('netease-bee') ?? DEFAULT_NETEASE_BEE_CONFIG;
@@ -739,7 +793,7 @@ export class IMStore {
       dingtalk: dingtalkMulti,
       feishu: feishuMulti,
       telegram: telegramMulti,
-      discord: resolveEnabled(discord, DEFAULT_DISCORD_OPENCLAW_CONFIG),
+      discord: discordMulti,
       nim: nimMulti,
       'netease-bee': resolveEnabled(neteaseBeeChan, DEFAULT_NETEASE_BEE_CONFIG),
       qq: qqMulti,
@@ -762,7 +816,7 @@ export class IMStore {
       this.setTelegramMultiInstanceConfig(config.telegram);
     }
     if (config.discord) {
-      this.setDiscordOpenClawConfig(config.discord);
+      this.setDiscordMultiInstanceConfig(config.discord);
     }
     if (config.nim) {
       this.setNimMultiInstanceConfig(config.nim);
@@ -944,14 +998,72 @@ export class IMStore {
 
   // ==================== Discord OpenClaw Config ====================
 
+  /** @deprecated Use getDiscordMultiInstanceConfig() or getDiscordInstances() instead */
   getDiscordOpenClawConfig(): DiscordOpenClawConfig {
     const stored = this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw');
     return { ...DEFAULT_DISCORD_OPENCLAW_CONFIG, ...stored };
   }
 
+  /** @deprecated Use setDiscordInstanceConfig() instead */
   setDiscordOpenClawConfig(config: Partial<DiscordOpenClawConfig>): void {
     const current = this.getDiscordOpenClawConfig();
     this.setConfigValue('discordOpenClaw', { ...current, ...config });
+  }
+
+  // ==================== Discord Multi-Instance Config ====================
+
+  getDiscordInstances(): DiscordInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('discord:%') as Array<{ key: string; value: string }>;
+    if (!rows.length) return [];
+    const instances: DiscordInstanceConfig[] = [];
+    for (const row of rows) {
+      try {
+        const config = JSON.parse(row.value) as DiscordInstanceConfig;
+        instances.push({ ...DEFAULT_DISCORD_OPENCLAW_CONFIG, ...config });
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    return instances;
+  }
+
+  getDiscordInstanceConfig(instanceId: string): DiscordInstanceConfig | null {
+    const stored = this.getConfigValue<DiscordInstanceConfig>(`discord:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_DISCORD_OPENCLAW_CONFIG, ...stored };
+  }
+
+  setDiscordInstanceConfig(instanceId: string, config: Partial<DiscordInstanceConfig>): void {
+    const current = this.getDiscordInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`discord:${instanceId}`, { ...current, ...config });
+    } else {
+      this.setConfigValue(`discord:${instanceId}`, {
+        ...DEFAULT_DISCORD_OPENCLAW_CONFIG,
+        instanceId,
+        instanceName: config.instanceName || 'Discord Bot',
+        ...config,
+      });
+    }
+  }
+
+  deleteDiscordInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`discord:${instanceId}`);
+    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`discord:${instanceId}`);
+  }
+
+  getDiscordMultiInstanceConfig(): DiscordMultiInstanceConfig {
+    const instances = this.getDiscordInstances();
+    if (instances.length === 0) return DEFAULT_DISCORD_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setDiscordMultiInstanceConfig(config: DiscordMultiInstanceConfig): void {
+    for (const inst of config.instances) {
+      this.setDiscordInstanceConfig(inst.instanceId, inst);
+    }
   }
 
   // ==================== NIM Config ====================
@@ -1417,7 +1529,7 @@ export class IMStore {
       config.dingtalk?.instances?.some(i => !!(i.clientId && i.clientSecret)) ?? false;
     const hasFeishu = config.feishu?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
     const hasTelegram = config.telegram?.instances?.some(i => !!i.botToken) ?? false;
-    const hasDiscord = !!config.discord.botToken;
+    const hasDiscord = config.discord?.instances?.some(i => !!i.botToken) ?? false;
     const hasNim = config.nim?.instances?.some(i => !!(i.nimToken || (i.appKey && i.account && i.token))) ?? false;
     const hasNeteaseBeeChan = !!(config['netease-bee']?.clientId && config['netease-bee']?.secret);
     const hasQQ = config.qq?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;

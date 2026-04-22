@@ -506,6 +506,9 @@ interface IElectronAPI {
     addTelegramInstance: (name: string) => Promise<{ success: boolean; instance?: TelegramInstanceConfig; error?: string }>;
     deleteTelegramInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
     setTelegramInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    addDiscordInstance: (name: string) => Promise<{ success: boolean; instance?: DiscordInstanceConfig; error?: string }>;
+    deleteDiscordInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setDiscordInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
     onStatusChange: (callback: (status: IMGatewayStatus) => void) => () => void;
     onMessageReceived: (callback: (message: IMMessage) => void) => () => void;
   };
@@ -689,7 +692,7 @@ interface IMGatewayConfig {
   feishu: FeishuMultiInstanceConfig;
   telegram: TelegramMultiInstanceConfig;
   qq: QQMultiInstanceConfig;
-  discord: DiscordOpenClawConfig;
+  discord: DiscordMultiInstanceConfig;
   nim: NimMultiInstanceConfig;
   'netease-bee': NeteaseBeeChanConfig;
   wecom: WecomMultiInstanceConfig;
@@ -1010,7 +1013,7 @@ interface IMGatewayStatus {
   feishu: FeishuMultiInstanceStatus;
   qq: QQMultiInstanceStatus;
   telegram: TelegramMultiInstanceStatus;
-  discord: DiscordGatewayStatus;
+  discord: DiscordMultiInstanceStatus;
   nim: NimMultiInstanceStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
   wecom: WecomMultiInstanceStatus;
@@ -1095,6 +1098,24 @@ interface DiscordGatewayStatus {
   botUsername: string | null;
   lastInboundAt: number | null;
   lastOutboundAt: number | null;
+}
+
+interface DiscordInstanceConfig extends DiscordOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface DiscordInstanceStatus extends DiscordGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface DiscordMultiInstanceConfig {
+  instances: DiscordInstanceConfig[];
+}
+
+interface DiscordMultiInstanceStatus {
+  instances: DiscordInstanceStatus[];
 }
 
 interface NimGatewayStatus {
