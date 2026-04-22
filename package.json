@@ -24,7 +24,7 @@
       {
         "id": "wecom-openclaw-plugin",
         "npm": "@wecom/wecom-openclaw-plugin",
-        "version": "2026.4.3"
+        "version": "2026.4.22"
       },
       {
         "id": "openclaw-weixin",
