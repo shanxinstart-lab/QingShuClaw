@@ -394,10 +394,10 @@ function applyMacIconFix(appPath) {
 }
 
 /**
- * Remove broken symlinks from a directory recursively.
- * This fixes macOS code signing failures caused by dangling symlinks in node_modules/.bin
+ * Remove broken or bundle-external symlinks from a directory recursively.
+ * macOS bundle signing rejects symlinks that point outside the app bundle.
  */
-function removeBrokenSymlinks(dir) {
+function removeInvalidSymlinks(dir, bundleRoot) {
   if (!existsSync(dir)) return 0;
 
   let removedCount = 0;
@@ -408,16 +408,22 @@ function removeBrokenSymlinks(dir) {
 
     try {
       if (entry.isSymbolicLink()) {
-        // Check if symlink target exists
+        const linkTarget = readlinkSyncSafe(fullPath);
+        const resolvedTarget = linkTarget
+          ? path.resolve(path.dirname(fullPath), linkTarget)
+          : null;
         try {
           statSync(fullPath); // follows symlink
+          if (resolvedTarget && bundleRoot && !resolvedTarget.startsWith(bundleRoot + path.sep)) {
+            rmSync(fullPath, { force: true });
+            removedCount++;
+          }
         } catch {
-          // Symlink is broken - remove it
           rmSync(fullPath, { force: true });
           removedCount++;
         }
       } else if (entry.isDirectory()) {
-        removedCount += removeBrokenSymlinks(fullPath);
+        removedCount += removeInvalidSymlinks(fullPath, bundleRoot);
       }
     } catch (err) {
       // Skip entries we can't access
@@ -427,38 +433,50 @@ function removeBrokenSymlinks(dir) {
   return removedCount;
 }
 
+function readlinkSyncSafe(targetPath) {
+  try {
+    return lstatSync(targetPath).isSymbolicLink() ? require('fs').readlinkSync(targetPath) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Clean up broken symlinks in cfmind/extensions to prevent macOS signing failures.
+ * Clean up invalid symlinks in packaged OpenClaw extensions to prevent macOS signing failures.
  */
 function cleanupBrokenSymlinksInExtensions(appOutDir) {
-  const extensionsDir = path.join(appOutDir, 'Contents', 'Resources', 'cfmind', 'extensions');
-
-  if (!existsSync(extensionsDir)) {
-    return;
-  }
-
-  console.log('[electron-builder-hooks] Cleaning up broken symlinks in cfmind/extensions...');
-
+  const bundleRoot = path.join(appOutDir, 'Contents');
+  const extensionRoots = [
+    path.join(bundleRoot, 'Resources', 'cfmind', 'extensions'),
+    path.join(bundleRoot, 'Resources', 'cfmind', 'third-party-extensions'),
+  ];
   let totalRemoved = 0;
-  const extensionEntries = readdirSync(extensionsDir, { withFileTypes: true });
+  console.log('[electron-builder-hooks] Cleaning up invalid symlinks in packaged OpenClaw extensions...');
 
-  for (const entry of extensionEntries) {
-    if (!entry.isDirectory()) continue;
+  for (const extensionsDir of extensionRoots) {
+    if (!existsSync(extensionsDir)) {
+      continue;
+    }
 
-    const nodeModulesBin = path.join(extensionsDir, entry.name, 'node_modules', '.bin');
-    if (existsSync(nodeModulesBin)) {
-      const removed = removeBrokenSymlinks(nodeModulesBin);
-      if (removed > 0) {
-        console.log(`[electron-builder-hooks]   ${entry.name}: removed ${removed} broken symlink(s)`);
-        totalRemoved += removed;
+    const extensionEntries = readdirSync(extensionsDir, { withFileTypes: true });
+    for (const entry of extensionEntries) {
+      if (!entry.isDirectory()) continue;
+
+      const nodeModulesBin = path.join(extensionsDir, entry.name, 'node_modules', '.bin');
+      if (existsSync(nodeModulesBin)) {
+        const removed = removeInvalidSymlinks(nodeModulesBin, bundleRoot);
+        if (removed > 0) {
+          console.log(`[electron-builder-hooks]   ${entry.name}: removed ${removed} invalid symlink(s)`);
+          totalRemoved += removed;
+        }
       }
     }
   }
 
   if (totalRemoved > 0) {
-    console.log(`[electron-builder-hooks] ✓ Removed ${totalRemoved} broken symlink(s) total`);
+    console.log(`[electron-builder-hooks] ✓ Removed ${totalRemoved} invalid symlink(s) total`);
   } else {
-    console.log('[electron-builder-hooks] ✓ No broken symlinks found');
+    console.log('[electron-builder-hooks] ✓ No invalid symlinks found');
   }
 }
 

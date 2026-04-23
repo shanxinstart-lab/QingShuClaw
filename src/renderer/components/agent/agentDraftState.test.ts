@@ -1,9 +1,9 @@
 import { expect, test } from 'vitest';
 
 import {
+  hasBindingSelectionChanges,
   hasCreateAgentDraftChanges,
   hasOrderedSelectionChanges,
-  hasPlatformBindingChanges,
 } from './agentDraftState';
 
 test('hasOrderedSelectionChanges 仅在顺序或内容变化时返回 true', () => {
@@ -12,12 +12,12 @@ test('hasOrderedSelectionChanges 仅在顺序或内容变化时返回 true', () 
   expect(hasOrderedSelectionChanges(['a'], ['a', 'b'])).toBe(true);
 });
 
-test('hasPlatformBindingChanges 按集合语义比较平台绑定', () => {
+test('hasBindingSelectionChanges 按集合语义比较绑定项', () => {
   expect(
-    hasPlatformBindingChanges(new Set(['qq', 'feishu']), new Set(['feishu', 'qq'])),
+    hasBindingSelectionChanges(new Set(['qq', 'feishu:bot-a']), new Set(['feishu:bot-a', 'qq'])),
   ).toBe(false);
   expect(
-    hasPlatformBindingChanges(new Set(['qq', 'feishu']), new Set(['qq'])),
+    hasBindingSelectionChanges(new Set(['qq', 'feishu:bot-a']), new Set(['qq'])),
   ).toBe(true);
 });
 
@@ -30,7 +30,7 @@ test('hasCreateAgentDraftChanges 会忽略仅空白字符的未持久化差异',
     icon: '   ',
     skillIds: [],
     toolBundleIds: [],
-    boundPlatforms: new Set(),
+    boundBindingKeys: new Set(),
   })).toBe(false);
 });
 
@@ -43,7 +43,7 @@ test('hasCreateAgentDraftChanges 只关注会实际持久化的字段', () => {
     icon: '',
     skillIds: ['skill-a'],
     toolBundleIds: [],
-    boundPlatforms: new Set(),
+    boundBindingKeys: new Set(),
   })).toBe(true);
 
   expect(hasCreateAgentDraftChanges({
@@ -54,7 +54,7 @@ test('hasCreateAgentDraftChanges 只关注会实际持久化的字段', () => {
     icon: '',
     skillIds: [],
     toolBundleIds: ['bundle-a'],
-    boundPlatforms: new Set(['qq']),
+    boundBindingKeys: new Set(['qq']),
   })).toBe(true);
 });
 
@@ -68,7 +68,7 @@ test('hasCreateAgentDraftChanges 会按持久化语义比较初始值', () => {
       icon: ' 🤖 ',
       skillIds: ['skill-a'],
       toolBundleIds: ['bundle-a'],
-      boundPlatforms: new Set(['qq']),
+      boundBindingKeys: new Set(['feishu:bot-a']),
     },
     {
       name: 'Demo',
@@ -78,7 +78,7 @@ test('hasCreateAgentDraftChanges 会按持久化语义比较初始值', () => {
       icon: '🤖',
       skillIds: ['skill-a'],
       toolBundleIds: ['bundle-a'],
-      boundPlatforms: new Set(['qq']),
+      boundBindingKeys: new Set(['feishu:bot-a']),
     },
   )).toBe(false);
 });

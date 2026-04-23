@@ -1,8 +1,8 @@
-import { QingShuObjectSourceType } from '@shared/qingshuManaged/constants';
-import { QingShuManagedAccessState } from '@shared/qingshuManaged/access';
 import { ExclamationTriangleIcon, LockClosedIcon, PlusIcon, TrashIcon,WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type { Platform } from '@shared/platform';
 import { PlatformRegistry } from '@shared/platform';
+import { QingShuManagedAccessState } from '@shared/qingshuManaged/access';
+import { QingShuObjectSourceType } from '@shared/qingshuManaged/constants';
 import type {
   QingShuManagedCatalogSnapshot,
   QingShuManagedSkillDescriptor,
@@ -14,30 +14,32 @@ import { useSelector } from 'react-redux';
 import { agentService } from '../../services/agent';
 import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
+import { loadQingShuAgentGovernanceSummary } from '../../services/qingshuGovernanceSummary';
+import { qingshuManagedService } from '../../services/qingshuManaged';
 import {
   resolveQingShuManagedAccessPresentation,
   resolveQingShuSourceLabelKey,
 } from '../../services/qingshuManagedUi';
-import { loadQingShuAgentGovernanceSummary } from '../../services/qingshuGovernanceSummary';
-import { qingshuManagedService } from '../../services/qingshuManaged';
 import { RootState } from '../../store';
 import type { Agent } from '../../types/agent';
 import type { IMGatewayConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
-import {
-  buildAgentPlatformBindings,
-  collectAgentBoundPlatforms,
-  isAgentImBindingPlatformConfigured,
-} from './agentImBindingConfig';
-import {
-  hasCreateAgentDraftChanges,
-  hasOrderedSelectionChanges,
-  hasPlatformBindingChanges,
-} from './agentDraftState';
 import { resolveAgentBundleSaveFlow } from './agentBundleSaveFlow';
 import {
   buildAgentBundleSaveWarningState,
 } from './agentBundleSaveGuard';
+import {
+  hasBindingSelectionChanges,
+  hasCreateAgentDraftChanges,
+  hasOrderedSelectionChanges,
+} from './agentDraftState';
+import {
+  buildAgentBindingKeyBindings,
+  collectAgentBoundBindingKeys,
+  getAgentImBindingEnabledInstances,
+  isAgentImBindingPlatformConfigured,
+  isMultiInstanceAgentBindingPlatform,
+} from './agentImBindingConfig';
 import { buildPersistedUpdateAgentRequest } from './agentPersistedDraft';
 import AgentSkillSelector from './AgentSkillSelector';
 import AgentToolBundleCompatibilityHint from './AgentToolBundleCompatibilityHint';
@@ -58,6 +60,7 @@ interface AgentSettingsPanelProps {
 const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClose, onSwitchAgent }) => {
   const showGovernanceDebug = import.meta.env.DEV;
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const agents = useSelector((state: RootState) => state.agent.agents);
   const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
   const installedSkills = useSelector((state: RootState) => state.skill.skills);
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -83,8 +86,8 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
 
   // IM binding state
   const [imConfig, setImConfig] = useState<IMGatewayConfig | null>(null);
-  const [boundPlatforms, setBoundPlatforms] = useState<Set<Platform>>(new Set());
-  const [initialBoundPlatforms, setInitialBoundPlatforms] = useState<Set<Platform>>(new Set());
+  const [boundBindingKeys, setBoundBindingKeys] = useState<Set<string>>(new Set());
+  const [initialBoundBindingKeys, setInitialBoundBindingKeys] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!agentId) return;
@@ -126,13 +129,12 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
       if (cancelled) return;
       if (cfg) {
         setImConfig(cfg);
-        const bound = collectAgentBoundPlatforms(
+        const bound = collectAgentBoundBindingKeys(
           cfg.settings?.platformAgentBindings,
           agentId,
-          PlatformRegistry.platforms,
         );
-        setBoundPlatforms(bound);
-        setInitialBoundPlatforms(new Set(bound));
+        setBoundBindingKeys(bound);
+        setInitialBoundBindingKeys(new Set(bound));
       }
     });
 
@@ -251,7 +253,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         icon,
         skillIds,
         toolBundleIds,
-        boundPlatforms,
+        boundBindingKeys,
       },
       {
         name: agent.name,
@@ -261,7 +263,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         icon: agent.icon,
         skillIds: agent.skillIds ?? [],
         toolBundleIds: savedToolBundleIds,
-        boundPlatforms: initialBoundPlatforms,
+        boundBindingKeys: initialBoundBindingKeys,
       },
     )) {
       return true;
@@ -274,11 +276,11 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
     return false;
   }, [
     agent,
-    boundPlatforms,
+    boundBindingKeys,
     description,
     icon,
     identity,
-    initialBoundPlatforms,
+    initialBoundBindingKeys,
     managedExtraSkillIds,
     name,
     savedManagedExtraSkillIds,
@@ -324,7 +326,13 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
       }
       return;
     }
-    if (!name.trim()) return;
+    if (!name.trim()) {
+      setActiveTab('basic');
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('agentNameRequired'),
+      }));
+      return;
+    }
     setSaving(true);
     try {
       const summary = await loadQingShuAgentGovernanceSummary(skillIds, toolBundleIds);
@@ -352,12 +360,12 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         debugToolBundleIds,
       }));
       // Persist IM bindings if changed
-      const bindingsChanged = hasPlatformBindingChanges(boundPlatforms, initialBoundPlatforms);
+      const bindingsChanged = hasBindingSelectionChanges(boundBindingKeys, initialBoundBindingKeys);
       if (bindingsChanged && imConfig) {
-        const currentBindings = buildAgentPlatformBindings(
+        const currentBindings = buildAgentBindingKeyBindings(
           imConfig.settings?.platformAgentBindings,
           agentId,
-          boundPlatforms,
+          boundBindingKeys,
         );
         await imService.persistConfig({
           settings: { ...imConfig.settings, platformAgentBindings: currentBindings },
@@ -378,19 +386,40 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
     }
   };
 
-  const handleToggleIMBinding = (platform: Platform) => {
-    const next = new Set(boundPlatforms);
-    if (next.has(platform)) {
-      next.delete(platform);
+  const handleToggleIMBinding = (bindingKey: string) => {
+    const next = new Set(boundBindingKeys);
+    if (next.has(bindingKey)) {
+      next.delete(bindingKey);
     } else {
-      next.add(platform);
+      next.add(bindingKey);
     }
-    setBoundPlatforms(next);
+    setBoundBindingKeys(next);
   };
 
   const isPlatformConfigured = (platform: Platform): boolean => {
     return isAgentImBindingPlatformConfigured(imConfig, platform);
   };
+
+  const getAgentName = (agentIdValue: string): string | null => {
+    if (!agentIdValue || agentIdValue === 'main') {
+      return null;
+    }
+    return agents.find((entry) => entry.id === agentIdValue)?.name || agentIdValue;
+  };
+
+  const renderToggle = (isOn: boolean) => (
+    <div
+      className={`relative w-9 h-5 rounded-full transition-colors ${
+        isOn ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+      }`}
+    >
+      <div
+        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          isOn ? 'translate-x-4' : 'translate-x-0.5'
+        }`}
+      />
+    </div>
+  );
 
   const isMainAgent = agentId === 'main';
 
@@ -805,59 +834,132 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 {i18nService.t('agentIMBindHint') || 'Select IM channels this Agent responds to'}
               </p>
               <div className="space-y-1">
-               {PlatformRegistry.platforms
-                  .filter((platform) => (getVisibleIMPlatforms(i18nService.getLanguage()) as readonly string[]).includes(platform))
+                {PlatformRegistry.platforms
+                  .filter((platform) => (
+                    getVisibleIMPlatforms(i18nService.getLanguage()) as readonly string[]
+                  ).includes(platform))
                   .map((platform) => {
                     const logo = PlatformRegistry.logo(platform);
-                   const configured = isPlatformConfigured(platform);
-                   const bound = boundPlatforms.has(platform);
-                  return (
-                    <div
-                      key={platform}
-                      className={`flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${
-                        configured
-                          ? 'hover:bg-surface-raised cursor-pointer'
-                          : 'opacity-50'
-                      }`}
-                      onClick={() => configured && handleToggleIMBinding(platform)}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center">
-                          <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
-                        </div>
-                        <div>
-                          <div className="text-sm font-medium text-foreground">
-                            {i18nService.t(platform)}
-                          </div>
-                          {!configured && (
-                            <div className="text-xs text-secondary/50">
-                              {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
+                    const bindings = imConfig?.settings?.platformAgentBindings || {};
+
+                    if (isMultiInstanceAgentBindingPlatform(platform)) {
+                      const enabledInstances = getAgentImBindingEnabledInstances(imConfig, platform);
+                      if (enabledInstances.length === 0) {
+                        return (
+                          <div
+                            key={platform}
+                            className="flex items-center justify-between px-3 py-2.5 rounded-lg opacity-50"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-8 w-8 items-center justify-center">
+                                <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
+                              </div>
+                              <div>
+                                <div className="text-sm font-medium text-foreground">
+                                  {i18nService.t(platform)}
+                                </div>
+                                <div className="text-xs text-secondary/50">
+                                  {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
+                                </div>
+                              </div>
                             </div>
+                            <span className="text-xs text-secondary/50">
+                              {i18nService.t('agentIMNotConfigured') || 'Not configured'}
+                            </span>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div key={platform} className="rounded-lg border border-border overflow-hidden">
+                          <div className="flex items-center gap-3 px-3 py-2.5 bg-surface-raised">
+                            <div className="flex h-8 w-8 items-center justify-center">
+                              <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
+                            </div>
+                            <span className="text-sm font-semibold text-foreground">
+                              {i18nService.t(platform)}
+                            </span>
+                          </div>
+                          {enabledInstances.map((instance, index) => {
+                            const bindingKey = `${platform}:${instance.instanceId}`;
+                            const isBound = boundBindingKeys.has(bindingKey);
+                            const otherAgentId = bindings[bindingKey];
+                            const boundToOther = Boolean(otherAgentId && otherAgentId !== agentId);
+                            const otherAgentName = otherAgentId ? getAgentName(otherAgentId) : null;
+                            return (
+                              <div
+                                key={instance.instanceId}
+                                className={`flex items-center justify-between px-3 py-2 pl-14 transition-colors ${
+                                  boundToOther ? 'opacity-55' : 'cursor-pointer hover:bg-surface-raised'
+                                } ${index < enabledInstances.length - 1 ? 'border-b border-border/60' : ''}`}
+                                onClick={() => !boundToOther && handleToggleIMBinding(bindingKey)}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                                  <span className="truncate text-sm text-foreground">
+                                    {instance.instanceName}
+                                  </span>
+                                  {boundToOther && otherAgentName && (
+                                    <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                                      {(i18nService.t('agentIMBoundToOther') || '→ {agent}').replace('{agent}', otherAgentName)}
+                                    </span>
+                                  )}
+                                </div>
+                                {boundToOther ? <div className="w-9 h-5" /> : renderToggle(isBound)}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    }
+
+                    const configured = isPlatformConfigured(platform);
+                    const isBound = boundBindingKeys.has(platform);
+                    const otherAgentId = bindings[platform];
+                    const boundToOther = configured && Boolean(otherAgentId && otherAgentId !== agentId);
+                    const otherAgentName = otherAgentId ? getAgentName(otherAgentId) : null;
+                    return (
+                      <div
+                        key={platform}
+                        className={`flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${
+                          configured && !boundToOther
+                            ? 'hover:bg-surface-raised cursor-pointer'
+                            : boundToOther ? 'opacity-55' : 'opacity-50'
+                        }`}
+                        onClick={() => configured && !boundToOther && handleToggleIMBinding(platform)}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="flex h-8 w-8 items-center justify-center">
+                            <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-foreground">
+                              {i18nService.t(platform)}
+                            </div>
+                            {!configured && (
+                              <div className="text-xs text-secondary/50">
+                                {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
+                              </div>
+                            )}
+                          </div>
+                          {boundToOther && otherAgentName && (
+                            <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                              {(i18nService.t('agentIMBoundToOther') || '→ {agent}').replace('{agent}', otherAgentName)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {configured ? (
+                            boundToOther ? <div className="w-9 h-5" /> : renderToggle(isBound)
+                          ) : (
+                            <span className="text-xs text-secondary/50">
+                              {i18nService.t('agentIMNotConfigured') || 'Not configured'}
+                            </span>
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {configured ? (
-                          <div
-                            className={`relative w-9 h-5 rounded-full transition-colors ${
-                              bound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                            }`}
-                          >
-                            <div
-                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                bound ? 'translate-x-4' : 'translate-x-0.5'
-                              }`}
-                            />
-                          </div>
-                        ) : (
-                          <span className="text-xs text-secondary/50">
-                            {i18nService.t('agentIMNotConfigured') || 'Not configured'}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </div>
             </div>
           )}
@@ -945,7 +1047,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 onClick={handleSave}
                 disabled={isManagedReadOnly
                   ? (saving || isManagedUnavailable || isManagedForbidden || !hasManagedExtraSkillChanges)
-                  : (!name.trim() || saving)}
+                  : saving}
                 className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {saveButtonLabel}

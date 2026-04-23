@@ -1,5 +1,3 @@
-import type { Platform } from '@shared/platform';
-
 export interface CreateAgentDraftState {
   name: string;
   description: string;
@@ -8,7 +6,7 @@ export interface CreateAgentDraftState {
   icon: string;
   skillIds: readonly string[];
   toolBundleIds?: readonly string[];
-  boundPlatforms?: Iterable<Platform>;
+  boundBindingKeys?: Iterable<string>;
 }
 
 const normalizeDraftText = (value: string | undefined): string => (value ?? '').trim();
@@ -31,7 +29,7 @@ export const hasOrderedSelectionChanges = <T>(
   );
 };
 
-export const hasPlatformBindingChanges = <T>(
+export const hasBindingSelectionChanges = <T>(
   current: Iterable<T> | undefined,
   initial: Iterable<T> | undefined,
 ): boolean => {
@@ -68,5 +66,5 @@ export const hasCreateAgentDraftChanges = (
   if (hasOrderedSelectionChanges(current.toolBundleIds, initial?.toolBundleIds)) {
     return true;
   }
-  return hasPlatformBindingChanges(current.boundPlatforms, initial?.boundPlatforms);
+  return hasBindingSelectionChanges(current.boundBindingKeys, initial?.boundBindingKeys);
 };
