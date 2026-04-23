@@ -1308,7 +1308,7 @@ const App: React.FC = () => {
         )}
         <div className="flex-1 min-w-0 p-1.5">
           <div className="relative h-full min-h-0 overflow-hidden rounded-[28px] bg-background">
-            <EngineStartupOverlay />
+            <EngineStartupOverlay suspended={showLoginWelcome} />
             {mainView === 'skills' ? (
               <SkillsView
                 onCreateSkillByChat={handleCreateSkillByChat}

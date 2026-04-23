@@ -1,25 +1,28 @@
+import { type ChildProcess,spawn } from 'child_process';
+import crypto from 'crypto';
 import { app } from 'electron';
+import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
-import { EventEmitter } from 'events';
-import { spawn, type ChildProcess } from 'child_process';
+
 import {
-  TtsEngine,
-  TtsPrepareStatus,
-  TtsStateType,
-  TtsVoiceQuality,
   type TtsAvailability,
-  type TtsPlaybackSource,
+  TtsEngine,
+  TtsPlaybackSource,
   type TtsPrepareOptions,
+  TtsPrepareStatus,
   type TtsSpeakOptions,
   type TtsStateEvent,
+  TtsStateType,
   type TtsVoice,
+  TtsVoiceQuality,
 } from '../../shared/tts/constants';
 
 const EDGE_TTS_RUNTIME_DIR_NAME = 'edge-tts-runtime';
 const EDGE_TTS_VENV_DIR_NAME = 'venv';
 const EDGE_TTS_DOWNLOADS_DIR_NAME = 'downloads';
 const EDGE_TTS_TEMP_DIR_NAME = 'temp';
+const EDGE_TTS_AUDIO_CACHE_DIR_NAME = 'audio-cache';
 const EDGE_TTS_VOICE_PREFIX = 'edge:';
 const EDGE_TTS_PACKAGE_NAME = 'edge-tts';
 const EDGE_TTS_PACKAGE_VERSION = process.env.LOBSTERAI_EDGE_TTS_VERSION || '7.2.8';
@@ -276,6 +279,8 @@ export class EdgeTtsService extends EventEmitter {
 
   private activeAudioFilePath: string | null = null;
 
+  private activeAudioFileShouldDelete = false;
+
   private currentVoiceId: string | undefined;
 
   private currentSource: TtsPlaybackSource | undefined;
@@ -322,6 +327,10 @@ export class EdgeTtsService extends EventEmitter {
 
   private getTempRoot(): string {
     return path.join(this.getBaseRoot(), EDGE_TTS_TEMP_DIR_NAME);
+  }
+
+  private getAudioCacheRoot(): string {
+    return path.join(this.getBaseRoot(), EDGE_TTS_AUDIO_CACHE_DIR_NAME);
   }
 
   private getVoiceCachePath(): string {
@@ -627,6 +636,149 @@ export class EdgeTtsService extends EventEmitter {
     });
   }
 
+  private resolveWakeActivationCachePath(input: {
+    text: string;
+    voice: string;
+    rate: string;
+    volume: string;
+  }): string {
+    const cacheKey = crypto
+      .createHash('sha1')
+      .update(JSON.stringify({
+        engine: TtsEngine.EdgeTts,
+        packageVersion: EDGE_TTS_PACKAGE_VERSION,
+        source: TtsPlaybackSource.WakeActivation,
+        text: input.text,
+        voice: input.voice,
+        rate: input.rate,
+        volume: input.volume,
+      }))
+      .digest('hex');
+    return path.join(this.getAudioCacheRoot(), 'wake-activation', `${cacheKey}.mp3`);
+  }
+
+  private isWakeActivationCacheEligible(options: TtsSpeakOptions): boolean {
+    return options.source === TtsPlaybackSource.WakeActivation;
+  }
+
+  private async synthesizeToPath(input: {
+    text: string;
+    voice: string;
+    rate: string;
+    volume: string;
+    outputPath: string;
+    source?: TtsPlaybackSource;
+  }): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.sendWorkerRequest('synthesize', {
+        text: input.text,
+        voice: input.voice,
+        rate: input.rate,
+        volume: input.volume,
+        outputPath: input.outputPath,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || 'Unknown edge-tts worker synthesis failure.');
+      }
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastError = message;
+      this.emitState({
+        type: TtsStateType.Error,
+        code: 'edge_tts_synthesize_failed',
+        message,
+        source: input.source,
+      });
+      return { success: false, error: message };
+    }
+  }
+
+  private writeWakeActivationCache(tempPath: string, cachePath: string): void {
+    if (fs.existsSync(cachePath)) {
+      return;
+    }
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    const cacheTempPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
+    fs.copyFileSync(tempPath, cacheTempPath);
+    fs.renameSync(cacheTempPath, cachePath);
+  }
+
+  private async playAudioFile(
+    filePath: string,
+    options: TtsSpeakOptions,
+    deleteAfterPlayback: boolean,
+  ): Promise<{ success: boolean; error?: string }> {
+    return await new Promise((resolve) => {
+      this.stopping = false;
+      this.speaking = true;
+      this.currentVoiceId = options.voiceId;
+      this.currentSource = options.source;
+      this.activeAudioFilePath = filePath;
+      this.activeAudioFileShouldDelete = deleteAfterPlayback;
+      const player = spawn('afplay', [filePath], {
+        stdio: 'ignore',
+      });
+      this.activePlayer = player;
+
+      player.once('error', (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.activePlayer = null;
+        this.speaking = false;
+        this.cleanupActiveAudioFile();
+        this.emitState({
+          type: TtsStateType.Error,
+          code: 'edge_tts_playback_failed',
+          message,
+          source: this.currentSource,
+        });
+        this.currentSource = undefined;
+        resolve({ success: false, error: message });
+      });
+
+      player.once('spawn', () => {
+        this.emitState({
+          type: TtsStateType.Speaking,
+          voiceId: options.voiceId,
+          source: options.source,
+        });
+      });
+
+      player.once('close', (code) => {
+        this.activePlayer = null;
+        const wasStopping = this.stopping;
+        this.stopping = false;
+        this.speaking = false;
+        this.cleanupActiveAudioFile();
+        if (wasStopping) {
+          this.currentSource = undefined;
+          resolve({ success: true });
+          return;
+        }
+        if (code === 0) {
+          this.emitState({
+            type: TtsStateType.Stopped,
+            voiceId: this.currentVoiceId,
+            source: this.currentSource,
+          });
+          this.currentSource = undefined;
+          resolve({ success: true });
+          return;
+        }
+
+        const message = `afplay exited with code ${code ?? 'unknown'}`;
+        this.emitState({
+          type: TtsStateType.Error,
+          code: 'edge_tts_playback_failed',
+          message,
+          source: this.currentSource,
+        });
+        this.currentSource = undefined;
+        resolve({ success: false, error: message });
+      });
+    });
+  }
+
   isReady(): boolean {
     return this.prepareStatus === TtsPrepareStatus.Ready && this.hasUsableRuntimeBinary();
   }
@@ -864,6 +1016,20 @@ export class EdgeTtsService extends EventEmitter {
     }
 
     const voiceId = stripEdgeVoiceIdentifier(options.voiceId) ?? resolveDefaultEdgeVoiceShortName();
+    const normalizedRate = normalizeEdgeTtsRate(options.rate);
+    const normalizedVolume = normalizeEdgeTtsVolume(options.volume);
+    if (this.isWakeActivationCacheEligible(options)) {
+      const cachePath = this.resolveWakeActivationCachePath({
+        text,
+        voice: voiceId,
+        rate: normalizedRate,
+        volume: normalizedVolume,
+      });
+      if (fs.existsSync(cachePath)) {
+        return await this.playAudioFile(cachePath, options, false);
+      }
+    }
+
     const tempRoot = this.getTempRoot();
     fs.mkdirSync(tempRoot, { recursive: true });
     const outputPath = path.join(
@@ -871,102 +1037,134 @@ export class EdgeTtsService extends EventEmitter {
       `edge-tts-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`,
     );
 
-    try {
-      const response = await this.sendWorkerRequest('synthesize', {
+    const synthesizeResult = await this.synthesizeToPath({
         text,
         voice: voiceId,
-        rate: normalizeEdgeTtsRate(options.rate),
-        volume: normalizeEdgeTtsVolume(options.volume),
+        rate: normalizedRate,
+        volume: normalizedVolume,
         outputPath,
-      });
-      if (!response.ok) {
-        throw new Error(response.error || 'Unknown edge-tts worker synthesis failure.');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.lastError = message;
-      this.emitState({
-        type: TtsStateType.Error,
-        code: 'edge_tts_synthesize_failed',
-        message,
         source: options.source,
       });
-      return { success: false, error: message };
+    if (!synthesizeResult.success) {
+      return synthesizeResult;
     }
 
-    return await new Promise((resolve) => {
-      this.stopping = false;
-      this.speaking = true;
-      this.currentVoiceId = options.voiceId;
-      this.currentSource = options.source;
-      this.activeAudioFilePath = outputPath;
-      const player = spawn('afplay', [outputPath], {
-        stdio: 'ignore',
+    if (this.isWakeActivationCacheEligible(options)) {
+      const cachePath = this.resolveWakeActivationCachePath({
+        text,
+        voice: voiceId,
+        rate: normalizedRate,
+        volume: normalizedVolume,
       });
-      this.activePlayer = player;
+      try {
+        this.writeWakeActivationCache(outputPath, cachePath);
+      } catch (error) {
+        console.warn('[EdgeTtsService] Failed to persist wake activation audio cache:', error);
+      }
+    }
 
-      player.once('error', (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.activePlayer = null;
-        this.speaking = false;
-        this.cleanupActiveAudioFile();
-        this.emitState({
-          type: TtsStateType.Error,
-          code: 'edge_tts_playback_failed',
-          message,
-          source: this.currentSource,
-        });
-        this.currentSource = undefined;
-        resolve({ success: false, error: message });
-      });
+    return await this.playAudioFile(outputPath, options, true);
+  }
 
-      player.once('spawn', () => {
-        this.emitState({
-          type: TtsStateType.Speaking,
-          voiceId: options.voiceId,
-          source: options.source,
-        });
-      });
+  async prewarmWakeActivationCache(
+    options: TtsSpeakOptions,
+    executionOptions?: { allowPrepare?: boolean },
+  ): Promise<{ success: boolean; cacheHit: boolean; error?: string }> {
+    if (process.platform !== 'darwin') {
+      return { success: false, cacheHit: false, error: 'unsupported_platform' };
+    }
 
-      player.once('close', (code) => {
-        this.activePlayer = null;
-        const wasStopping = this.stopping;
-        this.stopping = false;
-        this.speaking = false;
-        this.cleanupActiveAudioFile();
-        if (wasStopping) {
-          this.currentSource = undefined;
-          resolve({ success: true });
-          return;
-        }
-        if (code === 0) {
-          this.emitState({
-            type: TtsStateType.Stopped,
-            voiceId: this.currentVoiceId,
-            source: this.currentSource,
-          });
-          this.currentSource = undefined;
-          resolve({ success: true });
-          return;
-        }
+    const text = options.text?.trim();
+    if (!text || options.source !== TtsPlaybackSource.WakeActivation) {
+      return { success: false, cacheHit: false, error: 'invalid_wake_activation_input' };
+    }
 
-        const message = `afplay exited with code ${code ?? 'unknown'}`;
-        this.emitState({
-          type: TtsStateType.Error,
-          code: 'edge_tts_playback_failed',
-          message,
-          source: this.currentSource,
-        });
-        this.currentSource = undefined;
-        resolve({ success: false, error: message });
-      });
+    const allowPrepare = executionOptions?.allowPrepare !== false;
+    if (allowPrepare) {
+      const prepareResult = await this.prepare({ force: false });
+      if (!prepareResult.success) {
+        return { success: false, cacheHit: false, error: prepareResult.error };
+      }
+    } else if (!this.isReady()) {
+      return { success: false, cacheHit: false, error: 'edge_tts_runtime_not_ready' };
+    }
+
+    try {
+      await this.ensureWorkerStarted();
+    } catch (error) {
+      return {
+        success: false,
+        cacheHit: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    const voiceId = stripEdgeVoiceIdentifier(options.voiceId) ?? resolveDefaultEdgeVoiceShortName();
+    const normalizedRate = normalizeEdgeTtsRate(options.rate);
+    const normalizedVolume = normalizeEdgeTtsVolume(options.volume);
+    const cachePath = this.resolveWakeActivationCachePath({
+      text,
+      voice: voiceId,
+      rate: normalizedRate,
+      volume: normalizedVolume,
     });
+    if (fs.existsSync(cachePath)) {
+      return { success: true, cacheHit: true };
+    }
+
+    const tempRoot = this.getTempRoot();
+    fs.mkdirSync(tempRoot, { recursive: true });
+    const outputPath = path.join(
+      tempRoot,
+      `edge-tts-prewarm-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`,
+    );
+
+    const synthesizeResult = await this.synthesizeToPath({
+      text,
+      voice: voiceId,
+      rate: normalizedRate,
+      volume: normalizedVolume,
+      outputPath,
+      source: options.source,
+    });
+    if (!synthesizeResult.success) {
+      try {
+        fs.rmSync(outputPath, { force: true });
+      } catch {
+        // Ignore cleanup errors for failed warmup synthesis.
+      }
+      return { success: false, cacheHit: false, error: synthesizeResult.error };
+    }
+
+    try {
+      this.writeWakeActivationCache(outputPath, cachePath);
+    } catch (error) {
+      try {
+        fs.rmSync(outputPath, { force: true });
+      } catch {
+        // Ignore cleanup errors for failed warmup cache writes.
+      }
+      return {
+        success: false,
+        cacheHit: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    try {
+      fs.rmSync(outputPath, { force: true });
+    } catch {
+      // Ignore cleanup errors after successful warmup.
+    }
+    return { success: true, cacheHit: false };
   }
 
   private cleanupActiveAudioFile(): void {
     const currentFile = this.activeAudioFilePath;
+    const shouldDelete = this.activeAudioFileShouldDelete;
     this.activeAudioFilePath = null;
-    if (!currentFile) {
+    this.activeAudioFileShouldDelete = false;
+    if (!currentFile || !shouldDelete) {
       return;
     }
     try {

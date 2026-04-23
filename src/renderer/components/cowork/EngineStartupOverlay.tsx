@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+import React, { useEffect,useState } from 'react';
 import { useSelector } from 'react-redux';
-import { RootState } from '../../store';
+
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
-import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+import { RootState } from '../../store';
 import type { OpenClawEngineStatus } from '../../types/cowork';
 
 const resolveEngineStatusText = (status: OpenClawEngineStatus): string => {
@@ -28,7 +29,11 @@ const resolveEngineStatusText = (status: OpenClawEngineStatus): string => {
  * Global overlay shown when the OpenClaw gateway is starting up.
  * Renders on top of all views (cowork, skills, scheduled tasks, mcp).
  */
-const EngineStartupOverlay: React.FC = () => {
+type EngineStartupOverlayProps = {
+  suspended?: boolean;
+};
+
+const EngineStartupOverlay: React.FC<EngineStartupOverlayProps> = ({ suspended = false }) => {
   const config = useSelector((state: RootState) => state.cowork.config);
   const isOpenClawEngine = config.agentEngine !== 'yd_cowork';
   const [status, setStatus] = useState<OpenClawEngineStatus | null>(null);
@@ -47,7 +52,7 @@ const EngineStartupOverlay: React.FC = () => {
     return unsubscribe;
   }, [isOpenClawEngine]);
 
-  if (!isOpenClawEngine || !status || status.phase !== 'starting') {
+  if (!isOpenClawEngine || !status || status.phase !== 'starting' || suspended) {
     return null;
   }
 

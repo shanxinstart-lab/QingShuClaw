@@ -11,6 +11,7 @@ import {
   type AuthConfig,
   type AuthPasswordLoginInput,
 } from '../common/auth';
+import { OpenClawSessionIpc, type OpenClawSessionPatch } from '../common/openclawSession';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw,migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
 import { type Platform as SharedPlatform,PlatformRegistry } from '../shared/platform';
@@ -138,7 +139,6 @@ import { getLogFilePath, getRecentMainLogEntries,initLogger } from './logger';
 import { McpStore } from './mcpStore';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import { loadOpenClawSessionPolicyConfig, saveOpenClawSessionPolicyConfig } from './openclawSessionPolicy/store';
-import { OpenClawSessionIpc, type OpenClawSessionPatch } from '../common/openclawSession';
 import { QingShuManagedCatalogService } from './qingshuManaged/catalogService';
 import {
   createQingShuAuthFetchProvider,
@@ -2291,10 +2291,6 @@ const focusCoworkInputInMainWindow = (options?: { clear?: boolean }): void => {
   mainWindow.webContents.send('app:focusCoworkInput', { clear: options?.clear === true });
 };
 
-const resolveWakeActivationReplyTimeoutMs = (text: string): number => {
-  return Math.min(6_000, Math.max(2_000, 1_200 + text.length * 220));
-};
-
 const dispatchWakeDictationRequest = (request: WakeInputDictationRequest): void => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(WakeInputIpcChannel.DictationRequested, request);
@@ -2309,7 +2305,7 @@ const maybeSpeakWakeActivationReply = async (): Promise<void> => {
   }
 
   await ttsRouterService.stop();
-  const replyResult = await ttsRouterService.speakAndAwaitCompletion(
+  const replyResult = await ttsRouterService.speak(
     {
       text: wakeReplyConfig.text,
       voiceId: ttsConfig.voiceId,
@@ -2319,7 +2315,6 @@ const maybeSpeakWakeActivationReply = async (): Promise<void> => {
     },
     {
       allowPrepare: false,
-      timeoutMs: resolveWakeActivationReplyTimeoutMs(wakeReplyConfig.text),
     },
   );
   if (!replyResult.success) {
@@ -2328,6 +2323,48 @@ const maybeSpeakWakeActivationReply = async (): Promise<void> => {
       JSON.stringify({ error: replyResult.error }),
     );
   }
+};
+
+const prewarmWakeActivationReplyCache = (config?: AppConfigSettings): void => {
+  const ttsConfig = mergeTtsConfig(config?.tts);
+  const wakeInputConfig = mergeWakeInputConfig(config?.wakeInput);
+  const wakeReplyText = wakeInputConfig.activationReplyText.trim();
+  if (
+    !ttsConfig.enabled
+    || ttsConfig.engine !== TtsEngine.EdgeTts
+    || !wakeInputConfig.activationReplyEnabled
+    || !wakeReplyText
+  ) {
+    return;
+  }
+
+  void edgeTtsService.prewarmWakeActivationCache(
+    {
+      text: wakeReplyText,
+      voiceId: ttsConfig.voiceId,
+      rate: ttsConfig.rate,
+      volume: ttsConfig.volume,
+      source: TtsPlaybackSource.WakeActivation,
+    },
+    {
+      allowPrepare: true,
+    },
+  ).then((result) => {
+    if (!result.success) {
+      console.warn(
+        '[WakeInput] Failed to prewarm wake activation reply cache.',
+        JSON.stringify({ error: result.error }),
+      );
+      return;
+    }
+    if (result.cacheHit) {
+      console.log('[WakeInput] Wake activation reply cache already warm.');
+      return;
+    }
+    console.log('[WakeInput] Wake activation reply cache warmed successfully.');
+  }).catch((error) => {
+    console.warn('[WakeInput] Wake activation reply cache warmup crashed:', error);
+  });
 };
 
 const triggerSpeechFollowUpDictation = (request: WakeInputDictationRequest): void => {
@@ -2358,12 +2395,10 @@ wakeInputService.on('dictationRequested', (request) => {
   console.log('[WakeInput] Wake phrase matched, requesting dictation and showing the main window.');
   showMainWindow();
   focusCoworkInputInMainWindow({ clear: false });
-  void (async () => {
-    if (request.source === 'wake') {
-      await maybeSpeakWakeActivationReply();
-    }
-    dispatchWakeDictationRequest(request);
-  })();
+  if (request.source === 'wake') {
+    void maybeSpeakWakeActivationReply();
+  }
+  dispatchWakeDictationRequest(request);
 });
 
 macSpeechService.onStateChanged((event) => {
@@ -6315,6 +6350,7 @@ if (!gotTheLock) {
         console.error('[TtsRouterService] Failed to prepare edge-tts during app init:', error);
       });
     }
+    prewarmWakeActivationReplyCache(appConfig);
 
     // 设置安全策略
     setContentSecurityPolicy();
@@ -6405,6 +6441,7 @@ if (!gotTheLock) {
         void syncWakeInputAvailabilityFromSpeech().then(() => wakeInputService.startBackgroundListening()).catch((error) => {
           console.error('[WakeInput] Failed to refresh availability after config change:', error);
         });
+        prewarmWakeActivationReplyCache(newConfig);
       }
 
       const currentTtsConfig = JSON.stringify(mergeTtsConfig(newConfig?.tts));
@@ -6415,6 +6452,7 @@ if (!gotTheLock) {
         void ttsRouterService.prepare({ engine: mergedTtsConfig.engine }).catch((error) => {
           console.error('[TtsRouterService] Failed to refresh TTS availability after config change:', error);
         });
+        prewarmWakeActivationReplyCache(newConfig);
       }
     });
 
