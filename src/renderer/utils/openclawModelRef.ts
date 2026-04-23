@@ -7,10 +7,7 @@ export function toOpenClawModelRef(model: Pick<Model, 'id' | 'providerKey' | 'is
     return `${OpenClawProviderId.LobsteraiServer}/${model.id}`;
   }
 
-  const providerId = ProviderRegistry.get(model.providerKey ?? '')?.openClawProviderId
-    ?? model.providerKey
-    ?? OpenClawProviderId.Lobster;
-  return `${providerId}/${model.id}`;
+  return `${ProviderRegistry.getOpenClawProviderId(model.providerKey ?? '')}/${model.id}`;
 }
 
 export function matchesOpenClawModelRef(

@@ -1,3 +1,5 @@
+import { QingShuObjectSourceType } from '@shared/qingshuManaged/constants';
+import { QingShuManagedAccessState } from '@shared/qingshuManaged/access';
 import { ExclamationTriangleIcon, LockClosedIcon, PlusIcon, TrashIcon,WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type { Platform } from '@shared/platform';
 import { PlatformRegistry } from '@shared/platform';
@@ -12,12 +14,26 @@ import { useSelector } from 'react-redux';
 import { agentService } from '../../services/agent';
 import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
+import {
+  resolveQingShuManagedAccessPresentation,
+  resolveQingShuSourceLabelKey,
+} from '../../services/qingshuManagedUi';
 import { loadQingShuAgentGovernanceSummary } from '../../services/qingshuGovernanceSummary';
 import { qingshuManagedService } from '../../services/qingshuManaged';
 import { RootState } from '../../store';
 import type { Agent } from '../../types/agent';
 import type { IMGatewayConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
+import {
+  buildAgentPlatformBindings,
+  collectAgentBoundPlatforms,
+  isAgentImBindingPlatformConfigured,
+} from './agentImBindingConfig';
+import {
+  hasCreateAgentDraftChanges,
+  hasOrderedSelectionChanges,
+  hasPlatformBindingChanges,
+} from './agentDraftState';
 import { resolveAgentBundleSaveFlow } from './agentBundleSaveFlow';
 import {
   buildAgentBundleSaveWarningState,
@@ -110,13 +126,11 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
       if (cancelled) return;
       if (cfg) {
         setImConfig(cfg);
-        const bindings = cfg.settings?.platformAgentBindings || {};
-        const bound = new Set<Platform>();
-        for (const [platform, boundAgentId] of Object.entries(bindings)) {
-          if (boundAgentId === agentId) {
-            bound.add(platform as Platform);
-          }
-        }
+        const bound = collectAgentBoundPlatforms(
+          cfg.settings?.platformAgentBindings,
+          agentId,
+          PlatformRegistry.platforms,
+        );
         setBoundPlatforms(bound);
         setInitialBoundPlatforms(new Set(bound));
       }
@@ -146,30 +160,42 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
       ? (i18nService.t('agentToolBundlesConfirmSave') || 'Save Again')
       : (i18nService.t('save') || 'Save');
   const isManagedReadOnly = agent?.readOnly === true;
-  const isManagedUnavailable = isManagedReadOnly && !isLoggedIn;
-  const isManagedForbidden = isManagedReadOnly && agent?.allowed === false;
-  const hasManagedExtraSkillChanges = useMemo(() => {
-    const left = [...managedExtraSkillIds].sort();
-    const right = [...savedManagedExtraSkillIds].sort();
-    return left.length !== right.length || left.some((value, index) => value !== right[index]);
-  }, [managedExtraSkillIds, savedManagedExtraSkillIds]);
-  const getManagedLockTag = (allowed?: boolean) => {
-    if (isManagedUnavailable) {
-      return i18nService.t('managedUnavailableTag');
-    }
-    if (allowed === false) {
-      return i18nService.t('managedForbiddenTag');
-    }
-    return '';
+  const managedAgentAccess = resolveQingShuManagedAccessPresentation({
+    sourceType: agent?.sourceType,
+    allowed: agent?.allowed,
+    isLoggedIn,
+    policyNote: agent?.policyNote,
+  });
+  const isManagedUnavailable = (
+    isManagedReadOnly && managedAgentAccess.accessState === QingShuManagedAccessState.LoginRequired
+  );
+  const isManagedForbidden = (
+    isManagedReadOnly && managedAgentAccess.accessState === QingShuManagedAccessState.Forbidden
+  );
+  const hasManagedExtraSkillChanges = useMemo(
+    () => hasOrderedSelectionChanges(managedExtraSkillIds, savedManagedExtraSkillIds),
+    [managedExtraSkillIds, savedManagedExtraSkillIds],
+  );
+  const getManagedLockTag = (allowed?: boolean, policyNote?: string) => {
+    const access = resolveQingShuManagedAccessPresentation({
+      sourceType: QingShuObjectSourceType.QingShuManaged,
+      allowed,
+      isLoggedIn,
+      policyNote,
+    });
+    return access.lockTagKey ? i18nService.t(access.lockTagKey) : '';
   };
   const getManagedLockHint = (allowed?: boolean, policyNote?: string) => {
-    if (isManagedUnavailable) {
-      return i18nService.t('managedUnavailableHint');
+    const access = resolveQingShuManagedAccessPresentation({
+      sourceType: QingShuObjectSourceType.QingShuManaged,
+      allowed,
+      isLoggedIn,
+      policyNote,
+    });
+    if (access.lockHintOverride) {
+      return access.lockHintOverride;
     }
-    if (allowed === false) {
-      return policyNote || i18nService.t('managedForbiddenHint');
-    }
-    return '';
+    return access.lockHintKey ? i18nService.t(access.lockHintKey) : '';
   };
   const managedSkillDetails = useMemo(() => {
     if (!isManagedReadOnly || !agent || !managedCatalog) {
@@ -209,56 +235,43 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
     ));
   }, [agent, isManagedReadOnly, managedCatalog]);
   const getSkillSourceLabel = (sourceType?: string) => {
-    if (sourceType === 'qingshu-managed') {
-      return i18nService.t('sourceTypeQingShuManaged');
-    }
-    if (sourceType === 'preset') {
-      return i18nService.t('sourceTypePreset');
-    }
-    return i18nService.t('sourceTypeLocalCustom');
+    return i18nService.t(resolveQingShuSourceLabelKey(sourceType));
   };
   const isDirty = useMemo(() => {
     if (!agent) {
       return false;
     }
 
-    const hasBasicChanges = (
-      name !== agent.name
-      || description !== agent.description
-      || systemPrompt !== agent.systemPrompt
-      || identity !== agent.identity
-      || icon !== agent.icon
-    );
-    if (hasBasicChanges) {
+    if (hasCreateAgentDraftChanges(
+      {
+        name,
+        description,
+        systemPrompt,
+        identity,
+        icon,
+        skillIds,
+        toolBundleIds,
+        boundPlatforms,
+      },
+      {
+        name: agent.name,
+        description: agent.description,
+        systemPrompt: agent.systemPrompt,
+        identity: agent.identity,
+        icon: agent.icon,
+        skillIds: agent.skillIds ?? [],
+        toolBundleIds: savedToolBundleIds,
+        boundPlatforms: initialBoundPlatforms,
+      },
+    )) {
       return true;
     }
 
-    const normalizedAgentSkillIds = agent.skillIds ?? [];
-    if (
-      skillIds.length !== normalizedAgentSkillIds.length
-      || skillIds.some((skillId, index) => skillId !== normalizedAgentSkillIds[index])
-    ) {
+    if (hasOrderedSelectionChanges(managedExtraSkillIds, savedManagedExtraSkillIds)) {
       return true;
     }
 
-    if (
-      toolBundleIds.length !== savedToolBundleIds.length
-      || toolBundleIds.some((bundleId, index) => bundleId !== savedToolBundleIds[index])
-    ) {
-      return true;
-    }
-
-    if (
-      managedExtraSkillIds.length !== savedManagedExtraSkillIds.length
-      || managedExtraSkillIds.some((skillId, index) => skillId !== savedManagedExtraSkillIds[index])
-    ) {
-      return true;
-    }
-
-    return (
-      boundPlatforms.size !== initialBoundPlatforms.size
-      || [...boundPlatforms].some((platform) => !initialBoundPlatforms.has(platform))
-    );
+    return false;
   }, [
     agent,
     boundPlatforms,
@@ -339,21 +352,13 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         debugToolBundleIds,
       }));
       // Persist IM bindings if changed
-      const bindingsChanged =
-        boundPlatforms.size !== initialBoundPlatforms.size ||
-        [...boundPlatforms].some((p) => !initialBoundPlatforms.has(p));
+      const bindingsChanged = hasPlatformBindingChanges(boundPlatforms, initialBoundPlatforms);
       if (bindingsChanged && imConfig) {
-        const currentBindings = { ...(imConfig.settings?.platformAgentBindings || {}) };
-        // Remove old bindings for this agent
-        for (const key of Object.keys(currentBindings)) {
-          if (currentBindings[key] === agentId) {
-            delete currentBindings[key];
-          }
-        }
-        // Add new bindings
-        for (const platform of boundPlatforms) {
-          currentBindings[platform] = agentId;
-        }
+        const currentBindings = buildAgentPlatformBindings(
+          imConfig.settings?.platformAgentBindings,
+          agentId,
+          boundPlatforms,
+        );
         await imService.persistConfig({
           settings: { ...imConfig.settings, platformAgentBindings: currentBindings },
         });
@@ -384,20 +389,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
   };
 
   const isPlatformConfigured = (platform: Platform): boolean => {
-    if (!imConfig) return false;
-    if (platform === 'dingtalk') {
-      return imConfig.dingtalk.instances.some((item) => item.enabled);
-    }
-    if (platform === 'feishu') {
-      return imConfig.feishu.instances.some((item) => item.enabled);
-    }
-    if (platform === 'qq') {
-      return imConfig.qq.instances.some((item) => item.enabled);
-    }
-    if (platform === 'wecom') {
-      return imConfig.wecom.instances.some((item) => item.enabled);
-    }
-    return imConfig[platform]?.enabled === true;
+    return isAgentImBindingPlatformConfigured(imConfig, platform);
   };
 
   const isMainAgent = agentId === 'main';
@@ -583,10 +575,16 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                               <span className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
                                 {i18nService.t('sourceTypeQingShuManaged')}
                               </span>
-                              {getManagedLockTag('allowed' in skill ? skill.allowed : undefined) ? (
+                              {getManagedLockTag(
+                                'allowed' in skill ? skill.allowed : undefined,
+                                'policyNote' in skill ? skill.policyNote : undefined,
+                              ) ? (
                                 <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
                                   <LockClosedIcon className="h-3 w-3" />
-                                  {getManagedLockTag('allowed' in skill ? skill.allowed : undefined)}
+                                  {getManagedLockTag(
+                                    'allowed' in skill ? skill.allowed : undefined,
+                                    'policyNote' in skill ? skill.policyNote : undefined,
+                                  )}
                                 </span>
                               ) : null}
                             </div>
@@ -724,10 +722,16 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                           <span className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
                             {i18nService.t('readOnlyTag')}
                           </span>
-                          {getManagedLockTag('allowed' in tool ? tool.allowed : undefined) ? (
+                          {getManagedLockTag(
+                            'allowed' in tool ? tool.allowed : undefined,
+                            'policyNote' in tool ? tool.policyNote : undefined,
+                          ) ? (
                             <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-medium text-secondary">
                               <LockClosedIcon className="h-3 w-3" />
-                              {getManagedLockTag('allowed' in tool ? tool.allowed : undefined)}
+                              {getManagedLockTag(
+                                'allowed' in tool ? tool.allowed : undefined,
+                                'policyNote' in tool ? tool.policyNote : undefined,
+                              )}
                             </span>
                           ) : null}
                         </div>

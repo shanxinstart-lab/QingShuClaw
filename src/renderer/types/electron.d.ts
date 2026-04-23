@@ -79,6 +79,15 @@ interface WakeInputDictationRequest {
   source?: 'wake' | 'follow_up';
 }
 
+interface OpenClawSessionPatch {
+  model?: string | null;
+  thinkingLevel?: string | null;
+  reasoningLevel?: string | null;
+  elevatedLevel?: string | null;
+  responseUsage?: 'off' | 'tokens' | 'full' | null;
+  sendPolicy?: 'allow' | 'deny' | null;
+}
+
 interface TtsAvailability {
   enabled?: boolean;
   supported: boolean;
@@ -484,6 +493,12 @@ interface IElectronAPI {
     sessionPolicy: {
       get: () => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
       set: (config: OpenClawSessionPolicyConfig) => Promise<{ success: boolean; config?: OpenClawSessionPolicyConfig; error?: string }>;
+    };
+    session: {
+      patch: (options: {
+        sessionId: string;
+        patch: OpenClawSessionPatch;
+      }) => Promise<{ success: boolean; session?: CoworkSession; error?: string }>;
     };
   };
   ipcRenderer: {

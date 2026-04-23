@@ -99,10 +99,13 @@ const translations: Record<LanguageType, Record<string, string>> = {
     imUnknownPlatform: '未知平台。',
 
     // QQ
+    imQqFillAppIdSecret: '请补全 App ID 和 App Secret 后重新测试连通性。',
     imQqOpenClawHint: 'QQ 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
     imQqMentionHint: '频道中需 @机器人 触发对话，也支持私信和群聊。',
     imQqAuthPassed: 'QQ 鉴权通过（AccessToken 已获取）。',
     imQqAccessTokenFailed: '获取 AccessToken 失败',
+    imQqAuthFailed: 'QQ 鉴权失败: {error}',
+    imQqCheckAppIdSecret: '请检查 App ID 和 App Secret 是否正确。',
 
     // Telegram
     imTelegramMissingBotToken: '缺少必要配置项: botToken',
@@ -261,10 +264,13 @@ const translations: Record<LanguageType, Record<string, string>> = {
     imUnknownPlatform: 'Unknown platform.',
 
     // QQ
+    imQqFillAppIdSecret: 'Please provide the App ID and App Secret and test connectivity again.',
     imQqOpenClawHint: 'QQ runs via OpenClaw runtime. The bot will connect automatically when OpenClaw Gateway starts.',
     imQqMentionHint: '@mention the bot in channels to start a conversation. Direct messages and group chats are also supported.',
     imQqAuthPassed: 'QQ authentication passed (AccessToken obtained).',
     imQqAccessTokenFailed: 'Failed to obtain AccessToken',
+    imQqAuthFailed: 'QQ authentication failed: {error}',
+    imQqCheckAppIdSecret: 'Please check that the App ID and App Secret are correct.',
 
     // Telegram
     imTelegramMissingBotToken: 'Missing required configuration: botToken',

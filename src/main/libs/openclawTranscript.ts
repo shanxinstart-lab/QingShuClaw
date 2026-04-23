@@ -351,6 +351,7 @@ export const buildTransientSessionFromOpenClawTranscript = (params: {
     pinned: false,
     cwd: '',
     systemPrompt: '',
+    modelOverride: '',
     executionMode: 'local' as CoworkExecutionMode,
     activeSkillIds: [],
     messages,

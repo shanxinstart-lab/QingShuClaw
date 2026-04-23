@@ -1,7 +1,9 @@
+import { isQingShuManagedSource } from '@shared/qingshuManaged/access';
 import React, { useState, useMemo, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import { i18nService } from '../../services/i18n';
+import { resolveQingShuSourceLabelKey } from '../../services/qingshuManagedUi';
 import { skillService } from '../../services/skill';
 import { CheckIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import AgentSkillGovernancePreview from './AgentSkillGovernancePreview';
@@ -26,13 +28,7 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({
   const [i18nReady, setI18nReady] = useState(false);
   const showGovernanceDebug = import.meta.env.DEV;
   const getSourceLabel = (sourceType?: string) => {
-    if (sourceType === 'qingshu-managed') {
-      return i18nService.t('sourceTypeQingShuManaged');
-    }
-    if (sourceType === 'preset') {
-      return i18nService.t('sourceTypePreset');
-    }
-    return i18nService.t('sourceTypeLocalCustom');
+    return i18nService.t(resolveQingShuSourceLabelKey(sourceType));
   };
 
   // Load localized skill descriptions from marketplace API
@@ -43,7 +39,7 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({
   }, []);
 
   const enabledSkills = useMemo(
-    () => skills.filter((s) => s.enabled && (allowManagedSkills || s.sourceType !== 'qingshu-managed')),
+    () => skills.filter((s) => s.enabled && (allowManagedSkills || !isQingShuManagedSource(s.sourceType))),
     [allowManagedSkills, skills],
   );
 

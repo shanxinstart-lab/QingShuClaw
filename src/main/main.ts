@@ -138,6 +138,7 @@ import { getLogFilePath, getRecentMainLogEntries,initLogger } from './logger';
 import { McpStore } from './mcpStore';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import { loadOpenClawSessionPolicyConfig, saveOpenClawSessionPolicyConfig } from './openclawSessionPolicy/store';
+import { OpenClawSessionIpc, type OpenClawSessionPatch } from '../common/openclawSession';
 import { QingShuManagedCatalogService } from './qingshuManaged/catalogService';
 import {
   createQingShuAuthFetchProvider,
@@ -1623,6 +1624,18 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
  */
 let mcpBridgeRefreshPromise: Promise<{ tools: number; error?: string }> | null = null;
 
+const broadcastMcpBridgeSync = (channel: string, data?: Record<string, unknown>): void => {
+  const windows = BrowserWindow.getAllWindows();
+  windows.forEach((win) => {
+    if (win.isDestroyed()) return;
+    try {
+      win.webContents.send(channel, data ?? {});
+    } catch (error) {
+      console.error(`[McpBridge] Failed to broadcast ${channel}:`, error);
+    }
+  });
+};
+
 const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
   if (mcpBridgeRefreshPromise) {
     return mcpBridgeRefreshPromise;
@@ -1630,6 +1643,7 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
   mcpBridgeRefreshPromise = (async () => {
     try {
       console.log('[McpBridge] refreshing after config change...');
+      broadcastMcpBridgeSync('mcp:bridge:syncStart');
 
       // 1. Stop existing MCP servers (but keep HTTP callback server alive — port stays the same)
       if (mcpServerManager) {
@@ -1658,7 +1672,14 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
       console.error('[McpBridge] refresh error:', msg);
       return { tools: 0, error: msg };
     }
-  })().finally(() => {
+  })().then((result) => {
+    broadcastMcpBridgeSync('mcp:bridge:syncDone', { tools: result.tools, error: result.error });
+    return result;
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    broadcastMcpBridgeSync('mcp:bridge:syncDone', { tools: 0, error: message });
+    return { tools: 0, error: message };
+  }).finally(() => {
     mcpBridgeRefreshPromise = null;
   });
   return mcpBridgeRefreshPromise;
@@ -4163,6 +4184,60 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle(OpenClawSessionIpc.Patch, async (_event, input: unknown) => {
+    try {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error('Invalid OpenClaw session patch input.');
+      }
+
+      const request = input as { sessionId?: unknown; patch?: unknown };
+      const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : '';
+      if (!sessionId) {
+        throw new Error('Session ID is required.');
+      }
+
+      const rawPatch = request.patch && typeof request.patch === 'object' && !Array.isArray(request.patch)
+        ? request.patch as Record<string, unknown>
+        : {};
+      const patch: OpenClawSessionPatch = {
+        model: typeof rawPatch.model === 'string' ? rawPatch.model : rawPatch.model === null ? null : undefined,
+        thinkingLevel: typeof rawPatch.thinkingLevel === 'string' ? rawPatch.thinkingLevel : rawPatch.thinkingLevel === null ? null : undefined,
+        reasoningLevel: typeof rawPatch.reasoningLevel === 'string' ? rawPatch.reasoningLevel : rawPatch.reasoningLevel === null ? null : undefined,
+        elevatedLevel: typeof rawPatch.elevatedLevel === 'string' ? rawPatch.elevatedLevel : rawPatch.elevatedLevel === null ? null : undefined,
+        responseUsage: rawPatch.responseUsage === 'off' || rawPatch.responseUsage === 'tokens' || rawPatch.responseUsage === 'full'
+          ? rawPatch.responseUsage
+          : rawPatch.responseUsage === null
+            ? null
+            : undefined,
+        sendPolicy: rawPatch.sendPolicy === 'allow' || rawPatch.sendPolicy === 'deny'
+          ? rawPatch.sendPolicy
+          : rawPatch.sendPolicy === null
+            ? null
+            : undefined,
+      };
+
+      await getCoworkEngineRouter().patchSession(sessionId, patch);
+
+      if (patch.model !== undefined) {
+        getCoworkStore().updateSession(sessionId, {
+          modelOverride: patch.model ?? '',
+        });
+      }
+
+      const session = getCoworkStore().getSession(sessionId);
+      if (!session) {
+        throw new Error(`Session ${sessionId} not found`);
+      }
+
+      return { success: true, session };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to patch OpenClaw session',
+      };
+    }
+  });
+
   ipcMain.handle('cowork:memory:listEntries', async (_event, input: {
     query?: string;
     status?: 'created' | 'stale' | 'deleted' | 'all';
@@ -5650,7 +5725,7 @@ if (!gotTheLock) {
       ...(isMac
         ? {
             titleBarStyle: 'hiddenInset' as const,
-            trafficLightPosition: { x: 12, y: 20 },
+            trafficLightPosition: { x: 16, y: 16 },
           }
         : isWindows
           ? {

@@ -410,6 +410,7 @@ export interface CoworkSession {
   pinned: boolean;
   cwd: string;
   systemPrompt: string;
+  modelOverride: string;
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
@@ -624,8 +625,8 @@ export class CoworkStore {
     const now = Date.now();
 
     this.db.run(`
-      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
-      VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
+      VALUES (?, ?, NULL, 'idle', ?, ?, '', ?, ?, ?, 0, ?, ?)
     `, [id, title, cwd, systemPrompt, executionMode, JSON.stringify(activeSkillIds), agentId, now, now]);
 
     this.saveDb();
@@ -638,6 +639,7 @@ export class CoworkStore {
       pinned: false,
       cwd,
       systemPrompt,
+      modelOverride: '',
       executionMode,
       activeSkillIds,
       agentId,
@@ -656,6 +658,7 @@ export class CoworkStore {
       pinned?: number | null;
       cwd: string;
       system_prompt: string;
+      model_override?: string | null;
       execution_mode?: string | null;
       active_skill_ids?: string | null;
       agent_id?: string | null;
@@ -664,7 +667,7 @@ export class CoworkStore {
     }
 
     const row = this.getOne<SessionRow>(`
-      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `, [id]);
@@ -690,6 +693,7 @@ export class CoworkStore {
       pinned: Boolean(row.pinned),
       cwd: row.cwd,
       systemPrompt: row.system_prompt,
+      modelOverride: row.model_override || '',
       executionMode: (row.execution_mode as CoworkExecutionMode) || 'local',
       activeSkillIds,
       agentId: row.agent_id || 'main',
@@ -701,7 +705,7 @@ export class CoworkStore {
 
   updateSession(
     id: string,
-    updates: Partial<Pick<CoworkSession, 'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'executionMode'>>
+    updates: Partial<Pick<CoworkSession, 'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'modelOverride' | 'executionMode'>>
   ): void {
     const now = Date.now();
     const setClauses: string[] = ['updated_at = ?'];
@@ -726,6 +730,10 @@ export class CoworkStore {
     if (updates.systemPrompt !== undefined) {
       setClauses.push('system_prompt = ?');
       values.push(updates.systemPrompt);
+    }
+    if (updates.modelOverride !== undefined) {
+      setClauses.push('model_override = ?');
+      values.push(updates.modelOverride);
     }
     if (updates.executionMode !== undefined) {
       setClauses.push('execution_mode = ?');

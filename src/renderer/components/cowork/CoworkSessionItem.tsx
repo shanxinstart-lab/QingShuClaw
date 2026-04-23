@@ -8,6 +8,7 @@ import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
 import ListChecksIcon from '../icons/ListChecksIcon';
 import PencilSquareIcon from '../icons/PencilSquareIcon';
 import TrashIcon from '../icons/TrashIcon';
+import { PlatformRegistry } from '@shared/platform';
 
 interface CoworkSessionItemProps {
   session: CoworkSessionSummary;
@@ -300,7 +301,7 @@ const CoworkSessionItem: React.FC<CoworkSessionItemProps> = ({
       }}
       className={`group relative p-3 rounded-lg cursor-pointer transition-all duration-150 ${
         isActive
-          ? 'bg-black/[0.06] dark:bg-white/[0.08]'
+          ? 'bg-transparent before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r-full before:bg-primary'
           : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.05]'
       }`}
     >
@@ -349,9 +350,18 @@ const CoworkSessionItem: React.FC<CoworkSessionItemProps> = ({
                 className="flex-1 min-w-0 rounded-lg border border-border bg-background px-2 py-1 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
               />
             ) : (
-              <h3 className="text-sm font-medium text-foreground truncate">
-                {session.title}
-              </h3>
+              <div className="flex items-center gap-1.5 overflow-hidden">
+                {session.platform && (
+                  <img 
+                    src={PlatformRegistry.logo(session.platform)} 
+                    alt={session.platform}
+                    className="w-3.5 h-3.5 object-contain rounded-[3px] opacity-80 shrink-0" 
+                  />
+                )}
+                <h3 className="text-sm font-medium text-foreground truncate">
+                  {session.title}
+                </h3>
+              </div>
             )}
           </div>
           <div className="flex items-center gap-2 text-xs text-secondary">

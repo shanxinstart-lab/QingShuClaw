@@ -149,4 +149,16 @@ describe('ProviderRegistry', () => {
       expect(ProviderRegistry.getSwitchableBaseUrl('unknown', 'anthropic')).toBeUndefined();
     });
   });
+
+  describe('getOpenClawProviderId', () => {
+    test('returns explicit provider id mapping when present', () => {
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.Copilot)).toBe('lobsterai-copilot');
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.Qwen)).toBe('qwen-portal');
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.Zhipu)).toBe('zai');
+    });
+
+    test('falls back to provider name for unknown ids', () => {
+      expect(ProviderRegistry.getOpenClawProviderId('custom_unknown')).toBe('custom_unknown');
+    });
+  });
 });

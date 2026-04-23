@@ -6,7 +6,9 @@ import { useDispatch,useSelector } from 'react-redux';
 import { SpeechErrorCode } from '../../../shared/speech/constants';
 import { DEFAULT_SPEECH_INPUT_CONFIG, DEFAULT_VOICE_POST_PROCESS_CONFIG, DEFAULT_WAKE_INPUT_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
+import { agentService } from '../../services/agent';
 import { configService } from '../../services/config';
+import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
@@ -15,6 +17,7 @@ import { clearDraftAttachments, type DraftAttachment,setDraftAttachments, setDra
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { Skill } from '../../types/skill';
+import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { getCompactFolderName } from '../../utils/path';
 import AttachmentCard from './AttachmentCard';
 import PaperClipIcon from '../icons/PaperClipIcon';
@@ -26,6 +29,7 @@ import {
   type WakeActivationOverlayStateChange,
 } from '../wakeActivationOverlayHelpers';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
+import { resolveAgentModelSelection } from './agentModelSelection';
 import FolderSelectorPopover from './FolderSelectorPopover';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
@@ -163,7 +167,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const activeWakeOverlayRef = useRef(false);
 
     const isLarge = size === 'large';
-    const minHeight = isLarge ? 60 : 24;
+    const minHeight = isLarge ? 44 : 24;
     const maxHeight = isLarge ? 200 : 200;
 
   // 暴露方法给父组件
@@ -198,8 +202,33 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const agents = useSelector((state: RootState) => state.agent.agents);
+  const coworkAgentEngine = useSelector((state: RootState) => state.cowork.config.agentEngine);
+  const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const currentSession = useSelector((state: RootState) => state.cowork.currentSession);
   const isMac = window.electron.platform === 'darwin';
   const isSpeechActive = speechStatus !== 'idle';
+  const currentAgent = agents.find((agent) => agent.id === currentAgentId);
+  const currentSessionModelOverride = currentSession && currentSession.id === sessionId
+    ? currentSession.modelOverride?.trim() ?? ''
+    : '';
+  const {
+    selectedModel: effectiveSelectedModel,
+    hasInvalidExplicitModel: agentModelIsInvalid,
+  } = resolveAgentModelSelection({
+    sessionModel: currentSessionModelOverride,
+    agentModel: currentAgent?.model ?? '',
+    availableModels,
+    fallbackModel: globalSelectedModel,
+    engine: coworkAgentEngine,
+  });
+  const explicitSelectedModel = currentSessionModelOverride
+    ? resolveOpenClawModelRef(currentSessionModelOverride, availableModels) ?? null
+    : currentAgent?.model?.trim()
+      ? resolveOpenClawModelRef(currentAgent.model, availableModels) ?? null
+      : null;
 
   const getSpeechVoiceCommandConfig = useCallback(() => ({
     ...DEFAULT_SPEECH_INPUT_CONFIG,
@@ -778,11 +807,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   };
 
   const containerClass = isLarge
-    ? 'relative rounded-2xl border border-border bg-surface shadow-card focus-within:shadow-elevated focus-within:ring-1 focus-within:ring-primary/40 focus-within:border-primary'
-    : 'relative flex items-end gap-2 p-3 rounded-xl border border-border bg-surface';
+    ? 'relative rounded-[16px] border border-black/5 dark:border-white/5 bg-surface shadow-[0_2px_6px_rgba(0,0,0,0.05)] focus-within:shadow-[0_4px_12px_rgba(0,0,0,0.06)] focus-within:ring-1 focus-within:ring-primary/20 focus-within:border-primary transition-all duration-300'
+    : 'relative flex items-end gap-2 p-3 rounded-[16px] border border-black/5 dark:border-white/5 bg-surface';
 
   const textareaClass = isLarge
-    ? `w-full resize-none bg-transparent px-4 pt-2.5 pb-2 text-foreground placeholder:dark:text-foregroundSecondary/60 placeholder:text-secondary/60 focus:outline-none text-[15px] leading-6 min-h-[${minHeight}px] max-h-[${maxHeight}px]`
+    ? `w-full resize-none bg-transparent px-4 pt-3 pb-3 text-foreground placeholder:dark:text-foregroundSecondary/60 placeholder:text-secondary/60 focus:outline-none text-[15px] leading-6 min-h-[${minHeight}px] max-h-[${maxHeight}px]`
     : 'flex-1 resize-none bg-transparent text-foreground placeholder:placeholder:text-secondary focus:outline-none text-sm leading-relaxed min-h-[24px] max-h-[200px]';
 
   const truncatePath = (path: string, maxLength = 30): string => {
@@ -796,8 +825,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
   };
 
-  const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
-  const modelSupportsImage = !!selectedModel?.supportsImage;
+  const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
 
   function extractSpeechErrorReason(message?: string): string | null {
     const normalized = message?.trim();
@@ -1216,12 +1244,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={disabled || isSpeechActive}
-              rows={isLarge ? 2 : 1}
+              rows={1}
               className={textareaClass}
               style={{ minHeight: `${minHeight}px` }}
             />
-            <div className="flex items-center justify-between px-4 pb-2 pt-1.5">
-              <div className="flex items-center gap-2 relative">
+            <div className="flex items-center justify-between px-3 pb-3 pt-2">
+              <div className="flex items-center gap-3 relative">
                 {showFolderSelector && (
                   <>
                     <div className="relative group">
@@ -1229,7 +1257,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                         ref={folderButtonRef as React.RefObject<HTMLButtonElement>}
                         type="button"
                         onClick={() => setShowFolderMenu(!showFolderMenu)}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
+                        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-sm text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
                       >
                         <FolderIcon className="h-4 w-4" />
                         <span className="max-w-[150px] truncate text-xs">
@@ -1251,7 +1279,36 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     />
                   </>
                 )}
-                {showModelSelector && !remoteManaged && <ModelSelector dropdownDirection="up" />}
+                {showModelSelector && !remoteManaged && (
+                  <div className="flex flex-col items-start gap-1">
+                    <ModelSelector
+                      dropdownDirection="up"
+                      value={coworkAgentEngine === 'openclaw' ? explicitSelectedModel : undefined}
+                      onChange={coworkAgentEngine === 'openclaw'
+                        ? async (nextModel) => {
+                            if (sessionId) {
+                              await coworkService.patchSession(sessionId, {
+                                model: nextModel ? toOpenClawModelRef(nextModel) : null,
+                              });
+                              return;
+                            }
+                            if (!currentAgent) return;
+                            await agentService.updateAgent(currentAgent.id, {
+                              model: nextModel ? toOpenClawModelRef(nextModel) : '',
+                            });
+                          }
+                        : undefined}
+                      defaultLabel={sessionId
+                        ? i18nService.t('agentDefaultModel')
+                        : i18nService.t('scheduledTasksFormModelDefault')}
+                    />
+                    {coworkAgentEngine === 'openclaw' && agentModelIsInvalid && (
+                      <span className="max-w-60 text-[11px] leading-4 text-red-500">
+                        {i18nService.t('agentModelInvalidHint')}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {isMac && speechVisible && !remoteManaged && (
                   <button
                     type="button"

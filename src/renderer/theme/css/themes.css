@@ -2,11 +2,11 @@
 
 :root, [data-theme="classic-light"] {
   color-scheme: light;
-  --lobster-primary: #3B82F6;
+  --lobster-primary: #10b981;
   --lobster-primary-foreground: #ffffff;
-  --lobster-primary-hover: #2563EB;
-  --lobster-primary-muted: rgba(59,130,246,0.10);
-  --lobster-accent: #3B82F6;
+  --lobster-primary-hover: #059669;
+  --lobster-primary-muted: rgba(16,185,129,0.12);
+  --lobster-accent: #10b981;
   --lobster-accent-foreground: #ffffff;
   --lobster-background: #F8F9FB;
   --lobster-foreground: #1A1D23;
@@ -26,8 +26,8 @@
   --lobster-input-border: rgba(224,226,231,0.6);
   --lobster-scroll-thumb: #9CA3AF;
   --lobster-scroll-thumb-hover: #6B7280;
-  --lobster-gradient-1: rgba(59,130,246,0.06);
-  --lobster-gradient-2: rgba(59,130,246,0.02);
+  --lobster-gradient-1: rgba(16,185,129,0.06);
+  --lobster-gradient-2: rgba(16,185,129,0.02);
   --lobster-destructive: #ef4444;
   --lobster-destructive-foreground: #ffffff;
   --lobster-success: #22c55e;
@@ -48,11 +48,11 @@
 
 [data-theme="classic-dark"] {
   color-scheme: dark;
-  --lobster-primary: #3B82F6;
+  --lobster-primary: #10b981;
   --lobster-primary-foreground: #ffffff;
-  --lobster-primary-hover: #60A5FA;
-  --lobster-primary-muted: rgba(59,130,246,0.12);
-  --lobster-accent: #3B82F6;
+  --lobster-primary-hover: #34d399;
+  --lobster-primary-muted: rgba(16,185,129,0.12);
+  --lobster-accent: #10b981;
   --lobster-accent-foreground: #ffffff;
   --lobster-background: #0F1117;
   --lobster-foreground: #E4E5E9;
@@ -72,8 +72,8 @@
   --lobster-input-border: rgba(42,46,56,0.6);
   --lobster-scroll-thumb: #374151;
   --lobster-scroll-thumb-hover: #4B5563;
-  --lobster-gradient-1: rgba(59,130,246,0.08);
-  --lobster-gradient-2: rgba(59,130,246,0.04);
+  --lobster-gradient-1: rgba(16,185,129,0.08);
+  --lobster-gradient-2: rgba(16,185,129,0.04);
   --lobster-destructive: #ef4444;
   --lobster-destructive-foreground: #ffffff;
   --lobster-success: #22c55e;

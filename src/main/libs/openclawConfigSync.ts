@@ -16,6 +16,13 @@ import {
   resolveOpenClawExtensionConfigId,
   resolveOpenClawExtensionLoadPath,
 } from './openclawLocalExtensions';
+import {
+  buildAgentEntry,
+  buildManagedAgentEntries,
+  parsePrimaryModelRef,
+  resolveManagedSessionModelTarget,
+  resolveQualifiedAgentModelRef,
+} from './openclawAgentModels';
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
 import {
@@ -1033,7 +1040,7 @@ export class OpenClawConfigSync {
           },
           ...(workspaceDir ? { workspace: path.resolve(workspaceDir) } : {}),
         },
-        ...this.buildAgentsList(),
+        ...this.buildAgentsList(providerSelection.primaryModel, this.engineManager.getStateDir()),
       },
       ...this.buildBindings(),
       session: buildOpenClawSessionConfig(coworkConfig.openClawSessionPolicy?.keepAlive),
@@ -1492,7 +1499,7 @@ export class OpenClawConfigSync {
       }
     }
 
-    const sessionStoreChanged = this.syncManagedSessionStore(providerSelection);
+    const sessionStoreChanged = this.syncManagedSessionStore(providerSelection, allProvidersMap);
 
     // Ensure exec-approvals.json has security=full + ask=off so the gateway
     // never triggers approval-pending for any command.
@@ -1656,93 +1663,153 @@ export class OpenClawConfigSync {
     }
   }
 
-  private syncManagedSessionStore(selection: OpenClawProviderSelection): boolean {
+  private syncManagedSessionStore(
+    selection: OpenClawProviderSelection,
+    availableProviders: Record<string, OpenClawProviderSelection['providerConfig']>,
+  ): boolean {
     const shouldMigrateManagedModelRefs = !(
       selection.providerId === 'lobster' && selection.sessionModelId === selection.legacyModelId
     );
-
-    const sessionStorePath = path.join(
-      this.engineManager.getStateDir(),
-      'agents',
-      'main',
-      'sessions',
-      'sessions.json',
-    );
-
-    let storeContent = '';
-    try {
-      storeContent = fs.readFileSync(sessionStorePath, 'utf8');
-    } catch {
-      return false;
+    const fallbackTarget = parsePrimaryModelRef(selection.primaryModel) ?? {
+      providerId: selection.providerId,
+      modelId: selection.sessionModelId,
+      primaryModel: selection.primaryModel,
+    };
+    const configuredAgents = this.getAgents?.() ?? [];
+    const agentById = new Map(configuredAgents.map((agent) => [agent.id, agent]));
+    if (!agentById.has('main')) {
+      agentById.set('main', {
+        id: 'main',
+        name: 'main',
+        description: '',
+        systemPrompt: '',
+        identity: '',
+        model: '',
+        icon: '',
+        skillIds: [],
+        toolBundleIds: [],
+        enabled: true,
+        isDefault: true,
+        source: 'custom',
+        presetId: '',
+        createdAt: 0,
+        updatedAt: 0,
+      });
     }
 
-    let sessionStore: Record<string, unknown>;
-    try {
-      sessionStore = JSON.parse(storeContent) as Record<string, unknown>;
-    } catch {
-      return false;
-    }
-
-    let changed = false;
-    for (const [sessionKey, rawEntry] of Object.entries(sessionStore)) {
-      if (!rawEntry || typeof rawEntry !== 'object') {
-        continue;
+    let anyChanged = false;
+    for (const [agentId, agent] of agentById.entries()) {
+      const qualification = resolveQualifiedAgentModelRef({
+        agentModel: agent.model,
+        availableProviders,
+      });
+      if (qualification.status === 'ambiguous') {
+        console.warn(
+          `[OpenClawConfigSync] Skipped ambiguous managed session model sync for "${agent.id}" because "${qualification.modelId}" matches multiple providers: ${qualification.providerIds.join(', ')}`,
+        );
       }
 
-      const entry = rawEntry as Record<string, unknown>;
-      if (parseChannelSessionKey(sessionKey) !== null) {
-        // Channel (IM) sessions: set execSecurity to 'full' as a safety net
-        // so the gateway skips any approval flow for IM commands.
-        const execSecurity = typeof entry.execSecurity === 'string' ? entry.execSecurity.trim() : '';
-        if (execSecurity !== 'full') {
-          entry.execSecurity = 'full';
-          changed = true;
-        }
-        if (sessionSnapshotContainsDisabledManagedSkill(entry)) {
-          delete entry.skillsSnapshot;
-          changed = true;
-        }
-      }
-
-      if (!shouldMigrateManagedModelRefs || !(/^agent:[^:]+:lobsterai:/.test(sessionKey))) {
-        continue;
-      }
-
-      const entryProvider = typeof entry.modelProvider === 'string' ? entry.modelProvider.trim() : '';
-      const entryModel = typeof entry.model === 'string' ? entry.model.trim() : '';
-      if (entryProvider !== 'lobster' || entryModel !== selection.legacyModelId) {
-        continue;
-      }
-
-      entry.modelProvider = selection.providerId;
-      entry.model = selection.sessionModelId;
-      const systemPromptReport = entry.systemPromptReport;
-      if (systemPromptReport && typeof systemPromptReport === 'object') {
-        const report = systemPromptReport as Record<string, unknown>;
-        if (typeof report.provider === 'string' && report.provider.trim() === 'lobster') {
-          report.provider = selection.providerId;
-        }
-        if (typeof report.model === 'string' && report.model.trim() === selection.legacyModelId) {
-          report.model = selection.sessionModelId;
-        }
-      }
-      changed = true;
-    }
-
-    if (!changed) {
-      return false;
-    }
-
-    try {
-      this.atomicWriteFile(sessionStorePath, `${JSON.stringify(sessionStore, null, 2)}\n`);
-      return true;
-    } catch (error) {
-      console.warn(
-        '[OpenClawConfigSync] Failed to update managed session store:',
-        error instanceof Error ? error.message : String(error),
+      const sessionStorePath = path.join(
+        this.engineManager.getStateDir(),
+        'agents',
+        agentId,
+        'sessions',
+        'sessions.json',
       );
-      return false;
+
+      let storeContent = '';
+      try {
+        storeContent = fs.readFileSync(sessionStorePath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      let sessionStore: Record<string, unknown>;
+      try {
+        sessionStore = JSON.parse(storeContent) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      let changed = false;
+      for (const [sessionKey, rawEntry] of Object.entries(sessionStore)) {
+        if (!rawEntry || typeof rawEntry !== 'object') {
+          continue;
+        }
+
+        const entry = rawEntry as Record<string, unknown>;
+        if (parseChannelSessionKey(sessionKey) !== null) {
+          const execSecurity = typeof entry.execSecurity === 'string' ? entry.execSecurity.trim() : '';
+          if (execSecurity !== 'full') {
+            entry.execSecurity = 'full';
+            changed = true;
+          }
+          if (sessionSnapshotContainsDisabledManagedSkill(entry)) {
+            delete entry.skillsSnapshot;
+            changed = true;
+          }
+        }
+
+        if (!(/^agent:[^:]+:lobsterai:/.test(sessionKey))) {
+          continue;
+        }
+
+        const entryProvider = typeof entry.modelProvider === 'string' ? entry.modelProvider.trim() : '';
+        if (qualification.status === 'ambiguous') {
+          continue;
+        }
+
+        const target = resolveManagedSessionModelTarget({
+          agentModel: qualification.status === 'qualified' ? qualification.primaryModel : agent.model,
+          fallbackPrimaryModel: fallbackTarget.primaryModel,
+          availableProviders,
+          currentProviderId: entryProvider,
+        });
+        const entryModel = typeof entry.model === 'string' ? entry.model.trim() : '';
+        const shouldMigrateLegacyRef = (
+          shouldMigrateManagedModelRefs
+          && entryProvider === 'lobster'
+          && entryModel === selection.legacyModelId
+        );
+        const shouldAlignTarget = (
+          entryProvider !== target.providerId
+          || entryModel !== target.modelId
+        );
+        if (!shouldMigrateLegacyRef && !shouldAlignTarget) {
+          continue;
+        }
+
+        entry.modelProvider = target.providerId;
+        entry.model = target.modelId;
+        const systemPromptReport = entry.systemPromptReport;
+        if (systemPromptReport && typeof systemPromptReport === 'object') {
+          const report = systemPromptReport as Record<string, unknown>;
+          if (typeof report.provider === 'string' && report.provider.trim()) {
+            report.provider = target.providerId;
+          }
+          if (typeof report.model === 'string' && report.model.trim()) {
+            report.model = target.modelId;
+          }
+        }
+        changed = true;
+      }
+
+      if (!changed) {
+        continue;
+      }
+
+      try {
+        this.atomicWriteFile(sessionStorePath, `${JSON.stringify(sessionStore, null, 2)}\n`);
+        anyChanged = true;
+      } catch (error) {
+        console.warn(
+          `[OpenClawConfigSync] Failed to update managed session store for "${agentId}":`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
+
+    return anyChanged;
   }
 
   /**
@@ -1877,34 +1944,26 @@ export class OpenClawConfigSync {
    * Per-agent `identity` (name, emoji) is set from the agent database so
    * OpenClaw picks it up natively.
    */
-  private buildAgentsList(): { list?: Array<Record<string, unknown>> } {
+  private buildAgentsList(defaultPrimaryModel: string, stateDir?: string): { list?: Array<Record<string, unknown>> } {
     const agents = this.getAgents?.() ?? [];
+    const mainAgent = agents.find((agent) => agent.id === 'main');
 
     const list: Array<Record<string, unknown>> = [
-      {
-        id: 'main',
-        default: true,
-      },
-    ];
-
-    for (const agent of agents) {
-      if (agent.id === 'main' || !agent.enabled) continue;
-
-      list.push({
-        id: agent.id,
-        // Omit `workspace` — OpenClaw defaults to {STATE_DIR}/workspace-{agentId}/
-        // which keeps agent workspaces decoupled from the user's working directory.
-        ...(agent.name || agent.icon ? {
-          identity: {
-            ...(agent.name ? { name: agent.name } : {}),
-            ...(agent.icon ? { emoji: agent.icon } : {}),
+      mainAgent
+        ? buildAgentEntry(mainAgent, defaultPrimaryModel)
+        : {
+            id: 'main',
+            default: true,
+            model: {
+              primary: defaultPrimaryModel,
+            },
           },
-        } : {}),
-        // Per-agent skill whitelist: only when skillIds is non-empty.
-        // OpenClaw's resolveAgentSkillsFilter() uses this to filter available skills.
-        ...(agent.skillIds && agent.skillIds.length > 0 ? { skills: agent.skillIds } : {}),
-      });
-    }
+      ...buildManagedAgentEntries({
+        agents,
+        fallbackPrimaryModel: defaultPrimaryModel,
+        stateDir,
+      }),
+    ];
 
     return list.length > 0 ? { list } : {};
   }

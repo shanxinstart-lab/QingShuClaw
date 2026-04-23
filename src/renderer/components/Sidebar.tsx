@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 
+import { AppCustomEvent } from '../constants/app';
 import { RootState } from '../store';
+import { beginLoadSession } from '../store/slices/coworkSlice';
 import { agentService } from '../services/agent';
 import { coworkService } from '../services/cowork';
 import { i18nService } from '../services/i18n';
@@ -68,6 +70,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   updateBadge,
   hideLogin,
 }) => {
+  const dispatch = useDispatch();
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const sessions = useSelector((state: RootState) => state.cowork.sessions);
   const filteredSessions = sessions.filter((s) => !s.agentId || s.agentId === currentAgentId);
@@ -100,7 +103,14 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const handleSelectSession = async (sessionId: string) => {
     onShowCowork();
-    await coworkService.loadSession(sessionId);
+    dispatch(beginLoadSession(sessionId));
+    const loadedSession = await coworkService.loadSession(sessionId);
+    if (!loadedSession) {
+      coworkService.clearSession();
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('coworkLoadSessionFailed'),
+      }));
+    }
   };
 
   const handleDeleteSession = async (sessionId: string) => {
@@ -291,6 +301,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
         sessions={filteredSessions}
+        isLoading={sessionsLoading}
         currentSessionId={currentSessionId}
         onSelectSession={handleSelectSession}
         onDeleteSession={handleDeleteSession}
@@ -437,7 +448,9 @@ const SidebarAgentList: React.FC<{
             }`}
             onClick={() => handleSwitch(agent.id)}
           >
-            <span className="text-base leading-none">{agent.icon || (agent.id === 'main' ? '🦞' : '🤖')}</span>
+            <div className={`flex shrink-0 h-[22px] w-[22px] items-center justify-center rounded-[8px] overflow-hidden ${currentAgentId === agent.id ? 'bg-primary/20 ring-1 ring-primary/30' : 'bg-black/5 dark:bg-white/5 ring-1 ring-black/5 dark:ring-white/5 shadow-sm'}`}>
+              <span className="text-sm leading-none drop-shadow-sm">{agent.icon || (agent.id === 'main' ? '🦞' : '🤖')}</span>
+            </div>
             <span className="truncate flex-1 text-xs font-medium">{agent.name}</span>
           </div>
         ))}

@@ -5,6 +5,7 @@ import { useSelector } from 'react-redux';
 import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
+import { resolveQingShuManagedAccessPresentation } from '../../services/qingshuManagedUi';
 import { RootState } from '../../store';
 import type { PresetAgent } from '../../types/agent';
 import ComposeIcon from '../icons/ComposeIcon';
@@ -52,8 +53,18 @@ const AgentsView: React.FC<AgentsViewProps> = ({
   const presetAgents = enabledAgents.filter((a) => a.source === 'preset');
   const managedAgents = visibleAgents.filter((a) => a.source === 'managed');
   const customAgents = enabledAgents.filter((a) => a.source === 'custom');
-  const managedAvailableAgents = managedAgents.filter((agent) => isLoggedIn && agent.allowed !== false);
-  const managedLockedAgents = managedAgents.filter((agent) => !isLoggedIn || agent.allowed === false);
+  const managedAvailableAgents = managedAgents.filter((agent) => !resolveQingShuManagedAccessPresentation({
+    sourceType: agent.sourceType,
+    allowed: agent.allowed,
+    isLoggedIn,
+    policyNote: agent.policyNote,
+  }).isLocked);
+  const managedLockedAgents = managedAgents.filter((agent) => resolveQingShuManagedAccessPresentation({
+    sourceType: agent.sourceType,
+    allowed: agent.allowed,
+    isLoggedIn,
+    policyNote: agent.policyNote,
+  }).isLocked);
   const uninstalledPresets = presets.filter((p) => !p.installed);
 
   const handleAddPreset = async (presetId: string) => {
@@ -75,7 +86,7 @@ const AgentsView: React.FC<AgentsViewProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-background h-full">
+    <div className="flex-1 flex flex-col bg-surface h-full">
       {/* Header */}
       <div className="draggable flex h-16 items-center justify-between px-8 border-b border-border shrink-0">
         <div className={`flex items-center gap-3 ${isMac ? 'pl-[68px]' : ''}`}>
@@ -208,9 +219,15 @@ const AgentsView: React.FC<AgentsViewProps> = ({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {managedLockedAgents.map((agent) => {
-                      const unavailableLabel = !isLoggedIn
-                        ? i18nService.t('managedUnavailableTag')
-                        : i18nService.t('managedForbiddenTag');
+                      const access = resolveQingShuManagedAccessPresentation({
+                        sourceType: agent.sourceType,
+                        allowed: agent.allowed,
+                        isLoggedIn,
+                        policyNote: agent.policyNote,
+                      });
+                      const unavailableLabel = access.lockTagKey
+                        ? i18nService.t(access.lockTagKey)
+                        : '';
                       return (
                         <AgentCard
                           key={agent.id}
@@ -338,13 +355,13 @@ const AgentCard: React.FC<{
       </div>
     )}
 
-    {/* Icon with gradient background */}
-    <div className={`flex h-11 w-11 items-center justify-center rounded-2xl transition-transform duration-200 group-hover:scale-105 ${
+    {/* Icon with gradient background & mask */}
+    <div className={`flex shrink-0 h-11 w-11 items-center justify-center rounded-[14px] overflow-hidden transition-transform duration-200 group-hover:scale-105 ${
       isActive
-        ? 'bg-primary/10 ring-1 ring-primary/15'
-        : 'bg-background ring-1 ring-border/40'
+        ? 'bg-primary/10 ring-1 ring-primary/20'
+        : 'bg-black/5 dark:bg-white/5 ring-1 ring-black/5 dark:ring-white/5 shadow-sm'
     }`}>
-      <span className="text-2xl">{icon || '🤖'}</span>
+      <span className="text-2xl drop-shadow-sm">{icon || '🤖'}</span>
     </div>
 
     <div className="min-w-0 w-full">
@@ -382,8 +399,8 @@ const UninstalledPresetCard: React.FC<{
   onAdd: () => void;
 }> = ({ icon, name, description, isAdding, onAdd }) => (
   <div className="group flex flex-col items-start gap-3 p-5 rounded-2xl border border-dashed border-border/50 bg-surface/30 transition-all duration-250 min-h-[160px] hover:border-primary/30 hover:bg-surface/50">
-    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-background/80 ring-1 ring-border/30">
-      <span className="text-2xl opacity-60">{icon || '🤖'}</span>
+    <div className="flex shrink-0 h-11 w-11 items-center justify-center rounded-[14px] overflow-hidden bg-background/80 ring-1 ring-border/50 shadow-sm">
+      <span className="text-2xl opacity-60 drop-shadow-sm">{icon || '🤖'}</span>
     </div>
     <div className="min-w-0 w-full flex-1">
       <div className="text-sm font-semibold text-foreground/70 truncate">

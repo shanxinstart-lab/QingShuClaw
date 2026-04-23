@@ -183,15 +183,17 @@ const ManagedAgentMark: React.FC = () => (
 const SessionSourceIcon: React.FC<{ session: CoworkSessionSummary }> = ({ session }) => {
   if (session.source === 'im' && session.platform) {
     return (
-      <img
-        src={`/${PlatformRegistry.logo(session.platform as Platform)}`}
-        alt={PlatformRegistry.get(session.platform as Platform).label}
-        className="h-3 w-3 object-contain"
-      />
+      <span className="flex h-3.5 w-3.5 items-center justify-center overflow-hidden rounded-[4px] bg-white/95 shadow-[0_1px_2px_rgba(15,23,42,0.08)] ring-1 ring-black/8 dark:bg-white/95 dark:ring-white/12">
+        <img
+          src={PlatformRegistry.logo(session.platform as Platform)}
+          alt={PlatformRegistry.get(session.platform as Platform).label}
+          className="h-3 w-3 object-contain"
+        />
+      </span>
     );
   }
 
-  return <ChatBubbleOvalLeftEllipsisIcon className="h-3 w-3" />;
+  return <ChatBubbleOvalLeftEllipsisIcon className="h-3.5 w-3.5" />;
 };
 
 const ConversationGroupBlock: React.FC<{
@@ -297,16 +299,12 @@ const ConversationGroupBlock: React.FC<{
               return (
                 <div
                   key={session.id}
-                  className={`group/session relative flex items-center gap-1.5 rounded-xl px-2 py-1.5 transition-colors duration-200 ${
+                  className={`group/session relative flex items-center gap-1.5 rounded-lg px-2.5 py-2 transition-colors duration-200 ${
                     isActive
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-foreground hover:bg-background/80'
+                      ? 'bg-transparent text-primary font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r-full before:bg-primary'
+                      : 'text-foreground hover:bg-surface-raised'
                   } ${session.status === 'running' && !isActive ? 'qs-session-running' : ''}`}
                 >
-                  {/* Active indicator bar */}
-                  {isActive && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-[2px] rounded-r-full bg-primary animate-scale-in" />
-                  )}
                   {isBatchMode && (
                     <button
                       type="button"
@@ -850,51 +848,47 @@ const SecondarySidebar: React.FC<SecondarySidebarProps> = ({
 
   return (
     <>
-      <aside className="flex w-[320px] shrink-0 flex-col border-r border-border bg-background px-5 py-5">
+      <aside className={`flex w-[320px] shrink-0 flex-col border-r border-black/5 dark:border-white/5 bg-surface px-5 pb-5 ${window.electron?.platform === 'darwin' ? 'pt-8' : 'pt-5'}`}>
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-2">
             <div className="relative min-w-0 flex-1">
-              <SearchIcon className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
+              <SearchIcon className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
               <input
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    onOpenGlobalSearch();
+                  }
+                }}
                 placeholder={i18nService.t('workbenchConversationSearchPlaceholder')}
-                className="w-full rounded-[18px] border border-border bg-surface py-3 pl-11 pr-4 text-sm text-foreground outline-none transition-colors placeholder:text-secondary focus:border-primary/40 focus:ring-2 focus:ring-primary/15"
+                className="w-full rounded-lg border border-border bg-surface py-2.5 pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-secondary focus:border-primary/40 focus:ring-2 focus:ring-primary/15"
               />
             </div>
-            <button
-              type="button"
-              onClick={onOpenGlobalSearch}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[16px] border border-border bg-surface text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
-              aria-label={i18nService.t('workbenchGlobalSearchAction')}
-              title={i18nService.t('workbenchGlobalSearchAction')}
-            >
-              <SearchIcon className="h-4 w-4" />
-            </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
               onClick={() => setIsCreateAgentOpen(true)}
-              className="group flex items-center justify-center gap-2 rounded-[16px] border border-border bg-surface px-3.5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised hover:text-foreground"
+              className="group flex h-[38px] items-center justify-center gap-2 rounded-lg border border-transparent bg-primary px-3 text-sm font-medium text-white shadow-sm transition-all hover:bg-primary-hover active:scale-[0.98]"
             >
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary transition-colors group-hover:bg-primary/14">
-                <PlusIcon className="h-4 w-4" />
+              <span className="flex items-center justify-center text-white">
+                <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
               </span>
               <span>{i18nService.t('workbenchCreateDedicatedAgent')}</span>
             </button>
             <button
               type="button"
               onClick={onOpenAgentWorkspace}
-              className={`group flex items-center justify-center gap-2 rounded-[16px] border px-3.5 py-2.5 text-sm font-medium transition-colors ${
+              className={`group flex h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors ${
                 isAgentWorkspaceActive
                   ? 'border-primary/25 bg-primary/10 text-primary'
                   : 'border-border bg-surface text-foreground hover:bg-surface-raised'
               }`}
             >
-              <span className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
-                isAgentWorkspaceActive ? 'bg-primary/14 text-primary' : 'bg-surface text-secondary group-hover:text-foreground'
+              <span className={`flex items-center justify-center transition-colors ${
+                isAgentWorkspaceActive ? 'text-primary' : 'text-secondary group-hover:text-foreground'
               }`}>
                 <RectangleStackIcon className="h-4 w-4" />
               </span>

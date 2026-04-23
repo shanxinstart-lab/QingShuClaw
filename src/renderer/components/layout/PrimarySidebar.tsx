@@ -34,7 +34,7 @@ const NAV_ITEMS: NavItem[] = [
 
 const PrimarySidebar: React.FC<PrimarySidebarProps> = ({ activeView, onSelectView, onOpenSettings }) => {
   return (
-    <aside className="flex w-[96px] shrink-0 flex-col border-r border-border bg-background px-2.5 py-4">
+    <aside className="flex w-[96px] shrink-0 flex-col border-r border-black/5 dark:border-white/5 bg-surface px-2.5 py-4">
       <div className="draggable h-8 shrink-0" />
 
       <div className="mt-2 flex shrink-0 flex-col items-center px-1 text-center">
@@ -57,9 +57,6 @@ const PrimarySidebar: React.FC<PrimarySidebarProps> = ({ activeView, onSelectVie
               }`}
               aria-current={isActive ? 'page' : undefined}
             >
-              {isActive && (
-                <span className="absolute left-0 top-1/2 h-7 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
-              )}
               <span
                 className={`flex h-9 w-9 items-center justify-center rounded-[14px] transition-colors duration-200 ${
                   isActive
@@ -86,7 +83,7 @@ const PrimarySidebar: React.FC<PrimarySidebarProps> = ({ activeView, onSelectVie
           </span>
           <span className="text-[11px] font-medium leading-4">{i18nService.t('settings')}</span>
         </button>
-        <div className="relative overflow-hidden rounded-[20px] border border-border bg-surface/70 px-2.5 py-3 text-center">
+        <div className="px-2.5 py-2 text-center opacity-90">
           <div className="flex items-center justify-center">
             <QingShuBrandMark
               className="relative flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-500 shadow-sm shadow-emerald-500/20 ring-1 ring-emerald-300/25"

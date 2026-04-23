@@ -3,8 +3,10 @@ import { XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import { i18nService } from '../../services/i18n';
 import type { CoworkSession, CoworkMessage } from '../../types/cowork';
 import {
-  buildDisplayItems,
   buildConversationTurns,
+  buildDisplayItems,
+} from '../cowork/coworkConversationTurns';
+import {
   UserMessageItem,
   AssistantTurnBlock,
 } from '../cowork/CoworkSessionDetail';

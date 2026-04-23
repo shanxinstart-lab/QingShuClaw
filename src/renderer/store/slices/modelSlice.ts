@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+
 import { defaultConfig, getProviderDisplayName } from '../../config';
 
 export interface Model {
@@ -57,6 +58,7 @@ const defaultModelProvider = defaultConfig.model.defaultModelProvider;
 interface ModelState {
   selectedModel: Model;
   availableModels: Model[];
+  selectedModelDirty: boolean;
 }
 
 const initialState: ModelState = {
@@ -66,6 +68,7 @@ const initialState: ModelState = {
       && (!defaultModelProvider || model.providerKey === defaultModelProvider)
   ) || availableModels[0],
   availableModels: availableModels,
+  selectedModelDirty: false,
 };
 
 const modelSlice = createSlice({
@@ -74,6 +77,14 @@ const modelSlice = createSlice({
   reducers: {
     setSelectedModel: (state, action: PayloadAction<Model>) => {
       state.selectedModel = action.payload;
+      state.selectedModelDirty = true;
+    },
+    setSelectedModelSilently: (state, action: PayloadAction<Model>) => {
+      state.selectedModel = action.payload;
+      state.selectedModelDirty = false;
+    },
+    markSelectedModelPersisted: (state) => {
+      state.selectedModelDirty = false;
     },
     setAvailableModels: (state, action: PayloadAction<Model[]>) => {
       // 保留已有的服务端模型，只更新用户自配模型（与 setServerModels 对称）
@@ -89,6 +100,7 @@ const modelSlice = createSlice({
         } else {
           // 如果当前选中的模型不在新的可用模型列表中，选择第一个可用模型
           state.selectedModel = state.availableModels[0];
+          state.selectedModelDirty = false;
         }
       }
     },
@@ -104,6 +116,7 @@ const modelSlice = createSlice({
           state.selectedModel = matchedModel;
         } else {
           state.selectedModel = state.availableModels[0];
+          state.selectedModelDirty = false;
         }
       }
     },
@@ -113,10 +126,18 @@ const modelSlice = createSlice({
       // 如果当前选中的是服务端模型，切换到第一个可用模型
       if (state.selectedModel.isServerModel && state.availableModels.length > 0) {
         state.selectedModel = state.availableModels[0];
+        state.selectedModelDirty = false;
       }
     },
   },
 });
 
-export const { setSelectedModel, setAvailableModels, setServerModels, clearServerModels } = modelSlice.actions;
+export const {
+  setSelectedModel,
+  setSelectedModelSilently,
+  markSelectedModelPersisted,
+  setAvailableModels,
+  setServerModels,
+  clearServerModels,
+} = modelSlice.actions;
 export default modelSlice.reducer; 

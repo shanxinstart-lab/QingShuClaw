@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+import { OpenClawSessionIpc } from '../common/openclawSession';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
@@ -56,6 +57,16 @@ contextBridge.exposeInMainWorld('electron', {
     setEnabled: (options: { id: string; enabled: boolean }) => ipcRenderer.invoke('mcp:setEnabled', options),
     fetchMarketplace: () => ipcRenderer.invoke('mcp:fetchMarketplace'),
     refreshBridge: () => ipcRenderer.invoke('mcp:refreshBridge'),
+    onBridgeSyncStart: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('mcp:bridge:syncStart', handler);
+      return () => ipcRenderer.removeListener('mcp:bridge:syncStart', handler);
+    },
+    onBridgeSyncDone: (callback: (data: { tools: number; error?: string }) => void) => {
+      const handler = (_event: any, data: { tools: number; error?: string }) => callback(data);
+      ipcRenderer.on('mcp:bridge:syncDone', handler);
+      return () => ipcRenderer.removeListener('mcp:bridge:syncDone', handler);
+    },
   },
   permissions: {
     checkCalendar: () => ipcRenderer.invoke('permissions:checkCalendar'),
@@ -159,6 +170,19 @@ contextBridge.exposeInMainWorld('electron', {
       get: () => ipcRenderer.invoke('openclaw:sessionPolicy:get'),
       set: (config: { keepAlive: '1d' | '7d' | '30d' | '365d' }) =>
         ipcRenderer.invoke('openclaw:sessionPolicy:set', config),
+    },
+    session: {
+      patch: (options: {
+        sessionId: string;
+        patch: {
+          model?: string | null;
+          thinkingLevel?: string | null;
+          reasoningLevel?: string | null;
+          elevatedLevel?: string | null;
+          responseUsage?: 'off' | 'tokens' | 'full' | null;
+          sendPolicy?: 'allow' | 'deny' | null;
+        };
+      }) => ipcRenderer.invoke(OpenClawSessionIpc.Patch, options),
     },
   },
   agents: {

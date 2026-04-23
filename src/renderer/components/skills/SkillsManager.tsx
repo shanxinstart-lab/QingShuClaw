@@ -14,9 +14,14 @@ import PlusCircleIcon from '../icons/PlusCircleIcon';
 import UploadIcon from '../icons/UploadIcon';
 import FolderOpenIcon from '../icons/FolderOpenIcon';
 import LinkIcon from '../icons/LinkIcon';
+import PencilSquareIcon from '../icons/PencilSquareIcon';
 import PuzzleIcon from '../icons/PuzzleIcon';
 import TrashIcon from '../icons/TrashIcon';
 import { i18nService } from '../../services/i18n';
+import {
+  resolveQingShuManagedAccessPresentation,
+  resolveQingShuSourceLabelKey,
+} from '../../services/qingshuManagedUi';
 import { skillService, resolveLocalizedText, compareVersions } from '../../services/skill';
 import { setSkills } from '../../store/slices/skillSlice';
 import { RootState } from '../../store';
@@ -26,15 +31,49 @@ import SkillSecurityReport from './SkillSecurityReport';
 import QingShuGovernancePreview from './QingShuGovernancePreview';
 import { qingshuGovernanceService } from '../../services/qingshuGovernance';
 import type { QingShuSkillGovernanceResult } from '../../types/qingshuGovernance';
+import {
+  SkillImportSourceType,
+  type SkillImportSourceType as SkillImportSourceTab,
+  validateSkillImportSource,
+} from './skillImportSource';
 
 type SkillTab = 'installed' | 'marketplace';
 type ManagedSkillFilter = 'all' | 'available' | 'locked';
 
 interface SkillsManagerProps {
   readOnly?: boolean;
+  onCreateByChat?: () => void;
 }
 
-const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
+const importSourceTypes: SkillImportSourceTab[] = [
+  SkillImportSourceType.GitHub,
+  SkillImportSourceType.ClawHub,
+];
+
+const importTabConfig: Record<SkillImportSourceTab, {
+  tabLabelKey: string;
+  descriptionKey: string;
+  urlLabelKey: string;
+  placeholderKey: string;
+  examplesKey: string;
+}> = {
+  [SkillImportSourceType.GitHub]: {
+    tabLabelKey: 'githubTabLabel',
+    descriptionKey: 'githubImportDescription',
+    urlLabelKey: 'githubImportUrlLabel',
+    placeholderKey: 'githubSkillPlaceholder',
+    examplesKey: 'githubImportExamples',
+  },
+  [SkillImportSourceType.ClawHub]: {
+    tabLabelKey: 'clawhubTabLabel',
+    descriptionKey: 'clawhubImportDescription',
+    urlLabelKey: 'clawhubImportUrlLabel',
+    placeholderKey: 'clawhubSkillPlaceholder',
+    examplesKey: 'clawhubImportExamples',
+  },
+};
+
+const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat }) => {
   const dispatch = useDispatch();
   const skills = useSelector((state: RootState) => state.skill.skills);
   const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
@@ -45,7 +84,8 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   const [skillActionError, setSkillActionError] = useState('');
   const [isDownloadingSkill, setIsDownloadingSkill] = useState(false);
   const [isAddSkillMenuOpen, setIsAddSkillMenuOpen] = useState(false);
-  const [isGithubImportOpen, setIsGithubImportOpen] = useState(false);
+  const [isRemoteImportOpen, setIsRemoteImportOpen] = useState(false);
+  const [importTab, setImportTab] = useState<SkillImportSourceTab>(SkillImportSourceType.GitHub);
   const [activeTab, setActiveTab] = useState<SkillTab>('installed');
   const [marketplaceSkills, setMarketplaceSkills] = useState<MarketplaceSkill[]>([]);
   const [marketTags, setMarketTags] = useState<MarketTag[]>([]);
@@ -75,45 +115,30 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
 
   const addSkillMenuRef = useRef<HTMLDivElement>(null);
   const addSkillButtonRef = useRef<HTMLButtonElement>(null);
-  const githubImportInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const getSourceLabel = (sourceType?: string) => {
-    if (sourceType === 'qingshu-managed') {
-      return i18nService.t('sourceTypeQingShuManaged');
-    }
-    if (sourceType === 'preset') {
-      return i18nService.t('sourceTypePreset');
-    }
-    return i18nService.t('sourceTypeLocalCustom');
+    return i18nService.t(resolveQingShuSourceLabelKey(sourceType));
   };
 
-  const isManagedSkillLoggedOut = (skill: Skill) =>
-    skill.sourceType === 'qingshu-managed' && !isLoggedIn;
-
-  const isManagedSkillForbidden = (skill: Skill) =>
-    skill.sourceType === 'qingshu-managed' && skill.allowed === false;
-
-  const isManagedSkillLocked = (skill: Skill) =>
-    isManagedSkillLoggedOut(skill) || isManagedSkillForbidden(skill);
+  const getManagedSkillAccess = (skill: Skill) => resolveQingShuManagedAccessPresentation({
+    sourceType: skill.sourceType,
+    allowed: skill.allowed,
+    isLoggedIn,
+    policyNote: skill.policyNote,
+  });
 
   const getManagedSkillLockTag = (skill: Skill) => {
-    if (isManagedSkillLoggedOut(skill)) {
-      return i18nService.t('managedUnavailableTag');
-    }
-    if (isManagedSkillForbidden(skill)) {
-      return i18nService.t('managedForbiddenTag');
-    }
-    return '';
+    const tagKey = getManagedSkillAccess(skill).lockTagKey;
+    return tagKey ? i18nService.t(tagKey) : '';
   };
 
   const getManagedSkillLockHint = (skill: Skill) => {
-    if (isManagedSkillLoggedOut(skill)) {
-      return i18nService.t('managedUnavailableHint');
+    const access = getManagedSkillAccess(skill);
+    if (access.lockHintOverride) {
+      return access.lockHintOverride;
     }
-    if (isManagedSkillForbidden(skill)) {
-      return skill.policyNote || i18nService.t('managedForbiddenHint');
-    }
-    return '';
+    return access.lockHintKey ? i18nService.t(access.lockHintKey) : '';
   };
 
   useEffect(() => {
@@ -193,20 +218,20 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   }, [isAddSkillMenuOpen]);
 
   useEffect(() => {
-    if (!isGithubImportOpen) return;
+    if (!isRemoteImportOpen) return;
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setIsGithubImportOpen(false);
+        setIsRemoteImportOpen(false);
       }
     };
 
     document.addEventListener('keydown', handleEscape);
-    setTimeout(() => githubImportInputRef.current?.focus(), 0);
+    setTimeout(() => importInputRef.current?.focus(), 0);
     return () => {
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [isGithubImportOpen]);
+  }, [importTab, isRemoteImportOpen]);
 
   useEffect(() => {
     const hasOpenDialog = selectedSkill || selectedMarketplaceSkill;
@@ -245,13 +270,13 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
   );
 
   const managedAvailableCount = useMemo(
-    () => filteredManagedSkills.filter((skill) => !isManagedSkillLocked(skill)).length,
-    [filteredManagedSkills],
+    () => filteredManagedSkills.filter((skill) => !getManagedSkillAccess(skill).isLocked).length,
+    [filteredManagedSkills, isLoggedIn],
   );
 
   const managedLockedCount = useMemo(
-    () => filteredManagedSkills.filter((skill) => isManagedSkillLocked(skill)).length,
-    [filteredManagedSkills],
+    () => filteredManagedSkills.filter((skill) => getManagedSkillAccess(skill).isLocked).length,
+    [filteredManagedSkills, isLoggedIn],
   );
 
   const displayedInstalledSkills = useMemo(() => {
@@ -260,14 +285,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
         return true;
       }
       if (managedSkillFilter === 'available') {
-        return !isManagedSkillLocked(skill);
+        return !getManagedSkillAccess(skill).isLocked;
       }
       if (managedSkillFilter === 'locked') {
-        return isManagedSkillLocked(skill);
+        return getManagedSkillAccess(skill).isLocked;
       }
       return true;
     });
-  }, [filteredSkills, managedSkillFilter]);
+  }, [filteredSkills, isLoggedIn, managedSkillFilter]);
 
   const filteredMarketplaceSkills = useMemo(() => {
     const query = skillSearchQuery.toLowerCase();
@@ -344,7 +369,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
     setGovernancePreviewTitle(title);
     setGovernancePreviewResult(firstResult);
     setIsAddSkillMenuOpen(false);
-    setIsGithubImportOpen(false);
+    setIsRemoteImportOpen(false);
   };
 
   const handleAnalyzeLocalSkillFile = async () => {
@@ -417,7 +442,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
     }
     // Security audit returned — show report modal
     if (result.auditReport && result.pendingInstallId) {
-      setIsGithubImportOpen(false);
+      setIsRemoteImportOpen(false);
       setSecurityReport(result.auditReport);
       setPendingInstallId(result.pendingInstallId);
       return;
@@ -427,7 +452,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
     }
     setSkillDownloadSource('');
     setIsAddSkillMenuOpen(false);
-    setIsGithubImportOpen(false);
+    setIsRemoteImportOpen(false);
   };
 
   const handleUploadSkillZip = async () => {
@@ -449,14 +474,46 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
     }
   };
 
-  const handleOpenGithubImport = () => {
+  const handleOpenRemoteImport = () => {
     setIsAddSkillMenuOpen(false);
     setSkillActionError('');
-    setIsGithubImportOpen(true);
+    setSkillDownloadSource('');
+    setImportTab(SkillImportSourceType.GitHub);
+    setIsRemoteImportOpen(true);
   };
 
-  const handleImportFromGithub = async () => {
+  const handleCreateByChat = () => {
+    setIsAddSkillMenuOpen(false);
+    const skillCreator = skills.find((skill) => skill.id === 'skill-creator');
+
+    if (!skillCreator) {
+      setActiveTab('marketplace');
+      setSkillSearchQuery('skill-creator');
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('skillCreatorNotInstalled'),
+      }));
+      return;
+    }
+
+    if (!skillCreator.enabled) {
+      setActiveTab('installed');
+      setSkillSearchQuery('skill-creator');
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('skillCreatorNotEnabled'),
+      }));
+      return;
+    }
+
+    onCreateByChat?.();
+  };
+
+  const handleImportFromDialog = async () => {
     if (isDownloadingSkill) return;
+    const validationError = validateSkillImportSource(skillDownloadSource, importTab);
+    if (validationError) {
+      setSkillActionError(i18nService.t(validationError));
+      return;
+    }
     await handleAddSkillFromSource(skillDownloadSource);
   };
 
@@ -609,7 +666,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
       setInstallingSkillId(null);
       setSkillDownloadSource('');
       setIsAddSkillMenuOpen(false);
-      setIsGithubImportOpen(false);
+      setIsRemoteImportOpen(false);
     }
   };
 
@@ -679,11 +736,19 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
               </button>
               <button
                 type="button"
-                onClick={handleOpenGithubImport}
+                onClick={handleOpenRemoteImport}
                 className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors"
               >
                 <LinkIcon className="h-4 w-4 text-secondary" />
-                <span>{i18nService.t('importFromGithub')}</span>
+                <span>{i18nService.t('remoteImport')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateByChat}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors"
+              >
+                <PencilSquareIcon className="h-4 w-4 text-secondary" />
+                <span>{i18nService.t('createSkillByChat')}</span>
               </button>
               {showGovernanceDebug ? (
                 <>
@@ -870,7 +935,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
           displayedInstalledSkills.map((skill) => (
             (() => {
               const skillReadOnly = readOnly || skill.readOnly;
-              const skillLocked = isManagedSkillLoggedOut(skill) || isManagedSkillForbidden(skill);
+              const skillLocked = getManagedSkillAccess(skill).isLocked;
               const skillToggleDisabled = skillReadOnly || skillLocked;
               const managedLockTag = getManagedSkillLockTag(skill);
               const managedLockHint = getManagedSkillLockHint(skill);
@@ -1393,7 +1458,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
               </div>
               <div
                 className={`w-9 h-5 rounded-full flex items-center transition-colors flex-shrink-0 ${
-                  (readOnly || selectedSkill.readOnly || isManagedSkillLoggedOut(selectedSkill) || isManagedSkillForbidden(selectedSkill))
+                  (readOnly || selectedSkill.readOnly || getManagedSkillAccess(selectedSkill).isLocked)
                     ? 'opacity-50 cursor-not-allowed'
                     : 'cursor-pointer'
                 } ${
@@ -1401,7 +1466,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 }`}
                 onClick={() => {
                   if (readOnly || selectedSkill.readOnly) return;
-                  if (isManagedSkillLoggedOut(selectedSkill) || isManagedSkillForbidden(selectedSkill)) {
+                  if (getManagedSkillAccess(selectedSkill).isLocked) {
                     void handleToggleSkill(selectedSkill.id);
                     return;
                   }
@@ -1477,10 +1542,10 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
         </div>
       , document.body)}
 
-      {isGithubImportOpen && createPortal(
+      {isRemoteImportOpen && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-          onClick={() => setIsGithubImportOpen(false)}
+          onClick={() => setIsRemoteImportOpen(false)}
         >
           <div
             className="w-full max-w-md mx-4 rounded-2xl bg-surface border border-border shadow-2xl p-6"
@@ -1489,35 +1554,59 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-lg font-semibold text-foreground">
-                  {i18nService.t('githubImportTitle')}
+                  {i18nService.t('remoteImportTitle')}
                 </div>
                 <p className="mt-1 text-sm text-secondary">
-                  {i18nService.t('githubImportDescription')}
+                  {i18nService.t(importTabConfig[importTab].descriptionKey)}
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setIsGithubImportOpen(false)}
+                onClick={() => setIsRemoteImportOpen(false)}
                 className="p-1.5 rounded-lg text-secondary hover:text-foreground hover:bg-surface-raised transition-colors"
               >
                 <XMarkIcon className="h-5 w-5" />
               </button>
             </div>
 
+            <div className="mt-4 flex items-center gap-1 border-b border-border">
+              {importSourceTypes.map((sourceType) => (
+                <button
+                  key={sourceType}
+                  type="button"
+                  onClick={() => {
+                    setImportTab(sourceType);
+                    setSkillDownloadSource('');
+                    setSkillActionError('');
+                  }}
+                  className={`px-3 py-1.5 text-sm font-medium transition-colors relative ${
+                    importTab === sourceType
+                      ? 'text-foreground'
+                      : 'text-secondary hover:text-foreground'
+                  }`}
+                >
+                  {i18nService.t(importTabConfig[sourceType].tabLabelKey)}
+                  {importTab === sourceType ? (
+                    <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+
             <div className="mt-5 space-y-3">
               <div className="text-xs font-semibold tracking-wide text-secondary">
-                {i18nService.t('githubImportUrlLabel')}
+                {i18nService.t(importTabConfig[importTab].urlLabelKey)}
               </div>
               <input
-                ref={githubImportInputRef}
+                ref={importInputRef}
                 type="text"
                 value={skillDownloadSource}
                 onChange={(e) => setSkillDownloadSource(e.target.value)}
-                placeholder={i18nService.t('githubSkillPlaceholder')}
+                placeholder={i18nService.t(importTabConfig[importTab].placeholderKey)}
                 className="w-full px-3 py-2.5 text-sm rounded-xl bg-background text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
               />
               <p className="text-xs text-secondary">
-                {i18nService.t('githubImportExamples')}
+                {i18nService.t(importTabConfig[importTab].examplesKey)}
               </p>
               {skillActionError && (
                 <div className="text-xs text-red-500">
@@ -1526,7 +1615,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
               )}
               <button
                 type="button"
-                onClick={handleImportFromGithub}
+                onClick={handleImportFromDialog}
                 disabled={isDownloadingSkill || !skillDownloadSource.trim()}
                 className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50"
               >

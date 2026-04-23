@@ -1,6 +1,4 @@
-import { QingShuManagedCapabilityErrorCode } from '@shared/qingshuManaged/access';
-
-import { classifyErrorKey } from '../../common/coworkErrorClassify';
+import type { OpenClawSessionPatch } from '../../common/openclawSession';
 import { store } from '../store';
 import {
   addMessage,
@@ -31,13 +29,9 @@ import type {
   CoworkStartOptions,
   CoworkUserMemoryEntry,
   OpenClawEngineStatus,
+  OpenClawSessionPolicyConfig,
 } from '../types/cowork';
-import { i18nService } from './i18n';
-
-const classifyError = (error: string): string => {
-  const key = classifyErrorKey(error);
-  return key ? i18nService.t(key) : error;
-};
+import { getCoworkVisibleErrorMessage } from './coworkErrorMessage';
 
 class CoworkService {
   private streamListenerCleanups: Array<() => void> = [];
@@ -154,7 +148,7 @@ class CoworkService {
           message: {
             id: `error-${Date.now()}`,
             type: 'system',
-            content: classifyError(error),
+            content: getCoworkVisibleErrorMessage(error),
             timestamp: Date.now(),
           },
         }));
@@ -215,9 +209,18 @@ class CoworkService {
   }
 
   async loadConfig(): Promise<void> {
-    const result = await window.electron?.cowork?.getConfig();
-    if (result?.success && result.config) {
-      store.dispatch(setConfig(result.config));
+    const [coworkResult, sessionPolicyResult] = await Promise.all([
+      window.electron?.cowork?.getConfig(),
+      window.electron?.openclaw?.sessionPolicy?.get?.(),
+    ]);
+
+    if (coworkResult?.success && coworkResult.config) {
+      store.dispatch(setConfig({
+        ...coworkResult.config,
+        openClawSessionPolicy: sessionPolicyResult?.success && sessionPolicyResult.config
+          ? sessionPolicyResult.config
+          : { keepAlive: '30d' },
+      }));
     }
   }
 
@@ -259,13 +262,7 @@ class CoworkService {
 
     // Show a user-visible error when session start fails
     if (result.error) {
-      const errorContent = result.code === 'ENGINE_NOT_READY'
-        ? i18nService.t('coworkErrorEngineNotReady')
-        : result.code === QingShuManagedCapabilityErrorCode.AuthRequired
-          ? i18nService.t('managedUnavailableHint')
-          : result.code === QingShuManagedCapabilityErrorCode.Forbidden
-            ? result.error || i18nService.t('managedForbiddenHint')
-            : classifyError(result.error);
+      const errorContent = getCoworkVisibleErrorMessage(result.error, result.code);
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: errorContent }));
     }
 
@@ -296,40 +293,30 @@ class CoworkService {
       if (result.engineStatus) {
         this.notifyOpenClawStatus(result.engineStatus);
       }
+      const visibleErrorContent = result.error
+        ? getCoworkVisibleErrorMessage(result.error, result.code)
+        : null;
       if (result.code !== 'ENGINE_NOT_READY') {
         store.dispatch(updateSessionStatus({ sessionId: options.sessionId, status: 'error' }));
-        if (result.error) {
-          const sessionErrorContent = result.code === QingShuManagedCapabilityErrorCode.AuthRequired
-            ? i18nService.t('managedUnavailableHint')
-            : result.code === QingShuManagedCapabilityErrorCode.Forbidden
-              ? result.error || i18nService.t('managedForbiddenHint')
-              : i18nService.t('coworkErrorSessionContinueFailed').replace('{error}', result.error);
+        if (visibleErrorContent) {
           store.dispatch(addMessage({
             sessionId: options.sessionId,
             message: {
               id: `error-${Date.now()}`,
               type: 'system',
-              content: sessionErrorContent,
+              content: visibleErrorContent,
               timestamp: Date.now(),
             },
           }));
         }
       }
-      // Show a user-visible error message in the session
-      if (result.error) {
-        const errorContent = result.code === 'ENGINE_NOT_READY'
-          ? i18nService.t('coworkErrorEngineNotReady')
-          : result.code === QingShuManagedCapabilityErrorCode.AuthRequired
-            ? i18nService.t('managedUnavailableHint')
-            : result.code === QingShuManagedCapabilityErrorCode.Forbidden
-              ? result.error || i18nService.t('managedForbiddenHint')
-              : classifyError(result.error);
+      if (visibleErrorContent && result.code === 'ENGINE_NOT_READY') {
         store.dispatch(addMessage({
           sessionId: options.sessionId,
           message: {
             id: `error-${Date.now()}`,
             type: 'system',
-            content: errorContent,
+            content: visibleErrorContent,
             timestamp: Date.now(),
           },
         }));
@@ -500,6 +487,24 @@ class CoworkService {
     return null;
   }
 
+  async patchSession(sessionId: string, patch: OpenClawSessionPatch): Promise<CoworkSession | null> {
+    const sessionApi = window.electron?.openclaw?.session;
+    if (!sessionApi?.patch) {
+      console.error('OpenClaw session patch API not available');
+      return null;
+    }
+
+    const result = await sessionApi.patch({ sessionId, patch });
+    if (result.success && result.session) {
+      store.dispatch(setCurrentSession(result.session));
+      store.dispatch(setStreaming(result.session.status === 'running'));
+      return result.session;
+    }
+
+    console.error('Failed to patch session:', result.error);
+    return null;
+  }
+
   async respondToPermission(requestId: string, result: CoworkPermissionResult): Promise<boolean> {
     const cowork = window.electron?.cowork;
     if (!cowork) return false;
@@ -532,6 +537,24 @@ class CoworkService {
     }
 
     console.error('Failed to update config:', result.error);
+    return false;
+  }
+
+  async updateSessionPolicy(config: OpenClawSessionPolicyConfig): Promise<boolean> {
+    const sessionPolicyApi = window.electron?.openclaw?.sessionPolicy;
+    if (!sessionPolicyApi) return false;
+
+    const currentConfig = store.getState().cowork.config;
+    const result = await sessionPolicyApi.set(config);
+    if (result.success) {
+      store.dispatch(setConfig({
+        ...currentConfig,
+        openClawSessionPolicy: result.config ?? config,
+      }));
+      return true;
+    }
+
+    console.error('Failed to update OpenClaw session policy:', result.error);
     return false;
   }
 

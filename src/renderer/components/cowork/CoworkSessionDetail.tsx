@@ -36,6 +36,16 @@ import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import TrashIcon from '../icons/TrashIcon';
 import MarkdownContent from '../MarkdownContent';
 import WindowTitleBar from '../window/WindowTitleBar';
+import {
+  buildConversationTurns,
+  buildDisplayItems,
+  getToolResultDisplay,
+  getVisibleAssistantItems,
+  hasRenderableAssistantContent,
+  hasText,
+  type ConversationTurn,
+  type ToolGroupItem,
+} from './coworkConversationTurns';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
@@ -321,9 +331,6 @@ type ParsedTodoItem = {
 
 const normalizeToolName = (value: string): string => value.toLowerCase().replace(/[\s_]+/g, '');
 
-const TOOL_USE_ERROR_TAG_PATTERN = /^<tool_use_error>([\s\S]*?)<\/tool_use_error>$/i;
-const ANSI_ESCAPE_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
-
 const getToolDisplayName = (toolName: string | undefined): string => {
   if (!toolName) return 'Tool';
   const normalized = normalizeToolName(toolName);
@@ -374,12 +381,6 @@ const getToolInputString = (
 const truncatePreview = (value: string, maxLength = 120): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 
-const normalizeToolResultText = (value: string): string => {
-  const withoutAnsi = value.replace(ANSI_ESCAPE_PATTERN, '');
-  const errorTagMatch = withoutAnsi.trim().match(TOOL_USE_ERROR_TAG_PATTERN);
-  return errorTagMatch ? errorTagMatch[1].trim() : withoutAnsi;
-};
-
 const isTodoWriteToolName = (toolName: string | undefined): boolean => {
   if (!toolName) return false;
   return normalizeToolName(toolName) === 'todowrite';
@@ -416,19 +417,6 @@ const getCronToolSummary = (input: Record<string, unknown>): string | null => {
       return [action, wakeText].filter(Boolean).join(' · ');
     default:
       return action;
-  }
-};
-
-const formatStructuredText = (value: string): string => {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
-  } catch {
-    return value;
   }
 };
 
@@ -559,22 +547,6 @@ const formatToolInput = (
   return formatUnknown(toolInput);
 };
 
-const hasText = (value: unknown): value is string =>
-  typeof value === 'string' && value.trim().length > 0;
-
-const getToolResultDisplay = (message: CoworkMessage): string => {
-  if (hasText(message.content)) {
-    return formatStructuredText(normalizeToolResultText(message.content));
-  }
-  if (hasText(message.metadata?.toolResult)) {
-    return formatStructuredText(normalizeToolResultText(message.metadata?.toolResult ?? ''));
-  }
-  if (hasText(message.metadata?.error)) {
-    return formatStructuredText(normalizeToolResultText(message.metadata?.error ?? ''));
-  }
-  return '';
-};
-
 const safeDecodeURIComponent = (value: string): string => {
   try {
     return decodeURIComponent(value);
@@ -652,165 +624,6 @@ const toAbsolutePathFromCwd = (filePath: string, cwd: string): string => {
   }
   return `${cwd.replace(/\/$/, '')}/${filePath.replace(/^\.\//, '')}`;
 };
-
-export type ToolGroupItem = {
-  type: 'tool_group';
-  toolUse: CoworkMessage;
-  toolResult?: CoworkMessage | null;
-};
-
-export type DisplayItem =
-  | { type: 'message'; message: CoworkMessage }
-  | ToolGroupItem;
-
-export type AssistantTurnItem =
-  | { type: 'assistant'; message: CoworkMessage }
-  | { type: 'system'; message: CoworkMessage }
-  | { type: 'tool_group'; group: ToolGroupItem }
-  | { type: 'tool_result'; message: CoworkMessage };
-
-export type ConversationTurn = {
-  id: string;
-  userMessage: CoworkMessage | null;
-  assistantItems: AssistantTurnItem[];
-};
-
-export const buildDisplayItems = (messages: CoworkMessage[]): DisplayItem[] => {
-  const items: DisplayItem[] = [];
-  const groupsByToolUseId = new Map<string, ToolGroupItem>();
-  let pendingAdjacentGroup: ToolGroupItem | null = null;
-
-  for (const message of messages) {
-    if (message.type === 'tool_use') {
-      const group: ToolGroupItem = { type: 'tool_group', toolUse: message };
-      items.push(group);
-
-      const toolUseId = message.metadata?.toolUseId;
-      if (typeof toolUseId === 'string' && toolUseId.trim()) {
-        groupsByToolUseId.set(toolUseId, group);
-      }
-      pendingAdjacentGroup = group;
-      continue;
-    }
-
-    if (message.type === 'tool_result') {
-      let matched = false;
-      const toolUseId = message.metadata?.toolUseId;
-      if (typeof toolUseId === 'string' && groupsByToolUseId.has(toolUseId)) {
-        const group = groupsByToolUseId.get(toolUseId);
-        if (group) {
-          group.toolResult = message;
-          matched = true;
-        }
-      } else if (pendingAdjacentGroup && !pendingAdjacentGroup.toolResult) {
-        pendingAdjacentGroup.toolResult = message;
-        matched = true;
-      }
-
-      pendingAdjacentGroup = null;
-      if (!matched) {
-        items.push({ type: 'message', message });
-      }
-      continue;
-    }
-
-    pendingAdjacentGroup = null;
-    items.push({ type: 'message', message });
-  }
-
-  return items;
-};
-
-export const buildConversationTurns = (items: DisplayItem[]): ConversationTurn[] => {
-  const turns: ConversationTurn[] = [];
-  let currentTurn: ConversationTurn | null = null;
-  let orphanIndex = 0;
-
-  const ensureTurn = (): ConversationTurn => {
-    if (currentTurn) return currentTurn;
-    const orphanTurn: ConversationTurn = {
-      id: `orphan-${orphanIndex++}`,
-      userMessage: null,
-      assistantItems: [],
-    };
-    turns.push(orphanTurn);
-    currentTurn = orphanTurn;
-    return orphanTurn;
-  };
-
-  for (const item of items) {
-    if (item.type === 'message' && item.message.type === 'user') {
-      currentTurn = {
-        id: item.message.id,
-        userMessage: item.message,
-        assistantItems: [],
-      };
-      turns.push(currentTurn);
-      continue;
-    }
-
-    const turn = ensureTurn();
-    if (item.type === 'tool_group') {
-      turn.assistantItems.push({ type: 'tool_group', group: item });
-      continue;
-    }
-
-    const message = item.message;
-    if (message.type === 'assistant') {
-      turn.assistantItems.push({ type: 'assistant', message });
-      continue;
-    }
-
-    if (message.type === 'system') {
-      turn.assistantItems.push({ type: 'system', message });
-      continue;
-    }
-
-    if (message.type === 'tool_result') {
-      turn.assistantItems.push({ type: 'tool_result', message });
-      continue;
-    }
-
-    if (message.type === 'tool_use') {
-      turn.assistantItems.push({
-        type: 'tool_group',
-        group: {
-          type: 'tool_group',
-          toolUse: message,
-        },
-      });
-    }
-  }
-
-  return turns;
-};
-
-const isRenderableAssistantOrSystemMessage = (message: CoworkMessage): boolean => {
-  if (hasText(message.content) || hasText(message.metadata?.error)) {
-    return true;
-  }
-  if (message.metadata?.isThinking) {
-    return Boolean(message.metadata?.isStreaming);
-  }
-  return false;
-};
-
-const isVisibleAssistantTurnItem = (item: AssistantTurnItem): boolean => {
-  if (item.type === 'assistant' || item.type === 'system') {
-    return isRenderableAssistantOrSystemMessage(item.message);
-  }
-  if (item.type === 'tool_result') {
-    return hasText(getToolResultDisplay(item.message));
-  }
-  return true;
-};
-
-const getVisibleAssistantItems = (assistantItems: AssistantTurnItem[]): AssistantTurnItem[] =>
-  assistantItems.filter(isVisibleAssistantTurnItem);
-
-export const hasRenderableAssistantContent = (turn: ConversationTurn): boolean => (
-  getVisibleAssistantItems(turn.assistantItems).length > 0
-);
 
 const getToolResultLineCount = (result: string): number => {
   if (!result) return 0;
@@ -1178,70 +991,73 @@ export const UserMessageItem: React.FC<{
 
   return (
     <div
-      className="py-2 px-4"
+      className="group py-5 px-4 bg-background transition-colors"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className="max-w-3xl mx-auto">
-        <div className="pl-4 sm:pl-8 md:pl-12">
-          <div className="flex items-start gap-3 flex-row-reverse">
-            <div className="w-full min-w-0 flex flex-col items-end">
-              <div className="w-fit max-w-[42rem] rounded-2xl px-4 py-2.5 bg-surface text-foreground shadow-subtle">
-                {message.content?.trim() && (
-                  <MarkdownContent
-                    content={message.content}
-                    className="max-w-none whitespace-pre-wrap break-words"
-                  />
-                )}
-                {imageAttachments.length > 0 && (
-                  <div className={`flex flex-wrap gap-2 ${message.content?.trim() ? 'mt-2' : ''}`}>
-                    {imageAttachments.map((img, idx) => (
-                      <div key={idx} className="relative group">
-                        <img
-                          src={`data:${img.mimeType};base64,${img.base64Data}`}
-                          alt={img.name}
-                          className="max-h-48 max-w-[16rem] rounded-lg object-contain cursor-pointer border border-border hover:border-primary transition-colors"
-                          title={img.name}
-                          onClick={() => setExpandedImage(`data:${img.mimeType};base64,${img.base64Data}`)}
-                        />
-                        <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/50 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity truncate pointer-events-none">
-                          <PhotoIcon className="h-3 w-3 flex-shrink-0" />
-                          <span className="truncate">{img.name}</span>
-                        </div>
-                      </div>
-                    ))}
+      <div className="max-w-3xl mx-auto flex items-start gap-3 flex-row-reverse position-relative">
+        {/* User Avatar Placeholder */}
+        <div className="shrink-0 flex items-center justify-center w-7 h-7 mt-0.5 rounded-full bg-surface-raised border border-border">
+          <span className="text-secondary text-[10px] font-bold uppercase">U</span>
+        </div>
+        
+        <div className="flex-1 min-w-0 relative group/content flex flex-col items-end">
+          <div className="text-foreground text-[14px] leading-relaxed w-fit max-w-[42rem] rounded-2xl px-4 py-2.5 bg-surface shadow-subtle text-left">
+            {message.content?.trim() && (
+              <MarkdownContent
+                content={message.content}
+                className="max-w-none whitespace-pre-wrap break-words"
+              />
+            )}
+            {imageAttachments.length > 0 && (
+              <div className={`flex flex-wrap gap-2 ${message.content?.trim() ? 'mt-2' : ''}`}>
+                {imageAttachments.map((img, idx) => (
+                  <div key={idx} className="relative group">
+                    <img
+                      src={`data:${img.mimeType};base64,${img.base64Data}`}
+                      alt={img.name}
+                      className="max-h-48 max-w-[16rem] rounded-lg object-contain cursor-pointer border border-border hover:border-primary transition-colors"
+                      title={img.name}
+                      onClick={() => setExpandedImage(`data:${img.mimeType};base64,${img.base64Data}`)}
+                    />
+                    <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/50 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity truncate pointer-events-none">
+                      <PhotoIcon className="h-3 w-3 flex-shrink-0" />
+                      <span className="truncate">{img.name}</span>
+                    </div>
                   </div>
-                )}
+                ))}
               </div>
-              <div className="flex items-center justify-end gap-1.5 mt-1">
-                {onReEdit && (
-                  <ReEditButton
-                    visible={isHovered}
-                    onClick={() => onReEdit(message)}
-                  />
-                )}
-                <CopyButton
-                  content={message.content}
-                  visible={isHovered}
-                />
-                {messageSkills.length > 0 && (
-                  <div className="flex items-center gap-1.5 mr-1.5">
-                    {messageSkills.map(skill => (
-                      <div
-                        key={skill.id}
-                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-primary-muted"
-                        title={skill.description}
-                      >
-                        <PuzzleIcon className="h-2.5 w-2.5 text-primary" />
-                        <span className="text-[10px] font-medium text-primary max-w-[60px] truncate">
-                          {skill.name}
-                        </span>
-                      </div>
-                    ))}
+            )}
+          </div>
+
+          {/* Actions - Hover to show */}
+          <div className="absolute -top-3 left-0 flex items-center gap-1.5 opacity-0 group-hover/content:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-border/50">
+            {onReEdit && (
+              <ReEditButton
+                visible={isHovered}
+                onClick={() => onReEdit(message)}
+              />
+            )}
+            <CopyButton
+              content={message.content}
+              visible={isHovered}
+            />
+            {messageSkills.length > 0 && (
+              <div className="flex items-center gap-1.5 mr-1.5">
+                {messageSkills.map((skill) => (
+                  <div
+                    key={skill.id}
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-primary-muted"
+                    title={skill.description}
+                  >
+                    <PuzzleIcon className="h-2.5 w-2.5 text-primary" />
+                    <span className="text-[10px] font-medium text-primary max-w-[60px] truncate">
+                      {skill.name}
+                    </span>
                   </div>
-                )}
+                ))}
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
@@ -1274,28 +1090,23 @@ const AssistantMessageItem: React.FC<{
   mapDisplayText,
   showCopyButton = false,
 }) => {
-  const [isHovered, setIsHovered] = useState(false);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
 
   return (
-    <div
-      className="relative"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      <div className="text-foreground">
+    <div className="relative group/content leading-[1.6]">
+      <div className="text-foreground text-[14px]">
         <MarkdownContent
           content={displayContent}
-          className="prose dark:prose-invert max-w-none"
+          className="prose dark:prose-invert max-w-none prose-p:leading-[1.6] prose-li:leading-[1.6] prose-p:mb-3"
           resolveLocalFilePath={resolveLocalFilePath}
           showRevealInFolderAction
         />
       </div>
       {showCopyButton && (
-        <div className="flex items-center gap-1.5 mt-1">
+        <div className="absolute -top-2 right-0 flex items-center gap-1.5 opacity-0 group-hover/content:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-border/50">
           <CopyButton
             content={displayContent}
-            visible={isHovered}
+            visible={true}
           />
         </div>
       )}
@@ -1372,17 +1183,17 @@ const ThinkingBlock: React.FC<{
   }, [isCurrentlyStreaming]);
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="rounded-xl border border-border overflow-hidden bg-black/[0.01] dark:bg-white/[0.02] shadow-sm">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
       >
         <ChevronRightIcon
           className={`h-3.5 w-3.5 text-secondary flex-shrink-0 transition-transform duration-200 ${
             isExpanded ? 'rotate-90' : ''
           }`}
         />
-        <span className="text-xs font-medium text-secondary">
+        <span className="text-[12px] font-medium text-secondary">
           {i18nService.t('reasoning')}
         </span>
         {isCurrentlyStreaming && (
@@ -1391,9 +1202,45 @@ const ThinkingBlock: React.FC<{
       </button>
       {isExpanded && (
         <div className="px-3 pb-3 max-h-64 overflow-y-auto">
-          <div className="text-xs leading-relaxed text-muted whitespace-pre-wrap">
+          <div className="text-[11px] leading-[1.7] text-secondary/70 whitespace-pre-wrap">
             {displayContent}
           </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const SystemMessageBlock: React.FC<{ content: string; isError: boolean }> = ({ content, isError }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const lines = content.split('\n');
+  const title = lines[0]?.substring(0, 80) + (lines[0]?.length > 80 ? '...' : '');
+
+  return (
+    <div className="rounded-xl border border-border overflow-hidden bg-black/[0.02] dark:bg-white/[0.03]">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+      >
+        <ChevronRightIcon
+          className={`h-3.5 w-3.5 text-secondary flex-shrink-0 transition-transform duration-200 ${
+            isExpanded ? 'rotate-90' : ''
+          }`}
+        />
+        {isError ? (
+          <ExclamationTriangleIcon className="h-4 w-4 text-red-500/80 flex-shrink-0" />
+        ) : (
+          <InformationCircleIcon className="h-4 w-4 text-secondary/70 flex-shrink-0" />
+        )}
+        <span className="text-[12px] font-medium text-secondary truncate">
+          {title}
+        </span>
+      </button>
+      {isExpanded && (
+        <div className="px-3 pb-3 max-h-64 overflow-y-auto">
+          <pre className={`text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono ${isError ? 'text-red-500/90' : 'text-secondary/80'}`}>
+            {content}
+          </pre>
         </div>
       )}
     </div>
@@ -1425,17 +1272,10 @@ export const AssistantTurnBlock: React.FC<{
     if (!content.trim()) return null;
 
     return (
-      <div className="rounded-lg border border-border bg-background px-3 py-2">
-        <div className="flex items-center gap-2">
-          {isError
-            ? <ExclamationTriangleIcon className="h-4 w-4 text-secondary flex-shrink-0" />
-            : <InformationCircleIcon className="h-4 w-4 text-secondary flex-shrink-0" />
-          }
-          <div className="text-xs whitespace-pre-wrap text-secondary">
-            {content}
-          </div>
-        </div>
-      </div>
+      <SystemMessageBlock
+        content={content}
+        isError={isError}
+      />
     );
   };
 
@@ -1492,70 +1332,73 @@ export const AssistantTurnBlock: React.FC<{
   };
 
   return (
-    <div className="px-4 py-2">
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-start gap-3">
-          <div className="flex-1 min-w-0 px-4 py-3 space-y-3">
-            {visibleAssistantItems.map((item, index) => {
-              if (item.type === 'assistant') {
-                if (item.message.metadata?.isThinking) {
-                  return (
-                    <ThinkingBlock
-                      key={item.message.id}
-                      message={item.message}
-                      mapDisplayText={mapDisplayText}
-                    />
-                  );
-                }
-                // Check if there are any tool_group items after this assistant message
-                const hasToolGroupAfter = visibleAssistantItems
-                  .slice(index + 1)
-                  .some(laterItem => laterItem.type === 'tool_group');
-
+    <div className="group relative px-4 py-6 bg-primary/5 dark:bg-primary/[0.02] transition-colors">
+      <div className="max-w-3xl mx-auto flex items-start gap-4 position-relative">
+        {/* Assistant Avatar */}
+        <div className="shrink-0 mt-0.5 flex items-center justify-center w-7 h-7 rounded-[8px] bg-primary/10 overflow-hidden shadow-sm border border-primary/20">
+          <span className="text-[14px] leading-none drop-shadow-sm">🦞</span>
+        </div>
+        
+        <div className="flex-1 min-w-0 space-y-4">
+          {visibleAssistantItems.map((item, index) => {
+            if (item.type === 'assistant') {
+              if (item.message.metadata?.isThinking) {
                 return (
-                  <AssistantMessageItem
+                  <ThinkingBlock
                     key={item.message.id}
                     message={item.message}
-                    resolveLocalFilePath={resolveLocalFilePath}
-                    mapDisplayText={mapDisplayText}
-                    showCopyButton={showCopyButtons && !hasToolGroupAfter}
-                  />
-                );
-              }
-
-              if (item.type === 'tool_group') {
-                const nextItem = visibleAssistantItems[index + 1];
-                const isLastInSequence = !nextItem || nextItem.type !== 'tool_group';
-                return (
-                  <ToolCallGroup
-                    key={`tool-${item.group.toolUse.id}`}
-                    group={item.group}
-                    isLastInSequence={isLastInSequence}
                     mapDisplayText={mapDisplayText}
                   />
                 );
               }
-
-              if (item.type === 'system') {
-                const systemMessage = renderSystemMessage(item.message);
-                if (!systemMessage) {
-                  return null;
-                }
-                return (
-                  <div key={item.message.id}>
-                    {systemMessage}
-                  </div>
-                );
-              }
+              // Check if there are any tool_group items after this assistant message
+              const hasToolGroupAfter = visibleAssistantItems
+                .slice(index + 1)
+                .some(laterItem => laterItem.type === 'tool_group');
 
               return (
+                <AssistantMessageItem
+                  key={item.message.id}
+                  message={item.message}
+                  resolveLocalFilePath={resolveLocalFilePath}
+                  mapDisplayText={mapDisplayText}
+                  showCopyButton={showCopyButtons && !hasToolGroupAfter}
+                />
+              );
+            }
+
+            if (item.type === 'tool_group') {
+              const nextItem = visibleAssistantItems[index + 1];
+              const isLastInSequence = !nextItem || nextItem.type !== 'tool_group';
+              return (
+                <ToolCallGroup
+                  key={`tool-${item.group.toolUse.id}`}
+                  group={item.group}
+                  isLastInSequence={isLastInSequence}
+                  mapDisplayText={mapDisplayText}
+                />
+              );
+            }
+
+            if (item.type === 'system') {
+              const systemMessage = renderSystemMessage(item.message);
+              if (!systemMessage) {
+                return null;
+              }
+              return (
                 <div key={item.message.id}>
-                  {renderOrphanToolResult(item.message)}
+                  {systemMessage}
                 </div>
               );
-            })}
-            {showTypingIndicator && <TypingDots />}
-          </div>
+            }
+
+            return (
+              <div key={item.message.id}>
+                {renderOrphanToolResult(item.message)}
+              </div>
+            );
+          })}
+          {showTypingIndicator && <TypingDots />}
         </div>
       </div>
     </div>
@@ -2355,7 +2198,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   return (
     <div ref={detailRootRef} className="flex-1 flex flex-col bg-background h-full">
       {/* Header */}
-      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-surface shrink-0">
+      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-black/5 dark:border-white/5 bg-surface/80 backdrop-blur-md z-10 shrink-0">
         {/* Left side: Toggle buttons (when collapsed) + Title */}
         <div className="flex h-full items-center gap-2 min-w-0">
           {isSidebarCollapsed && (
@@ -2569,11 +2412,13 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             </div>
         </Modal>
       )}
+      {/* Content Area */}
       <div className="relative flex-1 min-h-0">
+        {/* Render the virtual rail connections layer if active */}
         <div
           ref={scrollContainerRef}
           onScroll={handleMessagesScroll}
-          className={`h-full min-h-0 overflow-y-auto pt-3 ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'}`}
+          className={`h-full min-h-0 overflow-y-auto pt-3 pb-[180px] ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'}`}
         >
           {renderConversationTurns()}
           <div className="h-20" />
@@ -2790,26 +2635,32 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       {/* Streaming Activity Bar */}
       {isStreaming && <StreamingActivityBar messages={currentSession.messages} />}
 
-      {/* Input Area */}
-      <div className="p-4 shrink-0">
-        <div className="max-w-3xl mx-auto">
-          <CoworkPromptInput
-            ref={promptInputRef}
-            onSubmit={onContinue}
-            onStop={onStop}
-            isStreaming={isStreaming}
-            placeholder={i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
-            disabled={remoteManaged}
-            size="large"
-            remoteManaged={remoteManaged}
-            onManageSkills={remoteManaged ? undefined : onManageSkills}
-            showModelSelector={true}
-            sessionId={currentSession?.id}
-          />
+      {/* Input Area Overlay */}
+      <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
+        {/* Soft gradient mask over the scroll area */}
+        <div className="h-16 bg-gradient-to-t from-background to-transparent w-full" />
+        
+        {/* Actual Input Area */}
+        <div className="px-4 pb-6 bg-background rounded-b-xl pointer-events-auto shrink-0 shadow-[0_-1px_3px_rgba(0,0,0,0.02)]">
+          <div className="max-w-3xl mx-auto">
+            <CoworkPromptInput
+              ref={promptInputRef}
+              onSubmit={onContinue}
+              onStop={onStop}
+              isStreaming={isStreaming}
+              placeholder={i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
+              disabled={remoteManaged}
+              size="large"
+              remoteManaged={remoteManaged}
+              onManageSkills={remoteManaged ? undefined : onManageSkills}
+              showModelSelector={true}
+              sessionId={currentSession?.id}
+            />
+          </div>
+          <p className="text-center text-[11px] text-muted opacity-85 mt-2 mb-[-8px] select-none">
+            {i18nService.t('aiGeneratedDisclaimer')}
+          </p>
         </div>
-        <p className="text-center text-[11px] text-muted opacity-85 mt-2 mb-[-8px] select-none">
-          {i18nService.t('aiGeneratedDisclaimer')}
-        </p>
       </div>
     </div>
   );

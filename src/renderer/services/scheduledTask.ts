@@ -19,11 +19,31 @@ import type {
   ScheduledTaskInput,
   ScheduledTaskStatusEvent,
   ScheduledTaskRunEvent,
+  TaskState,
 } from '../../scheduledTask/types';
+import { TaskStatus } from '../../scheduledTask/constants';
 
 class ScheduledTaskService {
   private cleanupFns: (() => void)[] = [];
   private initialized = false;
+
+  private scheduleTaskRefresh(taskId: string, delaysMs: number[] = [1200, 5000]): void {
+    const api = window.electron?.scheduledTasks;
+    if (!api) return;
+
+    delaysMs.forEach((delay) => {
+      window.setTimeout(async () => {
+        try {
+          const result = await api.get(taskId);
+          if (result.success && result.task) {
+            store.dispatch(updateTask(result.task));
+          }
+        } catch {
+          // Best-effort refresh only. Keep the optimistic state until the next push/poll.
+        }
+      }, delay);
+    });
+  }
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -160,9 +180,37 @@ class ScheduledTaskService {
     const api = window.electron?.scheduledTasks;
     if (!api) return;
 
+    const task = store.getState().scheduledTask.tasks.find((item) => item.id === id);
+    const previousState: TaskState | null = task
+      ? { ...task.state }
+      : null;
+
+    if (task && !task.state.runningAtMs) {
+      store.dispatch(setError(null));
+      store.dispatch(updateTaskState({
+        taskId: id,
+        taskState: {
+          ...task.state,
+          runningAtMs: Date.now(),
+          lastStatus: TaskStatus.Running,
+          lastError: null,
+        },
+      }));
+    }
+
     try {
-      await api.runManually(id);
+      const result = await api.runManually(id);
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to run task');
+      }
+      this.scheduleTaskRefresh(id);
     } catch (err: unknown) {
+      if (previousState) {
+        store.dispatch(updateTaskState({
+          taskId: id,
+          taskState: previousState,
+        }));
+      }
       store.dispatch(setError(err instanceof Error ? err.message : String(err)));
       throw err;
     }

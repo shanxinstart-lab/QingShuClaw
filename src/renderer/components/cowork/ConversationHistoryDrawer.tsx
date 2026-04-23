@@ -12,6 +12,7 @@ interface ConversationHistoryDrawerProps {
   isOpen: boolean;
   title: string;
   sessions: CoworkSessionSummary[];
+  isLoading?: boolean;
   currentSessionId: string | null;
   onClose: () => void;
   onSelectSession: (sessionId: string) => void | Promise<void>;
@@ -24,6 +25,7 @@ const ConversationHistoryDrawer: React.FC<ConversationHistoryDrawerProps> = ({
   isOpen,
   title,
   sessions,
+  isLoading = false,
   currentSessionId,
   onClose,
   onSelectSession,
@@ -77,13 +79,14 @@ const ConversationHistoryDrawer: React.FC<ConversationHistoryDrawerProps> = ({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
-          {filteredSessions.length === 0 ? (
+          {searchQuery.trim() && filteredSessions.length === 0 ? (
             <div className="flex h-full items-center justify-center px-6 text-center text-sm text-secondary">
               {i18nService.t('workbenchConversationEmpty')}
             </div>
           ) : (
             <CoworkSessionList
               sessions={filteredSessions}
+              isLoading={isLoading}
               currentSessionId={currentSessionId}
               isBatchMode={false}
               selectedIds={emptySet}

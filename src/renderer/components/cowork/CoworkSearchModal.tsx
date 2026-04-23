@@ -13,6 +13,7 @@ interface CoworkSearchModalProps {
   isOpen: boolean;
   onClose: () => void;
   sessions: CoworkSessionSummary[];
+  isLoading?: boolean;
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
@@ -24,6 +25,7 @@ const CoworkSearchModal: React.FC<CoworkSearchModalProps> = ({
   isOpen,
   onClose,
   sessions,
+  isLoading = false,
   currentSessionId,
   onSelectSession,
   onDeleteSession,
@@ -100,13 +102,14 @@ const CoworkSearchModal: React.FC<CoworkSearchModalProps> = ({
           </button>
         </div>
         <div className="px-3 py-3 max-h-[60vh] overflow-y-auto">
-          {filteredSessions.length === 0 ? (
+          {searchQuery.trim() && filteredSessions.length === 0 ? (
             <div className="py-10 text-center text-sm text-secondary">
               {i18nService.t('searchNoResults')}
             </div>
           ) : (
             <CoworkSessionList
               sessions={filteredSessions}
+              isLoading={isLoading}
               currentSessionId={currentSessionId}
               isBatchMode={false}
               selectedIds={emptySet}

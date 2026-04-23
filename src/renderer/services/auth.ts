@@ -22,6 +22,7 @@ import { clearCurrentSession } from '../store/slices/coworkSlice';
 import type { Model } from '../store/slices/modelSlice';
 import { clearServerModels,setServerModels } from '../store/slices/modelSlice';
 import { clearActiveSkills, setSkills } from '../store/slices/skillSlice';
+import { disableQingShuManagedItems } from './authSessionReset';
 import { configService } from './config';
 import { i18nService } from './i18n';
 import { qingshuManagedService } from './qingshuManaged';
@@ -135,29 +136,21 @@ class AuthService {
     window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, { detail: message }));
   }
 
-  private clearLocalSessionState() {
-    this.authSessionVersion += 1;
+  private resetAuthRuntimeState(invalidateSession = false) {
+    if (invalidateSession) {
+      this.authSessionVersion += 1;
+    }
     this.backgroundHydrationPromise = null;
     this.pendingFeishuScanSessionPromise = null;
     this.cachedFeishuScanSession = null;
     this.lastRefreshTime = 0;
+  }
+
+  private clearLocalSessionState() {
+    this.resetAuthRuntimeState(true);
     const state = store.getState();
-    const visibleAgents = state.agent.agents.map((agent) => (
-      agent.sourceType === 'qingshu-managed'
-        ? {
-          ...agent,
-          enabled: false,
-        }
-        : agent
-    ));
-    const visibleSkills = state.skill.skills.map((skill) => (
-      skill.sourceType === 'qingshu-managed'
-        ? {
-          ...skill,
-          enabled: false,
-        }
-        : skill
-    ));
+    const visibleAgents = disableQingShuManagedItems(state.agent.agents);
+    const visibleSkills = disableQingShuManagedItems(state.skill.skills);
     store.dispatch(setAgents(visibleAgents));
     store.dispatch(setSkills(visibleSkills));
     store.dispatch(setCurrentAgentId('main'));
@@ -175,6 +168,10 @@ class AuthService {
 
   private isAuthSessionCurrent(version: number): boolean {
     return this.authSessionVersion === version && store.getState().auth.isLoggedIn;
+  }
+
+  private getAuthSessionGuard(version = this.authSessionVersion): () => boolean {
+    return () => this.isAuthSessionCurrent(version);
   }
 
   private async hydrateAuthenticatedUser(version: number): Promise<void> {
@@ -242,10 +239,10 @@ class AuthService {
         backgroundHydration: true,
       });
       if (!restored) {
-        store.dispatch(setLoggedOut());
+        this.clearLocalSessionState();
       }
     } catch {
-      store.dispatch(setLoggedOut());
+      this.clearLocalSessionState();
     }
 
     // Listen for OAuth callback from protocol handler
@@ -271,8 +268,9 @@ class AuthService {
 
     // Listen for quota changes (e.g. after cowork session using server model)
     this.unsubQuotaChanged = window.electron.auth.onQuotaChanged(() => {
-      this.refreshQuota();
-      this.loadServerModels();
+      const shouldApply = this.getAuthSessionGuard();
+      void this.refreshQuotaWithGuard(shouldApply);
+      void this.loadServerModels(shouldApply);
     });
 
     // Refresh quota and models when Electron window gains focus — user may have purchased on portal
@@ -281,8 +279,9 @@ class AuthService {
         const now = Date.now();
         if (now - this.lastRefreshTime > 30_000) {
           this.lastRefreshTime = now;
-          this.refreshQuota();
-          this.loadServerModels();
+          const shouldApply = this.getAuthSessionGuard();
+          void this.refreshQuotaWithGuard(shouldApply);
+          void this.loadServerModels(shouldApply);
         }
       }
     });
@@ -483,12 +482,14 @@ class AuthService {
     try {
       const result = await window.electron.auth.getUser();
       if (!result.success || !result.user) {
+        this.clearLocalSessionState();
         return false;
       }
 
       await this.applyAuthenticatedUser(result);
       return true;
     } catch {
+      this.clearLocalSessionState();
       return false;
     }
   }
@@ -508,11 +509,19 @@ class AuthService {
    * Refresh quota information.
    */
   async refreshQuota() {
+    const shouldApply = this.getAuthSessionGuard();
+    return this.refreshQuotaWithGuard(shouldApply);
+  }
+
+  private async refreshQuotaWithGuard(shouldApply?: () => boolean) {
     try {
       const result = await window.electron.auth.getQuota();
+      if (shouldApply && !shouldApply()) {
+        return;
+      }
       if (result.success) {
         store.dispatch(updateQuota(result.quota));
-        void this.fetchProfileSummary();
+        void this.fetchProfileSummary(shouldApply);
       }
     } catch {
       // ignore
@@ -551,6 +560,7 @@ class AuthService {
   }
 
   destroy() {
+    this.resetAuthRuntimeState(true);
     this.unsubCallback?.();
     this.unsubCallback = null;
     this.unsubBridgeCode?.();

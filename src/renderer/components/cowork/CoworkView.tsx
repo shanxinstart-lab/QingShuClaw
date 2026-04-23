@@ -8,7 +8,7 @@ import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
-import { toOpenClawModelRef } from '../../utils/openclawModelRef';
+import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { addMessage, clearCurrentSession, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
@@ -19,7 +19,6 @@ import ModelSelector from '../ModelSelector';
 import { PromptPanel,QuickActionBar } from '../quick-actions';
 import type { SettingsOpenOptions } from '../Settings';
 import WindowTitleBar from '../window/WindowTitleBar';
-import { resolveAgentModelSelection } from './agentModelSelection';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import CoworkSessionDetail from './CoworkSessionDetail';
 
@@ -52,7 +51,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
 
   const {
-    currentSessionId,
     currentSession,
     isStreaming,
     config,
@@ -66,16 +64,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const agents = useSelector((state: RootState) => state.agent.agents);
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
-  const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const currentAgent = agents.find((agent) => agent.id === currentAgentId);
-  const {
-    selectedModel: headerSelectedModel,
-  } = resolveAgentModelSelection({
-    agentModel: currentAgent?.model ?? '',
-    availableModels,
-    fallbackModel: globalSelectedModel,
-    engine: config.agentEngine,
-  });
+  const explicitHeaderModel = currentAgent?.model?.trim()
+    ? resolveOpenClawModelRef(currentAgent.model, availableModels) ?? null
+    : null;
 
   const buildApiConfigNotice = (error?: string) => {
     const baseNotice = i18nService.t('coworkModelSettingsRequired');
@@ -417,7 +409,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         dispatch(clearSelection());
       }
     }
-  }, [activeSkillIds]);
+  }, [activeSkillIds, dispatch, quickActions, selectedActionId]);
 
   // Handle prompt selection from QuickAction
   const handleQuickActionPromptSelect = (prompt: string) => {
@@ -453,7 +445,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     return () => {
       window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [currentSession?.id, currentSession?.status, isOpenClawEngine]);
+  }, [currentSession, isOpenClawEngine]);
 
   if (!isInitialized) {
     return (
@@ -477,7 +469,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     : true;
 
   const homeHeader = (
-    <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border shrink-0">
+    <div className="draggable flex h-12 items-center justify-between px-4 border-b border-black/5 dark:border-white/5 bg-surface/80 backdrop-blur-md z-10 shrink-0">
       <div className="non-draggable h-8 flex items-center">
         {isSidebarCollapsed && (
           <div className={`flex items-center gap-1 mr-2 ${isMac ? 'pl-[68px]' : ''}`}>
@@ -499,13 +491,16 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           </div>
         )}
         <ModelSelector
-          value={isOpenClawEngine ? headerSelectedModel : undefined}
+          value={isOpenClawEngine ? explicitHeaderModel : undefined}
           onChange={isOpenClawEngine
             ? async (nextModel) => {
-                if (!currentAgent || !nextModel) return;
-                await agentService.updateAgent(currentAgent.id, { model: toOpenClawModelRef(nextModel) });
+                if (!currentAgent) return;
+                await agentService.updateAgent(currentAgent.id, {
+                  model: nextModel ? toOpenClawModelRef(nextModel) : '',
+                });
               }
             : undefined}
+          defaultLabel={isOpenClawEngine ? i18nService.t('scheduledTasksFormModelDefault') : undefined}
         />
       </div>
       <div className="non-draggable flex items-center">
@@ -566,26 +561,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     );
   }
 
-  if (currentSessionId) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-3 text-sm text-secondary">
-          <svg
-            className="h-6 w-6 animate-spin text-secondary/70"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <span>{i18nService.t('loading')}</span>
-        </div>
-      </div>
-    );
-  }
-
   // Home view - no current session
   return (
     <div className="flex-1 flex flex-col bg-background h-full">
@@ -599,19 +574,23 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       <div className="flex-1 overflow-y-auto min-h-0">
         <div className="max-w-3xl mx-auto px-4 py-16 space-y-12">
           {/* Welcome Section */}
-          <div className="text-center space-y-5">
+          <div className="text-center space-y-4">
             <img src="logo.png" alt="logo" className="w-16 h-16 mx-auto" />
-            <h2 className="text-3xl font-bold tracking-tight text-foreground">
-              {i18nService.t('coworkWelcome')}
+            <h2 className="text-[32px] tracking-tight text-foreground">
+              {i18nService.getLanguage() === 'zh' ? (
+                <span className="font-normal">让数据 <strong className="font-semibold text-primary">ready to use</strong></span>
+              ) : (
+                <span className="font-semibold">{i18nService.t('coworkWelcome')}</span>
+              )}
             </h2>
-            <p className="text-sm text-secondary max-w-md mx-auto">
+            <p className="text-sm text-[#888888] dark:text-[#888888] font-medium max-w-md mx-auto">
               {i18nService.t('coworkDescription')}
             </p>
           </div>
 
           {/* Prompt Input Area - Large version with folder selector */}
-          <div className="space-y-3">
-            <div className="shadow-glow-accent rounded-2xl">
+          <div className="space-y-4">
+            <div className="rounded-2xl">
               <CoworkPromptInput
                 ref={promptInputRef}
                 onSubmit={handleStartSession}

@@ -162,6 +162,10 @@ const PROVIDER_DEFINITIONS = [
   // ── China ──
   {
     id: ProviderName.DeepSeek,
+    label: 'DeepSeek',
+    website: 'https://platform.deepseek.com',
+    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
+    openClawProviderId: OpenClawProviderId.DeepSeek,
     defaultBaseUrl: 'https://api.deepseek.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -177,6 +181,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Moonshot,
+    label: 'Moonshot',
+    website: 'https://platform.moonshot.cn',
+    apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys',
+    openClawProviderId: OpenClawProviderId.Moonshot,
     // Moonshot regular chat is forced to OpenAI-compatible mode because
     // its Anthropic-compatible endpoint is incomplete for our cowork flow.
     defaultBaseUrl: 'https://api.moonshot.cn/v1',
@@ -199,6 +207,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Qwen,
+    label: 'Qwen',
+    website: 'https://dashscope.console.aliyun.com',
+    apiKeyUrl: 'https://dashscope.console.aliyun.com/apiKey',
+    openClawProviderId: OpenClawProviderId.Qwen,
     defaultBaseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
@@ -219,6 +231,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Zhipu,
+    label: 'Zhipu',
+    website: 'https://open.bigmodel.cn',
+    apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+    openClawProviderId: OpenClawProviderId.Zai,
     defaultBaseUrl: 'https://open.bigmodel.cn/api/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
@@ -240,6 +256,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Minimax,
+    label: 'MiniMax',
+    website: 'https://platform.minimaxi.com',
+    apiKeyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    openClawProviderId: OpenClawProviderId.Minimax,
     defaultBaseUrl: 'https://api.minimaxi.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -256,6 +276,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Volcengine,
+    label: 'Volcengine',
+    website: 'https://console.volcengine.com/ark',
+    apiKeyUrl: 'https://console.volcengine.com/ark',
+    openClawProviderId: OpenClawProviderId.Volcengine,
     defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
@@ -278,6 +302,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Youdaozhiyun,
+    label: 'Youdao',
+    website: 'https://ai.youdao.com',
+    apiKeyUrl: 'https://ai.youdao.com/console',
+    openClawProviderId: OpenClawProviderId.Youdaozhiyun,
     defaultBaseUrl: 'https://openapi.youdao.com/llmgateway/api/v1/chat/completions',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -292,6 +320,9 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Qianfan,
+    label: 'Qianfan',
+    apiKeyUrl: 'https://console.bce.baidu.com/qianfan/ais/console/apiKey',
+    openClawProviderId: OpenClawProviderId.Qianfan,
     defaultBaseUrl: 'https://qianfan.baidubce.com/v2',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -306,6 +337,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.StepFun,
+    label: 'StepFun',
+    website: 'https://platform.stepfun.com',
+    apiKeyUrl: 'https://platform.stepfun.com/interface-key',
+    openClawProviderId: OpenClawProviderId.StepFun,
     defaultBaseUrl: 'https://api.stepfun.com/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -317,6 +352,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Xiaomi,
+    label: 'Xiaomi',
+    website: 'https://dev.mi.com/platform',
+    apiKeyUrl: 'https://dev.mi.com/platform',
+    openClawProviderId: OpenClawProviderId.Xiaomi,
     defaultBaseUrl: 'https://api.xiaomimimo.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -333,6 +372,8 @@ const PROVIDER_DEFINITIONS = [
   {
     id: ProviderName.Ollama,
     label: 'Ollama',
+    website: 'https://ollama.com',
+    openClawProviderId: OpenClawProviderId.Ollama,
     defaultBaseUrl: 'http://localhost:11434/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -351,12 +392,12 @@ const PROVIDER_DEFINITIONS = [
   {
     id: ProviderName.Copilot,
     label: 'GitHub Copilot',
+    openClawProviderId: OpenClawProviderId.LobsteraiCopilot,
     defaultBaseUrl: 'https://api.individual.githubcopilot.com',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
     region: 'global',
     enPriority: 0,
-    openClawProviderId: OpenClawProviderId.LobsteraiCopilot,
     defaultModels: [
       { id: 'gpt-5-mini', name: 'GPT-5 mini', supportsImage: true },
       { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', supportsImage: true },
@@ -366,6 +407,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.OpenAI,
+    label: 'OpenAI',
+    website: 'https://platform.openai.com',
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
+    openClawProviderId: OpenClawProviderId.OpenAI,
     defaultBaseUrl: 'https://api.openai.com/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
@@ -380,6 +425,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Gemini,
+    label: 'Gemini',
+    website: 'https://aistudio.google.com',
+    apiKeyUrl: 'https://aistudio.google.com/apikey',
+    openClawProviderId: OpenClawProviderId.Google,
     defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     defaultApiFormat: ApiFormat.Gemini,
     codingPlanSupported: false,
@@ -393,6 +442,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.Anthropic,
+    label: 'Anthropic',
+    website: 'https://console.anthropic.com',
+    apiKeyUrl: 'https://console.anthropic.com/settings/keys',
+    openClawProviderId: OpenClawProviderId.Anthropic,
     defaultBaseUrl: 'https://api.anthropic.com',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -406,6 +459,10 @@ const PROVIDER_DEFINITIONS = [
   },
   {
     id: ProviderName.OpenRouter,
+    label: 'OpenRouter',
+    website: 'https://openrouter.ai',
+    apiKeyUrl: 'https://openrouter.ai/keys',
+    openClawProviderId: OpenClawProviderId.OpenRouter,
     defaultBaseUrl: 'https://openrouter.ai/api',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
@@ -535,6 +592,10 @@ class ProviderRegistryImpl {
 
   getSwitchableBaseUrl(id: string, format: 'openai' | 'anthropic'): string | undefined {
     return this.idIndex.get(id)?.switchableBaseUrls?.[format];
+  }
+
+  getOpenClawProviderId(providerName: string): string {
+    return this.idIndex.get(providerName)?.openClawProviderId ?? providerName ?? OpenClawProviderId.Lobster;
   }
 
   /** Provider IDs filtered by region. */

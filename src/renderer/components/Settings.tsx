@@ -1,13 +1,22 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { configService } from '../services/config';
 import { apiService } from '../services/api';
+import { buildApiRequestHeaders } from '../services/apiRequestHeaders';
+import {
+  buildOpenAICompatibleChatCompletionsUrl,
+  buildOpenAIResponsesUrl,
+  getEffectiveProviderApiFormat as getEffectiveApiFormat,
+  shouldUseMaxCompletionTokensForOpenAI,
+  shouldUseOpenAIResponsesForProvider,
+  shouldShowProviderApiFormatSelector as shouldShowApiFormatSelector,
+} from '../services/providerRequestConfig';
 import { themeService } from '../services/theme';
 import { i18nService, LanguageType } from '../services/i18n';
 import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPayload, PasswordEncryptedPayload } from '../services/encryption';
 import { coworkService } from '../services/cowork';
 import { APP_ID, APP_NAME, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import ErrorMessage from './ErrorMessage';
-import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import PlusCircleIcon from './icons/PlusCircleIcon';
 import TrashIcon from './icons/TrashIcon';
@@ -158,9 +167,6 @@ interface ProvidersImportPayload {
 
 const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'github-copilot';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
-const normalizeApiFormat = (value: unknown): 'anthropic' | 'openai' => (
-  value === 'openai' ? 'openai' : 'anthropic'
-);
 
 const WAKE_INPUT_SEPARATOR_PATTERN = /[\n,，;；、]+/u;
 
@@ -227,34 +233,6 @@ async function generateMiniMaxPkce(): Promise<{ verifier: string; challenge: str
   return { verifier, challenge, state };
 }
 
-const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'openai' | 'gemini' | null => {
-  if (provider === 'openai' || provider === 'stepfun') {
-    return 'openai';
-  }
-  if (provider === 'youdaozhiyun' || provider === 'qianfan') {
-    return 'openai';
-  }
-  if (provider === 'github-copilot') {
-    return 'openai';
-  }
-  // Moonshot regular chat must stay on the OpenAI-compatible endpoint.
-  if (provider === 'moonshot') {
-    return 'openai';
-  }
-  if (provider === 'anthropic') {
-    return 'anthropic';
-  }
-  if (provider === 'gemini') {
-    return 'gemini';
-  }
-  return null;
-};
-const getEffectiveApiFormat = (provider: string, value: unknown): 'anthropic' | 'openai' | 'gemini' => (
-  getFixedApiFormatForProvider(provider) ?? normalizeApiFormat(value)
-);
-const shouldShowApiFormatSelector = (provider: string): boolean => (
-  getFixedApiFormatForProvider(provider) === null
-);
 const getProviderDefaultBaseUrl = (
   provider: ProviderType,
   apiFormat: 'anthropic' | 'openai' | 'gemini'
@@ -290,67 +268,6 @@ const shouldAutoSwitchProviderBaseUrl = (provider: ProviderType, currentBaseUrl:
     (anthropicUrl ? normalizedCurrent === normalizeBaseUrl(anthropicUrl) : false)
     || (openaiUrl ? normalizedCurrent === normalizeBaseUrl(openaiUrl) : false)
   );
-};
-const buildOpenAICompatibleChatCompletionsUrl = (baseUrl: string, provider: string): string => {
-  const normalized = baseUrl.trim().replace(/\/+$/, '');
-  if (!normalized) {
-    return '/v1/chat/completions';
-  }
-  if (normalized.endsWith('/chat/completions')) {
-    return normalized;
-  }
-
-  const isGeminiLike = provider === 'gemini' || normalized.includes('generativelanguage.googleapis.com');
-  if (isGeminiLike) {
-    if (normalized.endsWith('/v1beta/openai') || normalized.endsWith('/v1/openai')) {
-      return `${normalized}/chat/completions`;
-    }
-    if (normalized.endsWith('/v1beta') || normalized.endsWith('/v1')) {
-      const betaBase = normalized.endsWith('/v1')
-        ? `${normalized.slice(0, -3)}v1beta`
-        : normalized;
-      return `${betaBase}/openai/chat/completions`;
-    }
-    return `${normalized}/v1beta/openai/chat/completions`;
-  }
-
-  // Handle /v1, /v4 etc. versioned paths
-  if (/\/v\d+$/.test(normalized)) {
-    return `${normalized}/chat/completions`;
-  }
-  if (provider === 'github-copilot') {
-    return `${normalized}/chat/completions`;
-  }
-  return `${normalized}/v1/chat/completions`;
-};
-const buildOpenAIResponsesUrl = (baseUrl: string): string => {
-  const normalized = baseUrl.trim().replace(/\/+$/, '');
-  if (!normalized) {
-    return '/v1/responses';
-  }
-  if (normalized.endsWith('/responses')) {
-    return normalized;
-  }
-  if (normalized.endsWith('/v1')) {
-    return `${normalized}/responses`;
-  }
-  return `${normalized}/v1/responses`;
-};
-const shouldUseOpenAIResponsesForProvider = (provider: string): boolean => (
-  provider === 'openai'
-);
-const shouldUseMaxCompletionTokensForOpenAI = (provider: string, modelId?: string): boolean => {
-  if (provider !== 'openai') {
-    return false;
-  }
-  const normalizedModel = (modelId ?? '').toLowerCase();
-  const resolvedModel = normalizedModel.includes('/')
-    ? normalizedModel.slice(normalizedModel.lastIndexOf('/') + 1)
-    : normalizedModel;
-  return resolvedModel.startsWith('gpt-5')
-    || resolvedModel.startsWith('o1')
-    || resolvedModel.startsWith('o3')
-    || resolvedModel.startsWith('o4');
 };
 const CONNECTIVITY_TEST_TOKEN_BUDGET = 64;
 
@@ -2167,19 +2084,7 @@ const Settings: React.FC<SettingsProps> = ({
         const openaiUrl = useResponsesApi
           ? buildOpenAIResponsesUrl(normalizedBaseUrl)
           : buildOpenAICompatibleChatCompletionsUrl(normalizedBaseUrl, testingProvider);
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-        if (providerConfig.apiKey) {
-          headers.Authorization = `Bearer ${providerConfig.apiKey}`;
-        }
-        if (testingProvider === 'github-copilot') {
-          headers['Copilot-Integration-Id'] = 'vscode-chat';
-          headers['Editor-Version'] = 'vscode/1.96.2';
-          headers['Editor-Plugin-Version'] = 'copilot-chat/0.26.7';
-          headers['User-Agent'] = 'GitHubCopilotChat/0.26.7';
-          headers['Openai-Intent'] = 'conversation-panel';
-        }
+        const headers = buildApiRequestHeaders(testingProvider, providerConfig.apiKey);
         const openAIRequestBody: Record<string, unknown> = useResponsesApi
           ? {
               model: firstModel.id,
@@ -3638,12 +3543,25 @@ const Settings: React.FC<SettingsProps> = ({
             {/* Provider Settings - Right Side */}
             <div className="w-3/5 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
               <div className="flex items-center justify-between pb-2 border-b border-border">
-                <h3 className="text-base font-medium text-foreground">
-                  {isCustomProvider(activeProvider)
-                    ? ((providers[activeProvider] as ProviderConfig)?.displayName || getCustomProviderDefaultName(activeProvider))
-                    : (ProviderRegistry.get(activeProvider)?.label ?? getProviderDisplayName(activeProvider))
-                  } {i18nService.t('providerSettings')}
-                </h3>
+                <div className="flex items-center gap-2 min-w-0">
+                  <h3 className="text-base font-medium text-foreground truncate">
+                    {isCustomProvider(activeProvider)
+                      ? ((providers[activeProvider] as ProviderConfig)?.displayName || getCustomProviderDefaultName(activeProvider))
+                      : (ProviderRegistry.get(activeProvider)?.label ?? getProviderDisplayName(activeProvider))
+                    } {i18nService.t('providerSettings')}
+                  </h3>
+                  {!isCustomProvider(activeProvider) && ProviderRegistry.get(activeProvider)?.website && (
+                    <button
+                      type="button"
+                      onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get(activeProvider)!.website!)}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-secondary hover:bg-surface-raised hover:text-primary transition-colors"
+                      title={i18nService.t('visitOfficialSite')}
+                    >
+                      <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                      <span>{i18nService.t('visitOfficialSite')}</span>
+                    </button>
+                  )}
+                </div>
                 <div
                   className={`px-2 py-0.5 rounded-lg text-xs font-medium ${
                     providers[activeProvider].enabled
@@ -3683,34 +3601,50 @@ const Settings: React.FC<SettingsProps> = ({
 
                   {/* API Key mode */}
                   {providers.minimax.authType !== 'oauth' && (
-                    <div className="relative">
-                      <input
-                        type={showApiKey ? 'text' : 'password'}
-                        id="minimax-apiKey"
-                        value={providers.minimax.apiKey}
-                        onChange={(e) => handleProviderConfigChange('minimax', 'apiKey', e.target.value)}
-                        className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
-                        placeholder={i18nService.t('apiKeyPlaceholder')}
-                      />
-                      <div className="absolute right-2 inset-y-0 flex items-center gap-1">
-                        {providers.minimax.apiKey && (
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <label htmlFor="minimax-apiKey" className="block text-xs font-medium text-foreground">
+                          {i18nService.t('apiKey')}
+                        </label>
+                        {ProviderRegistry.get('minimax')?.apiKeyUrl && (
                           <button
                             type="button"
-                            onClick={() => handleProviderConfigChange('minimax', 'apiKey', '')}
-                            className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                            title={i18nService.t('clear') || 'Clear'}
+                            onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get('minimax')!.apiKeyUrl!)}
+                            className="text-[11px] text-primary hover:underline transition-colors"
                           >
-                            <XCircleIconSolid className="h-4 w-4" />
+                            {i18nService.t('getApiKey')}
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => setShowApiKey(!showApiKey)}
-                          className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
-                          title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
-                        >
-                          {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
-                        </button>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type={showApiKey ? 'text' : 'password'}
+                          id="minimax-apiKey"
+                          value={providers.minimax.apiKey}
+                          onChange={(e) => handleProviderConfigChange('minimax', 'apiKey', e.target.value)}
+                          className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-xs"
+                          placeholder={i18nService.t('apiKeyPlaceholder')}
+                        />
+                        <div className="absolute right-2 inset-y-0 flex items-center gap-1">
+                          {providers.minimax.apiKey && (
+                            <button
+                              type="button"
+                              onClick={() => handleProviderConfigChange('minimax', 'apiKey', '')}
+                              className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                              title={i18nService.t('clear') || 'Clear'}
+                            >
+                              <XCircleIconSolid className="h-4 w-4" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setShowApiKey(!showApiKey)}
+                            className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
+                            title={showApiKey ? (i18nService.t('hide') || 'Hide') : (i18nService.t('show') || 'Show')}
+                          >
+                            {showApiKey ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -3962,9 +3896,20 @@ const Settings: React.FC<SettingsProps> = ({
               {/* Standard API key section for non-MiniMax providers */}
               {providerRequiresApiKey(activeProvider) && activeProvider !== 'minimax' && (
                 <div>
-                  <label htmlFor={`${activeProvider}-apiKey`} className="block text-xs font-medium text-foreground mb-1">
-                    {i18nService.t('apiKey')}
-                  </label>
+                  <div className="mb-1 flex items-center justify-between">
+                    <label htmlFor={`${activeProvider}-apiKey`} className="block text-xs font-medium text-foreground">
+                      {i18nService.t('apiKey')}
+                    </label>
+                    {!isCustomProvider(activeProvider) && ProviderRegistry.get(activeProvider)?.apiKeyUrl && (
+                      <button
+                        type="button"
+                        onClick={() => void window.electron.shell.openExternal(ProviderRegistry.get(activeProvider)!.apiKeyUrl!)}
+                        className="text-[11px] text-primary hover:underline transition-colors"
+                      >
+                        {i18nService.t('getApiKey')}
+                      </button>
+                    )}
+                  </div>
                   <div className="relative">
                     <input
                       type={showApiKey ? 'text' : 'password'}

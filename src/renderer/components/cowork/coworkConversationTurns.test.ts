@@ -1,0 +1,143 @@
+import { describe, expect, test } from 'vitest';
+
+import type { CoworkMessage } from '../../types/cowork';
+import {
+  buildConversationTurns,
+  buildDisplayItems,
+  getToolResultDisplay,
+  hasRenderableAssistantContent,
+} from './coworkConversationTurns';
+
+const createMessage = (message: Partial<CoworkMessage> & Pick<CoworkMessage, 'id' | 'type'>): CoworkMessage => ({
+  content: '',
+  timestamp: 1,
+  ...message,
+});
+
+describe('coworkConversationTurns', () => {
+  test('matches tool results to the preceding tool use by toolUseId', () => {
+    const toolUse = createMessage({
+      id: 'tool-use-1',
+      type: 'tool_use',
+      metadata: {
+        toolUseId: 'tool-1',
+      },
+    });
+    const assistant = createMessage({
+      id: 'assistant-1',
+      type: 'assistant',
+      content: 'done',
+    });
+    const toolResult = createMessage({
+      id: 'tool-result-1',
+      type: 'tool_result',
+      metadata: {
+        toolUseId: 'tool-1',
+        toolResult: 'success',
+      },
+    });
+
+    const items = buildDisplayItems([toolUse, assistant, toolResult]);
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      type: 'tool_group',
+      toolUse: { id: 'tool-use-1' },
+      toolResult: { id: 'tool-result-1' },
+    });
+    expect(items[1]).toMatchObject({
+      type: 'message',
+      message: { id: 'assistant-1' },
+    });
+  });
+
+  test('falls back to adjacent pairing when toolUseId is missing', () => {
+    const toolUse = createMessage({
+      id: 'tool-use-1',
+      type: 'tool_use',
+    });
+    const toolResult = createMessage({
+      id: 'tool-result-1',
+      type: 'tool_result',
+      metadata: {
+        toolResult: 'success',
+      },
+    });
+
+    const items = buildDisplayItems([toolUse, toolResult]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: 'tool_group',
+      toolUse: { id: 'tool-use-1' },
+      toolResult: { id: 'tool-result-1' },
+    });
+  });
+
+  test('starts an orphan turn for assistant-only history and then opens a new user turn', () => {
+    const assistant = createMessage({
+      id: 'assistant-1',
+      type: 'assistant',
+      content: '历史回答',
+    });
+    const system = createMessage({
+      id: 'system-1',
+      type: 'system',
+      content: '系统提示',
+    });
+    const user = createMessage({
+      id: 'user-1',
+      type: 'user',
+      content: '新的问题',
+    });
+    const answer = createMessage({
+      id: 'assistant-2',
+      type: 'assistant',
+      content: '新的回答',
+    });
+
+    const turns = buildConversationTurns(buildDisplayItems([assistant, system, user, answer]));
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({
+      id: 'orphan-0',
+      userMessage: null,
+    });
+    expect(turns[0]?.assistantItems.map((item) => item.type)).toEqual(['assistant', 'system']);
+    expect(turns[1]).toMatchObject({
+      id: 'user-1',
+      userMessage: { id: 'user-1' },
+    });
+    expect(turns[1]?.assistantItems.map((item) => item.type)).toEqual(['assistant']);
+  });
+
+  test('treats streaming thinking as renderable assistant content', () => {
+    const turns = buildConversationTurns(buildDisplayItems([
+      createMessage({
+        id: 'user-1',
+        type: 'user',
+        content: '帮我想一下',
+      }),
+      createMessage({
+        id: 'thinking-1',
+        type: 'assistant',
+        metadata: {
+          isThinking: true,
+          isStreaming: true,
+        },
+      }),
+    ]));
+
+    expect(hasRenderableAssistantContent(turns[0]!)).toBe(true);
+  });
+
+  test('normalizes tool result error tags before visibility checks', () => {
+    const message = createMessage({
+      id: 'tool-result-1',
+      type: 'tool_result',
+      content: '\u001B[31m<tool_use_error> permission denied </tool_use_error>\u001B[0m',
+    });
+
+    expect(getToolResultDisplay(message)).toBe('permission denied');
+  });
+});

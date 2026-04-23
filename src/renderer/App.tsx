@@ -55,8 +55,14 @@ import { scheduledTaskService } from './services/scheduledTask';
 import { matchesShortcut } from './services/shortcuts';
 import { themeService } from './services/theme';
 import { RootState, store } from './store';
-import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
-import { beginLoadSession } from './store/slices/coworkSlice';
+import { beginLoadSession, setDraftPrompt } from './store/slices/coworkSlice';
+import {
+  getModelIdentityKey,
+  isSameModelIdentity,
+  markSelectedModelPersisted,
+  setAvailableModels,
+  setSelectedModelSilently,
+} from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
 import type { CoworkPermissionResult, CoworkSessionSummary } from './types/cowork';
 
@@ -95,6 +101,8 @@ const App: React.FC = () => {
     autoAcceptPrivacy?: boolean;
   } | null>(null);
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const selectedModelDirty = useSelector((state: RootState) => state.model.selectedModelDirty);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
   const agents = useSelector((state: RootState) => state.agent.agents);
   const pendingPermissions = useSelector((state: RootState) => state.cowork.pendingPermissions);
@@ -103,6 +111,9 @@ const App: React.FC = () => {
   const toastTimerRef = useRef<number | null>(null);
   const loginWelcomeTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
+  const pendingConfiguredModelRecoveryRef = useRef<{
+    fallbackModelKey: string | null;
+  } | null>(null);
   const historyDrawerRequestIdRef = useRef(0);
   const globalSearchRequestIdRef = useRef(0);
   const dispatch = useDispatch();
@@ -111,14 +122,28 @@ const App: React.FC = () => {
     title: string;
     agentId: string;
     sessions: CoworkSessionSummary[];
+    isLoading: boolean;
   } | null>(null);
   const [showCoworkSearch, setShowCoworkSearch] = useState(false);
   const [globalSearchSessions, setGlobalSearchSessions] = useState<CoworkSessionSummary[]>([]);
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
   const lazyPanelFallback = (
     <div className="flex h-full items-center justify-center text-sm text-secondary">
       {i18nService.t('loading')}
     </div>
   );
+
+  const resolveConfiguredDefaultModel = useCallback(() => {
+    const config = configService.getConfig();
+    const configuredModelId = config.model.defaultModel?.trim();
+    if (!configuredModelId) {
+      return null;
+    }
+    return availableModels.find(
+      (model) => model.id === configuredModelId
+        && (!config.model.defaultModelProvider || model.providerKey === config.model.defaultModelProvider)
+    ) ?? null;
+  }, [availableModels]);
 
   const waitWithTimeout = useCallback(
     async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
@@ -264,11 +289,18 @@ const App: React.FC = () => {
           // Search all available models (including server models loaded by authService)
           // so that a previously selected server model is correctly restored.
           const allModels = store.getState().model.availableModels;
-          const preferredModel = allModels.find(
+          const configuredModel = allModels.find(
             model => model.id === config.model.defaultModel
               && (!config.model.defaultModelProvider || model.providerKey === config.model.defaultModelProvider)
-          ) ?? allModels[0];
-          dispatch(setSelectedModel(preferredModel));
+          ) ?? null;
+          const preferredModel = configuredModel ?? allModels[0];
+          pendingConfiguredModelRecoveryRef.current = null;
+          if (config.model.defaultModel?.trim() && !configuredModel) {
+            pendingConfiguredModelRecoveryRef.current = {
+              fallbackModelKey: getModelIdentityKey(preferredModel),
+            };
+          }
+          dispatch(setSelectedModelSilently(preferredModel));
         }
 
         if (entConfig?.disableUpdate || !cachedBrandConfig.update.enabled) {
@@ -392,22 +424,62 @@ const App: React.FC = () => {
   }, [electronApi]);
 
   useEffect(() => {
-    if (!isInitialized || !selectedModel?.id) return;
+    if (!isInitialized || !selectedModel?.id) {
+      return;
+    }
+
+    const pendingRecovery = pendingConfiguredModelRecoveryRef.current;
+    if (!pendingRecovery) {
+      return;
+    }
+
+    const configuredModel = resolveConfiguredDefaultModel();
+    if (!configuredModel) {
+      if (
+        selectedModelDirty
+        || getModelIdentityKey(selectedModel) !== pendingRecovery.fallbackModelKey
+      ) {
+        pendingConfiguredModelRecoveryRef.current = null;
+      }
+      return;
+    }
+
+    pendingConfiguredModelRecoveryRef.current = null;
+    if (!isSameModelIdentity(configuredModel, selectedModel) && !selectedModelDirty) {
+      dispatch(setSelectedModelSilently(configuredModel));
+    }
+  }, [
+    dispatch,
+    isInitialized,
+    resolveConfiguredDefaultModel,
+    selectedModel,
+    selectedModelDirty,
+  ]);
+
+  useEffect(() => {
+    if (!isInitialized || !selectedModel?.id || !selectedModelDirty) {
+      return;
+    }
+
     const config = configService.getConfig();
     if (
       config.model.defaultModel === selectedModel.id
       && (config.model.defaultModelProvider ?? '') === (selectedModel.providerKey ?? '')
     ) {
+      dispatch(markSelectedModelPersisted());
       return;
     }
+
     void configService.updateConfig({
       model: {
         ...config.model,
         defaultModel: selectedModel.id,
         defaultModelProvider: selectedModel.providerKey,
       },
+    }).finally(() => {
+      dispatch(markSelectedModelPersisted());
     });
-  }, [isInitialized, selectedModel?.id, selectedModel?.providerKey]);
+  }, [dispatch, isInitialized, selectedModel, selectedModelDirty]);
 
   const handleShowSettings = useCallback((options?: SettingsOpenOptions) => {
     setSettingsOptions({
@@ -432,6 +504,16 @@ const App: React.FC = () => {
 
   const refreshHistoryDrawerSessions = useCallback(async (agentId: string, title: string) => {
     const requestId = ++historyDrawerRequestIdRef.current;
+    setHistoryDrawerState((current) => {
+      if (!current || current.agentId !== agentId) {
+        return current;
+      }
+      return {
+        ...current,
+        title,
+        isLoading: true,
+      };
+    });
     const sessions = await loadAgentSessions(agentId);
     if (requestId !== historyDrawerRequestIdRef.current) {
       return;
@@ -444,14 +526,17 @@ const App: React.FC = () => {
         ...current,
         title,
         sessions,
+        isLoading: false,
       };
     });
   }, [loadAgentSessions]);
 
   const loadGlobalSearchSessions = useCallback(async () => {
     const requestId = ++globalSearchRequestIdRef.current;
+    setGlobalSearchLoading(true);
     if (!window.electron?.cowork) {
       setGlobalSearchSessions([]);
+      setGlobalSearchLoading(false);
       return;
     }
 
@@ -482,6 +567,7 @@ const App: React.FC = () => {
       return;
     }
     setGlobalSearchSessions(mergedSessions);
+    setGlobalSearchLoading(false);
   }, [agents, loadAgentSessions]);
 
   const handleNewChat = useCallback(() => {
@@ -498,6 +584,19 @@ const App: React.FC = () => {
       }));
     }, 0);
   }, [currentSessionId, disarmWakeFollowUp, dispatch, mainView]);
+
+  const handleCreateSkillByChat = useCallback(() => {
+    disarmWakeFollowUp();
+    dispatch(setDraftPrompt({
+      sessionId: '__home__',
+      draft: i18nService.t('skillCreatorPrompt'),
+    }));
+    coworkService.clearSession();
+    dispatch(clearSelection());
+    setMainView('cowork');
+    setCoworkWorkspaceView('conversation');
+    setHistoryDrawerState(null);
+  }, [disarmWakeFollowUp, dispatch]);
 
   const handleFocusCoworkInput = useCallback((clear = false) => {
     setMainView('cowork');
@@ -571,7 +670,10 @@ const App: React.FC = () => {
     agentId: string;
     sessions: CoworkSessionSummary[];
   }) => {
-    setHistoryDrawerState(payload);
+    setHistoryDrawerState({
+      ...payload,
+      isLoading: payload.sessions.length === 0,
+    });
     void refreshHistoryDrawerSessions(payload.agentId, payload.title);
   }, [refreshHistoryDrawerSessions]);
 
@@ -1209,6 +1311,7 @@ const App: React.FC = () => {
             <EngineStartupOverlay />
             {mainView === 'skills' ? (
               <SkillsView
+                onCreateSkillByChat={handleCreateSkillByChat}
                 readOnly={enterpriseConfig?.ui?.skills === 'readonly'}
               />
             ) : mainView === 'scheduledTasks' ? (
@@ -1232,6 +1335,7 @@ const App: React.FC = () => {
                 isOpen={true}
                 title={historyDrawerState.title}
                 sessions={historyDrawerState.sessions}
+                isLoading={historyDrawerState.isLoading}
                 currentSessionId={currentSessionId}
                 onClose={handleCloseHistoryDrawer}
                 onSelectSession={async (sessionId) => {
@@ -1253,6 +1357,7 @@ const App: React.FC = () => {
             isOpen={showCoworkSearch}
             onClose={handleCloseCoworkSearch}
             sessions={globalSearchSessions}
+            isLoading={globalSearchLoading}
             currentSessionId={currentSessionId}
             onSelectSession={async (sessionId) => {
               const targetSession = globalSearchSessions.find((session) => session.id === sessionId);

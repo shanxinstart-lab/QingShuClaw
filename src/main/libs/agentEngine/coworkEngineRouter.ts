@@ -8,6 +8,7 @@ import type {
   CoworkStartOptions,
 } from './types';
 import { ENGINE_SWITCHED_CODE } from './types';
+import type { OpenClawSessionPatch } from '../../../common/openclawSession';
 
 type RouterDeps = {
   getCurrentEngine: () => CoworkAgentEngine;
@@ -72,6 +73,16 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
       this.clearRequestEngineBySession(sessionId);
       throw error;
     }
+  }
+
+  async patchSession(sessionId: string, patch: OpenClawSessionPatch): Promise<void> {
+    const engine = this.safeResolveEngine();
+    this.sessionEngine.set(sessionId, engine);
+    const runtime = this.runtimeByEngine[engine];
+    if (!runtime.patchSession) {
+      throw new Error(`Session patch is not supported by engine: ${engine}`);
+    }
+    await runtime.patchSession(sessionId, patch);
   }
 
   stopSession(sessionId: string): void {

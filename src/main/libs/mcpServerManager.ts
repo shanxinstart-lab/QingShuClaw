@@ -5,17 +5,25 @@
  * Starts enabled MCP servers via MCP SDK transports (stdio, SSE, Streamable HTTP),
  * discovers available tools, and routes tool calls to the correct server.
  */
-import { app } from 'electron';
-import fs from 'fs';
-import path from 'path';
-import { spawnSync } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { spawnSync } from 'child_process';
+import { app } from 'electron';
+import fs from 'fs';
+import path from 'path';
+
 import type { McpServerRecord } from '../mcpStore';
 import { getElectronNodeRuntimePath, getEnhancedEnv } from './coworkUtil';
+import {
+  getToolTextPreview,
+  looksLikeTransportErrorText,
+  serializeForLog,
+  serializeToolContentForLog,
+  truncateForLog,
+} from './mcpLog';
 
 export interface McpToolManifestEntry {
   server: string;
@@ -43,11 +51,50 @@ interface ManagedMcpServer {
   client: Client;
   transport: Transport;
   tools: McpToolManifestEntry[];
+  recentStderr: string[];
 }
 
+const MAX_RECENT_STDERR_LINES = 20;
+
 const log = (level: string, msg: string) => {
-  console.log(`[McpBridge][${level}] ${msg}`);
+  const formatted = `[McpBridge:SDK][${level}] ${msg}`;
+  if (level === 'ERROR') {
+    console.error(formatted);
+  } else if (level === 'WARN') {
+    console.warn(formatted);
+  } else {
+    console.log(formatted);
+  }
 };
+
+function appendRecentStderr(recentStderr: string[], text: string): void {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    recentStderr.push(trimmed);
+  }
+  if (recentStderr.length > MAX_RECENT_STDERR_LINES) {
+    recentStderr.splice(0, recentStderr.length - MAX_RECENT_STDERR_LINES);
+  }
+}
+
+function summarizeRecentStderr(recentStderr: string[]): string | null {
+  if (recentStderr.length === 0) {
+    return null;
+  }
+  return truncateForLog(recentStderr.join(' | '));
+}
+
+function summarizeConfiguredEnvKeys(env: Record<string, string> | undefined): string {
+  const keys = Object.keys(env || {}).sort();
+  return keys.length > 0 ? keys.join(', ') : '(none)';
+}
+
+function isProxyConfigured(env: Record<string, string>): boolean {
+  return !!(env.http_proxy || env.HTTP_PROXY || env.https_proxy || env.HTTPS_PROXY);
+}
 
 // ── Windows hidden-subprocess init script ────────────────────────
 const WINDOWS_HIDE_INIT_SCRIPT_NAME = 'mcp-bridge-windows-hide-init.js';
@@ -345,8 +392,6 @@ export class McpServerManager {
         return null;
       }
 
-      log('INFO', `Starting "${record.name}" via stdio: command=${resolved.command}, args=${JSON.stringify(resolved.args)}`);
-
       const enhancedEnv = await getEnhancedEnv();
       const spawnEnv: Record<string, string> = {
         ...Object.fromEntries(
@@ -354,6 +399,10 @@ export class McpServerManager {
         ),
         ...(resolved.env || {}),
       };
+      log(
+        'INFO',
+        `Starting "${record.name}" via stdio: command=${resolved.command}, args=${serializeForLog(resolved.args)}, configuredEnvKeys=${summarizeConfiguredEnvKeys(resolved.env)}, proxy=${isProxyConfigured(spawnEnv) ? 'enabled' : 'disabled'}`,
+      );
 
       const stdioTransport = new StdioClientTransport({
         command: resolved.command,
@@ -364,7 +413,7 @@ export class McpServerManager {
         stdioTransport.stderr.on('data', (chunk: Buffer) => {
           const text = chunk.toString().trim();
           if (text) {
-            stderrChunks.push(text);
+            appendRecentStderr(stderrChunks, text);
             log('WARN', `"${record.name}" stderr: ${text}`);
           }
         });
@@ -412,7 +461,7 @@ export class McpServerManager {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       const stderrSummary = stderrChunks.length > 0
-        ? ` | stderr: ${stderrChunks.join(' ').slice(0, 500)}`
+        ? ` | recent stderr: ${summarizeRecentStderr(stderrChunks)}`
         : '';
       log('ERROR', `Failed to connect to "${record.name}": ${errMsg}${stderrSummary}`);
       try { await transport.close(); } catch { /* ignore */ }
@@ -434,7 +483,7 @@ export class McpServerManager {
       log('WARN', `Failed to list tools from "${record.name}": ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const managed: ManagedMcpServer = { record, client, transport, tools };
+    const managed: ManagedMcpServer = { record, client, transport, tools, recentStderr: stderrChunks };
     this.servers.set(record.name, managed);
     return managed;
   }
@@ -471,15 +520,30 @@ export class McpServerManager {
     }
 
     try {
-      log('INFO', `Calling tool "${toolName}" on server "${serverName}"`);
+      const startedAt = Date.now();
+      log('INFO', `Calling tool "${toolName}" on server "${serverName}" with arguments ${serializeForLog(args)}`);
       const result = await server.client.callTool({ name: toolName, arguments: args });
       const content = Array.isArray(result.content)
         ? (result.content as Array<{ type: string; text?: string }>)
         : [{ type: 'text', text: String(result.content) }];
+      const elapsedMs = Date.now() - startedAt;
+      const contentPreview = serializeToolContentForLog(content);
+      const textPreview = getToolTextPreview(content);
+      const recentStderr = summarizeRecentStderr(server.recentStderr);
+      log('INFO', `Tool "${toolName}" on "${serverName}" completed in ${elapsedMs}ms with isError=${result.isError === true}. Result=${contentPreview}`);
+      if (result.isError === true) {
+        const stderrSuffix = recentStderr ? ` | recent stderr: ${recentStderr}` : '';
+        log('WARN', `Tool "${toolName}" on "${serverName}" returned isError=true. Result text="${textPreview || '(none)'}"${stderrSuffix}`);
+      } else if (looksLikeTransportErrorText(textPreview)) {
+        const stderrSuffix = recentStderr ? ` | recent stderr: ${recentStderr}` : '';
+        log('WARN', `Tool "${toolName}" on "${serverName}" returned transport-style error text without isError. Result text="${textPreview}"${stderrSuffix}`);
+      }
       return { content, isError: result.isError === true };
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      log('ERROR', `Tool call "${toolName}" on "${serverName}" failed: ${errMsg}`);
+      const recentStderr = summarizeRecentStderr(server.recentStderr);
+      const stderrSuffix = recentStderr ? ` | recent stderr: ${recentStderr}` : '';
+      log('ERROR', `Tool call "${toolName}" on "${serverName}" failed. Arguments=${serializeForLog(args)}${stderrSuffix} | error=${errMsg}`);
       return {
         content: [{ type: 'text', text: `Tool execution error: ${errMsg}` }],
         isError: true,

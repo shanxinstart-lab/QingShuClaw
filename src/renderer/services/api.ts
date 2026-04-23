@@ -2,6 +2,13 @@ import { store } from '../store';
 import { configService } from './config';
 import { ChatMessagePayload, ChatUserMessageInput, ImageAttachment } from '../types/chat';
 import { ProviderName, resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { buildApiRequestHeaders } from './apiRequestHeaders';
+import {
+  buildOpenAICompatibleChatCompletionsUrl as buildProviderOpenAICompatibleChatCompletionsUrl,
+  buildOpenAIResponsesUrl as buildProviderOpenAIResponsesUrl,
+  getEffectiveProviderApiFormat,
+  shouldUseOpenAIResponsesForProvider,
+} from './providerRequestConfig';
 
 export interface ApiConfig {
   apiKey: string;
@@ -47,68 +54,20 @@ class ApiService {
     this.currentRequestId = null;
   }
 
-  private normalizeApiFormat(apiFormat: unknown): 'anthropic' | 'openai' | 'gemini' {
-    if (apiFormat === 'openai') {
-      return 'openai';
-    }
-    if (apiFormat === 'gemini') {
-      return 'gemini';
-    }
-    return 'anthropic';
-  }
-
   private getEffectiveApiFormat(provider: string, apiFormat: unknown): 'anthropic' | 'openai' | 'gemini' {
-    if (
-      provider === ProviderName.OpenAI
-      || provider === ProviderName.StepFun
-      || provider === ProviderName.Youdaozhiyun
-      || provider === ProviderName.Qianfan
-      || provider === ProviderName.Copilot
-      || provider === ProviderName.Moonshot
-    ) {
-      return 'openai';
-    }
-    if (provider === ProviderName.Anthropic) {
-      return 'anthropic';
-    }
-    if (provider === ProviderName.Gemini) {
-      return 'gemini';
-    }
-    return this.normalizeApiFormat(apiFormat);
+    return getEffectiveProviderApiFormat(provider, apiFormat);
   }
 
-  private buildOpenAICompatibleChatCompletionsUrl(baseUrl: string): string {
-    const normalized = baseUrl.trim().replace(/\/+$/, '');
-    if (!normalized) {
-      return '/v1/chat/completions';
-    }
-    if (normalized.endsWith('/chat/completions')) {
-      return normalized;
-    }
-
-    // Handle /v1, /v4 etc. versioned paths
-    if (/\/v\d+$/.test(normalized)) {
-      return `${normalized}/chat/completions`;
-    }
-    return `${normalized}/v1/chat/completions`;
+  private buildOpenAICompatibleChatCompletionsUrl(baseUrl: string, provider: string): string {
+    return buildProviderOpenAICompatibleChatCompletionsUrl(baseUrl, provider);
   }
 
   private buildOpenAIResponsesUrl(baseUrl: string): string {
-    const normalized = baseUrl.trim().replace(/\/+$/, '');
-    if (!normalized) {
-      return '/v1/responses';
-    }
-    if (normalized.endsWith('/responses')) {
-      return normalized;
-    }
-    if (normalized.endsWith('/v1')) {
-      return `${normalized}/responses`;
-    }
-    return `${normalized}/v1/responses`;
+    return buildProviderOpenAIResponsesUrl(baseUrl);
   }
 
   private shouldUseOpenAIResponsesApi(provider: string): boolean {
-    return provider === 'openai';
+    return shouldUseOpenAIResponsesForProvider(provider);
   }
 
   private buildImageHint(images?: ImageAttachment[]): string {
@@ -367,7 +326,7 @@ class ApiService {
     // - anthropic: Anthropic 兼容协议 (/v1/messages)
     // - openai: OpenAI 兼容协议 (OpenAI provider uses /v1/responses)
     // - gemini: Google Gemini 原生协议 (streamGenerateContent)
-    const normalizedApiFormat = this.normalizeApiFormat(effectiveConfig.apiFormat);
+    const normalizedApiFormat = this.getEffectiveApiFormat(provider, effectiveConfig.apiFormat);
     console.log(`[api-chat] provider=${provider}, model=${selectedModel.id}, apiFormat=${normalizedApiFormat}, baseUrl=${effectiveConfig.baseUrl}`);
 
     if (normalizedApiFormat === 'gemini') {
@@ -899,20 +858,11 @@ class ApiService {
 
         this.cleanupFunctions = [removeDataListener, removeDoneListener, removeErrorListener, removeAbortListener];
 
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-        if (config.apiKey) {
-          if (provider === 'gemini') {
-            headers['x-goog-api-key'] = config.apiKey;
-          } else {
-            headers.Authorization = `Bearer ${config.apiKey}`;
-          }
-        }
+        const headers = buildApiRequestHeaders(provider, config.apiKey);
 
         const requestUrl = useResponsesApi
           ? this.buildOpenAIResponsesUrl(config.baseUrl)
-          : this.buildOpenAICompatibleChatCompletionsUrl(config.baseUrl);
+          : this.buildOpenAICompatibleChatCompletionsUrl(config.baseUrl, provider);
         console.log(`[api-chat] OpenAI-compat request: provider=${provider}, baseUrl=${config.baseUrl}, finalUrl=${requestUrl}, model=${modelId}, apiFormat=${config.apiFormat}`);
         const requestBody: Record<string, unknown> = useResponsesApi
           ? {

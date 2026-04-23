@@ -1,4 +1,6 @@
 import { XMarkIcon } from '@heroicons/react/24/outline';
+import type { Platform } from '@shared/platform';
+import { PlatformRegistry } from '@shared/platform';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { AppCustomEvent } from '../../constants/app';
@@ -8,8 +10,13 @@ import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
 import { loadQingShuAgentGovernanceSummary } from '../../services/qingshuGovernanceSummary';
 import type { PresetAgent } from '../../types/agent';
-import type { IMGatewayConfig,IMPlatform } from '../../types/im';
+import type { IMGatewayConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
+import {
+  buildAgentPlatformBindings,
+  isAgentImBindingPlatformConfigured,
+} from './agentImBindingConfig';
+import { hasCreateAgentDraftChanges } from './agentDraftState';
 import { resolveAgentBundleSaveFlow } from './agentBundleSaveFlow';
 import {
   buildAgentBundleSaveWarningState,
@@ -25,19 +32,6 @@ import EmojiPicker from './EmojiPicker';
 
 type CreateTab = 'basic' | 'skills' | 'im';
 type CreateMode = 'blank' | 'preset';
-
-const IM_PLATFORMS: { key: IMPlatform; logo: string }[] = [
-  { key: 'dingtalk', logo: 'dingding.png' },
-  { key: 'feishu', logo: 'feishu.png' },
-  { key: 'qq', logo: 'qq_bot.jpeg' },
-  { key: 'telegram', logo: 'telegram.svg' },
-  { key: 'discord', logo: 'discord.svg' },
-  { key: 'nim', logo: 'nim.png' },
-  { key: 'xiaomifeng', logo: 'xiaomifeng.png' },
-  { key: 'weixin', logo: 'weixin.png' },
-  { key: 'wecom', logo: 'wecom.png' },
-  { key: 'popo', logo: 'popo.png' },
-];
 
 interface AgentCreateModalProps {
   isOpen: boolean;
@@ -66,7 +60,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
 
   // IM binding state
   const [imConfig, setImConfig] = useState<IMGatewayConfig | null>(null);
-  const [boundPlatforms, setBoundPlatforms] = useState<Set<IMPlatform>>(new Set());
+  const [boundPlatforms, setBoundPlatforms] = useState<Set<Platform>>(new Set());
 
   const resetForm = useCallback(() => {
     setName('');
@@ -86,19 +80,17 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setShowUnsavedConfirm(false);
   }, []);
 
-  const isDirty = useMemo(() => (
-    Boolean(name.trim())
-    || Boolean(description.trim())
-    || Boolean(systemPrompt.trim())
-    || Boolean(identity.trim())
-    || Boolean(icon.trim())
-    || skillIds.length > 0
-    || toolBundleIds.length > 0
-    || debugToolBundleIds.length > 0
-    || boundPlatforms.size > 0
-  ), [
+  const isDirty = useMemo(() => hasCreateAgentDraftChanges({
+    name,
+    description,
+    systemPrompt,
+    identity,
+    icon,
+    skillIds,
+    toolBundleIds,
     boundPlatforms,
-    debugToolBundleIds,
+  }), [
+    boundPlatforms,
     description,
     icon,
     identity,
@@ -156,6 +148,9 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     : saveWarningState
       ? (i18nService.t('agentToolBundlesConfirmSave') || 'Save Again')
       : (i18nService.t('create') || 'Create');
+  const visibleImPlatforms = PlatformRegistry.platforms.filter((platform) => (
+    getVisibleIMPlatforms(i18nService.getLanguage()) as readonly string[]
+  ).includes(platform));
 
   const handleRequestClose = useCallback(() => {
     if (creating) {
@@ -223,10 +218,11 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
       if (agent) {
         // Save IM bindings after agent is created
         if (boundPlatforms.size > 0 && imConfig) {
-          const currentBindings = { ...(imConfig.settings?.platformAgentBindings || {}) };
-          for (const platform of boundPlatforms) {
-            currentBindings[platform] = agent.id;
-          }
+          const currentBindings = buildAgentPlatformBindings(
+            imConfig.settings?.platformAgentBindings,
+            agent.id,
+            boundPlatforms,
+          );
           await imService.persistConfig({
             settings: { ...imConfig.settings, platformAgentBindings: currentBindings },
           });
@@ -252,7 +248,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     }
   };
 
-  const handleToggleIMBinding = (platform: IMPlatform) => {
+  const handleToggleIMBinding = (platform: Platform) => {
     const next = new Set(boundPlatforms);
     if (next.has(platform)) {
       next.delete(platform);
@@ -262,9 +258,8 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setBoundPlatforms(next);
   };
 
-  const isPlatformConfigured = (platform: IMPlatform): boolean => {
-    if (!imConfig) return false;
-    return (imConfig as unknown as Record<string, { enabled?: boolean }>)[platform]?.enabled === true;
+  const isPlatformConfigured = (platform: Platform): boolean => {
+    return isAgentImBindingPlatformConfigured(imConfig, platform);
   };
 
   const tabs: { key: CreateTab; label: string }[] = [
@@ -502,9 +497,8 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
                 {i18nService.t('agentIMBindHint') || 'Select IM channels this Agent responds to'}
               </p>
               <div className="space-y-1">
-                {IM_PLATFORMS
-                  .filter(({ key }) => (getVisibleIMPlatforms(i18nService.getLanguage()) as readonly string[]).includes(key))
-                  .map(({ key: platform, logo }) => {
+                {visibleImPlatforms.map((platform) => {
+                  const logo = PlatformRegistry.logo(platform);
                   const configured = isPlatformConfigured(platform);
                   const bound = boundPlatforms.has(platform);
                   return (

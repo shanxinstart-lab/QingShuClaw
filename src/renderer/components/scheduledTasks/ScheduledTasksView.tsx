@@ -126,29 +126,29 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
             <button
               type="button"
               onClick={() => handleTabChange('tasks')}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              className={`px-4 py-3 text-sm font-medium transition-colors relative ${
                 activeTab === 'tasks'
-                  ? 'text-foreground'
-                  : 'text-secondary hover:hover:text-foreground'
+                  ? 'text-foreground font-bold'
+                  : 'text-secondary hover:text-foreground'
               }`}
             >
               {i18nService.t('scheduledTasksTabTasks')}
               {activeTab === 'tasks' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t" />
+                <span className="absolute bottom-0 left-3 right-3 h-[3px] bg-primary rounded-t-sm" />
               )}
             </button>
             <button
               type="button"
               onClick={() => handleTabChange('history')}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              className={`px-4 py-3 text-sm font-medium transition-colors relative ${
                 activeTab === 'history'
-                  ? 'text-foreground'
-                  : 'text-secondary hover:hover:text-foreground'
+                  ? 'text-foreground font-bold'
+                  : 'text-secondary hover:text-foreground'
               }`}
             >
               {i18nService.t('scheduledTasksTabHistory')}
               {activeTab === 'history' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t" />
+                <span className="absolute bottom-0 left-3 right-3 h-[3px] bg-primary rounded-t-sm" />
               )}
             </button>
           </div>
@@ -156,7 +156,7 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
             <button
               type="button"
               onClick={() => dispatch(setViewMode('create'))}
-              className="px-3 py-1 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+              className="px-4 py-1.5 text-sm font-semibold bg-primary text-white rounded-[10px] hover:bg-primary-hover transition-colors shadow-sm"
             >
               {i18nService.t('scheduledTasksNewTask')}
             </button>

@@ -86,6 +86,7 @@ export class SqliteStore {
         pinned INTEGER NOT NULL DEFAULT 0,
         cwd TEXT NOT NULL,
         system_prompt TEXT NOT NULL DEFAULT '',
+        model_override TEXT NOT NULL DEFAULT '',
         execution_mode TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -214,6 +215,11 @@ export class SqliteStore {
 
       if (!columns.includes('active_skill_ids')) {
         this.db.run('ALTER TABLE cowork_sessions ADD COLUMN active_skill_ids TEXT;');
+        this.save();
+      }
+
+      if (!columns.includes('model_override')) {
+        this.db.run("ALTER TABLE cowork_sessions ADD COLUMN model_override TEXT NOT NULL DEFAULT '';");
         this.save();
       }
 

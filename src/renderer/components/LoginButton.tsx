@@ -1135,7 +1135,7 @@ const LoginButton: React.FC<LoginButtonProps> = ({ variant = 'default' }) => {
         onClick={handleClick}
         className={
           isSidebarVariant
-            ? 'flex w-full flex-col items-center gap-2 rounded-[22px] border border-emerald-400/14 bg-gradient-to-b from-emerald-400/10 to-background/80 px-2 py-2.5 text-center text-secondary shadow-sm transition-colors hover:border-emerald-400/22 hover:bg-surface-raised hover:text-foreground cursor-pointer'
+            ? 'flex w-full flex-col items-center gap-2 rounded-2xl px-2 py-2 text-center text-secondary transition-colors hover:bg-surface-raised hover:text-foreground cursor-pointer'
             : 'inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors cursor-pointer'
         }
       >
