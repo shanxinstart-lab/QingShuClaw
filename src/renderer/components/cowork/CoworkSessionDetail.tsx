@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
+import { getArtifactTypeFromExtension, parseCodeBlockArtifacts, parseFileLinksFromMessage, parseToolArtifact } from '../../services/artifactParser';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { RootState } from '../../store';
@@ -21,10 +22,21 @@ import {
   selectLastMessageContent,
   selectRemoteManaged,
 } from '../../store/selectors/coworkSelectors';
+import {
+  addArtifact,
+  closePanel,
+  selectArtifact,
+  selectIsPanelOpen,
+  selectSessionArtifacts,
+  setPanelView,
+  togglePanel,
+} from '../../store/slices/artifactSlice';
 import { setActiveSkillIds } from '../../store/slices/skillSlice';
+import type { Artifact } from '../../types/artifact';
 import type { CoworkImageAttachment,CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
 import type { Skill } from '../../types/skill';
 import { getCompactFolderName } from '../../utils/path';
+import { ArtifactPanel } from '../artifacts';
 import Modal from '../common/Modal';
 import ComposeIcon from '../icons/ComposeIcon';
 import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
@@ -293,6 +305,48 @@ const PushPinIcon: React.FC<React.SVGProps<SVGSVGElement> & { slashed?: boolean 
     {slashed && <path d="M5 5L19 19" />}
   </svg>
 );
+
+const ArtifactPanelIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="1.5" y="2" width="13" height="12" rx="1.5" />
+    <line x1="10" y1="2" x2="10" y2="14" />
+  </svg>
+);
+
+class ArtifactPanelErrorBoundary extends React.Component<
+  { children: React.ReactNode; onClose: () => void },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode; onClose: () => void }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error) {
+    console.error('[ArtifactPanel] render error:', error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <aside className="w-[420px] shrink-0 border-l border-border bg-background flex flex-col h-full items-center justify-center p-4">
+          <p className="text-sm text-red-500 mb-2">Artifact panel error</p>
+          <pre className="text-xs text-muted whitespace-pre-wrap max-w-full overflow-auto mb-3">
+            {this.state.error?.message}
+          </pre>
+          <button
+            onClick={() => { this.setState({ hasError: false, error: null }); this.props.onClose(); }}
+            className="px-3 py-1.5 text-xs rounded-lg bg-surface hover:bg-surface-hover text-foreground"
+          >
+            Close
+          </button>
+        </aside>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const formatUnknown = (value: unknown): string => {
   if (typeof value === 'string') {
@@ -1642,6 +1696,160 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     });
   }, [isRenaming]);
 
+  // ─── Artifact detection ─────────────────────────────────────────────
+  const isPanelOpen = useSelector(selectIsPanelOpen);
+  const sessionArtifacts = useSelector((state: RootState) =>
+    sessionId ? selectSessionArtifacts(state, sessionId) : []
+  );
+
+  const loadedFileIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    dispatch(setPanelView('files'));
+    dispatch(selectArtifact(''));
+    loadedFileIdsRef.current = new Set();
+  }, [sessionId, dispatch]);
+
+  useEffect(() => {
+    if (!sessionId || !currentSession?.messages?.length) return;
+    if (isStreaming) return;
+
+    try {
+      const messages = currentSession.messages;
+      const detected: Artifact[] = [];
+      const seenFilePaths = new Set<string>();
+
+      for (const msg of messages) {
+        if (msg.type === 'assistant' && !msg.metadata?.isThinking && msg.content) {
+          const codeBlockArtifacts = parseCodeBlockArtifacts(msg.content, msg.id, sessionId);
+          detected.push(...codeBlockArtifacts);
+
+          const fileLinks = parseFileLinksFromMessage(msg.content, msg.id, sessionId);
+          for (const fl of fileLinks) {
+            if (fl.filePath && !seenFilePaths.has(fl.filePath)) {
+              seenFilePaths.add(fl.filePath);
+              detected.push(fl);
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (msg.type === 'tool_use') {
+          const toolUseId = msg.metadata?.toolUseId;
+          const toolResult = toolUseId
+            ? messages.find(m => m.type === 'tool_result' && m.metadata?.toolUseId === toolUseId)
+            : messages[i + 1]?.type === 'tool_result' ? messages[i + 1] : undefined;
+          const toolArtifact = parseToolArtifact(msg, toolResult, sessionId);
+          if (toolArtifact && toolArtifact.filePath && !seenFilePaths.has(toolArtifact.filePath)) {
+            seenFilePaths.add(toolArtifact.filePath);
+            detected.push(toolArtifact);
+          } else if (toolArtifact && !toolArtifact.filePath) {
+            detected.push(toolArtifact);
+          }
+        }
+      }
+
+      for (const a of detected) {
+        dispatch(addArtifact({ sessionId, artifact: a }));
+      }
+
+      const cwd = currentSession.cwd;
+      const toLoad = detected.filter(a => a.filePath && !loadedFileIdsRef.current.has(a.id));
+      if (toLoad.length === 0) return;
+
+      const loadFiles = async () => {
+        for (const artifact of toLoad) {
+          const absPath = artifact.filePath!.startsWith('/')
+            ? artifact.filePath!
+            : `${cwd}/${artifact.filePath}`;
+          try {
+            const result = await window.electron.dialog.readFileAsDataUrl(absPath);
+            if (result?.success && result.dataUrl) {
+              const isTextType = artifact.type !== 'image';
+              let content = result.dataUrl;
+              if (isTextType) {
+                try {
+                  const base64 = result.dataUrl.split(',')[1] || '';
+                  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+                  content = new TextDecoder('utf-8').decode(bytes);
+                } catch {
+                  content = result.dataUrl;
+                }
+              }
+              loadedFileIdsRef.current.add(artifact.id);
+              dispatch(addArtifact({
+                sessionId,
+                artifact: { ...artifact, content },
+              }));
+            }
+          } catch {
+            // skip unreadable files
+          }
+        }
+      };
+      loadFiles();
+    } catch (err) {
+      console.error('[ArtifactDetection] failed:', err);
+    }
+  }, [sessionId, messagesLength, isStreaming, dispatch]);
+
+  // Intercept clicks on artifact-compatible file links → open in panel
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !sessionId) return;
+
+    const handleLinkClick = (e: MouseEvent) => {
+      const anchor = (e.target as HTMLElement).closest('a');
+      if (!anchor) return;
+
+      const href = anchor.getAttribute('href') || '';
+      if (!href.startsWith('file://')) return;
+
+      let filePath: string;
+      try {
+        filePath = decodeURIComponent(href.replace(/^file:\/\//, ''));
+      } catch {
+        filePath = href.replace(/^file:\/\//, '');
+      }
+
+      const lastDot = filePath.lastIndexOf('.');
+      if (lastDot === -1) return;
+      const ext = filePath.slice(lastDot).toLowerCase();
+      if (!getArtifactTypeFromExtension(ext)) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const existing = sessionArtifacts.find(a => a.filePath === filePath);
+      if (existing) {
+        dispatch(selectArtifact(existing.id));
+      } else {
+        const type = getArtifactTypeFromExtension(ext)!;
+        const fileName = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1);
+        const newArtifact: Artifact = {
+          id: `artifact-click-${Date.now()}`,
+          messageId: '',
+          sessionId,
+          type,
+          title: fileName,
+          content: '',
+          fileName,
+          filePath,
+          source: 'tool',
+          createdAt: Date.now(),
+        };
+        dispatch(addArtifact({ sessionId, artifact: newArtifact }));
+        dispatch(selectArtifact(newArtifact.id));
+      }
+    };
+
+    container.addEventListener('click', handleLinkClick, true);
+    return () => container.removeEventListener('click', handleLinkClick, true);
+  }, [sessionId, sessionArtifacts, dispatch]);
+  // ─── End artifact detection ─────────────────────────────────────────
+
   // Cleanup nav timers on unmount
   useEffect(() => {
     return () => {
@@ -2353,7 +2561,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   };
 
   return (
-    <div ref={detailRootRef} className="flex-1 flex flex-col bg-background h-full">
+    <div className="flex-1 flex h-full overflow-hidden">
+    <div ref={detailRootRef} className="flex-1 flex flex-col bg-background h-full" style={{ minWidth: 480 }}>
       {/* Header */}
       <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-surface shrink-0">
         {/* Left side: Toggle buttons (when collapsed) + Title */}
@@ -2401,7 +2610,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           )}
         </div>
 
-        {/* Right side: Folder + Menu */}
+        {/* Right side: Folder + Menu + Artifact toggle */}
         <div className="non-draggable flex items-center gap-1">
           {/* Folder button */}
           <button
@@ -2426,6 +2635,22 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           >
             <EllipsisHorizontalIcon className="h-5 w-5" />
           </button>
+
+          {/* Artifact panel toggle */}
+          <button
+            type="button"
+            onClick={() => dispatch(togglePanel())}
+            className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${
+              isPanelOpen ? 'text-primary bg-primary/10' : 'text-secondary hover:bg-surface-raised hover:text-foreground'
+            }`}
+            aria-label={i18nService.t('artifactPanelToggle')}
+          >
+            <ArtifactPanelIcon className="h-4 w-4" />
+            {sessionArtifacts.length > 0 && (
+              <span className="text-xs">{sessionArtifacts.length}</span>
+            )}
+          </button>
+
           <WindowTitleBar inline className="ml-1" />
         </div>
       </div>
@@ -2811,6 +3036,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           {i18nService.t('aiGeneratedDisclaimer')}
         </p>
       </div>
+    </div>
+    {isPanelOpen && (
+      <ArtifactPanelErrorBoundary onClose={() => dispatch(closePanel())}>
+        <ArtifactPanel artifacts={sessionArtifacts} />
+      </ArtifactPanelErrorBoundary>
+    )}
     </div>
   );
 };
