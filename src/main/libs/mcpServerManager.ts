@@ -56,6 +56,27 @@ interface ManagedMcpServer {
 
 const MAX_RECENT_STDERR_LINES = 20;
 
+function raceAbortSignal<T>(promise: Promise<T>, signal: AbortSignal, reason: string): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(new Error(reason));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error(reason));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 const log = (level: string, msg: string) => {
   const formatted = `[McpBridge:SDK][${level}] ${msg}`;
   if (level === 'ERROR') {
@@ -495,6 +516,7 @@ export class McpServerManager {
     serverName: string,
     toolName: string,
     args: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
   ): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }> {
     const localServer = this.localServers.get(serverName);
     if (localServer) {
@@ -519,10 +541,20 @@ export class McpServerManager {
       };
     }
 
+    if (options?.signal?.aborted) {
+      return {
+        content: [{ type: 'text', text: 'Tool execution aborted: request cancelled before start' }],
+        isError: true,
+      };
+    }
+
     try {
       const startedAt = Date.now();
       log('INFO', `Calling tool "${toolName}" on server "${serverName}" with arguments ${serializeForLog(args)}`);
-      const result = await server.client.callTool({ name: toolName, arguments: args });
+      const toolPromise = server.client.callTool({ name: toolName, arguments: args });
+      const result = options?.signal
+        ? await raceAbortSignal(toolPromise, options.signal, `Tool "${toolName}" aborted`)
+        : await toolPromise;
       const content = Array.isArray(result.content)
         ? (result.content as Array<{ type: string; text?: string }>)
         : [{ type: 'text', text: String(result.content) }];

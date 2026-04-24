@@ -19,6 +19,8 @@ export interface GatewayHistoryEntry {
   text: string;
 }
 
+const HEARTBEAT_ACK_RE = /^[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}HEARTBEAT_OK[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}$/i;
+
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 };
@@ -111,6 +113,8 @@ export const normalizeGatewayHistoryText = (
   return currentUserRequest;
 };
 
+export const isHeartbeatAckText = (text: string): boolean => HEARTBEAT_ACK_RE.test(text.trim());
+
 const extractWrappedUserRequest = (text: string): string | null => {
   const normalized = text.trim();
   if (!normalized) {
@@ -176,6 +180,9 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
 
   const text = normalizeGatewayHistoryText(role, extractGatewayMessageText(message));
   if (!text) {
+    return null;
+  }
+  if ((role === 'assistant' || role === 'system') && isHeartbeatAckText(text)) {
     return null;
   }
 

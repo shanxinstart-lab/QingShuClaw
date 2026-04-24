@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('electron', {
     setConfig: (skillId: string, config: Record<string, string>) => ipcRenderer.invoke('skills:setConfig', skillId, config),
     testEmailConnectivity: (skillId: string, config: Record<string, string>) =>
       ipcRenderer.invoke('skills:testEmailConnectivity', skillId, config),
+    fetchMarketplace: () => ipcRenderer.invoke('skills:fetchMarketplace'),
     governance: {
       analyzeById: (skillId: string) =>
         ipcRenderer.invoke('skills:governance:analyzeById', skillId),

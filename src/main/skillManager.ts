@@ -1207,10 +1207,29 @@ export class SkillManager {
     }
 
     try {
+      // 仅同步 skills.config.json defaults 白名单中的真正内置 skill，
+      // 避免安装目录中混入的用户自定义 skill 被错误复制到用户目录。
+      let bundledIds: Set<string> | null = null;
+      try {
+        const configPath = path.join(bundledRoot, SKILLS_CONFIG_FILE);
+        if (fs.existsSync(configPath)) {
+          const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (parsed?.defaults && typeof parsed.defaults === 'object') {
+            bundledIds = new Set(Object.keys(parsed.defaults));
+          }
+        }
+      } catch (error) {
+        console.warn('[skills] Failed to parse skills.config.json for sync filter:', error);
+      }
+
       const bundledSkillDirs = listSkillDirs(bundledRoot);
       console.log('[skills] syncBundledSkillsToUserData: found', bundledSkillDirs.length, 'bundled skills');
       bundledSkillDirs.forEach((dir) => {
         const id = path.basename(dir);
+        if (bundledIds && !bundledIds.has(id)) {
+          console.log(`[skills] syncBundledSkillsToUserData: skipping non-bundled "${id}"`);
+          return;
+        }
         const targetDir = path.join(userRoot, id);
         const targetExists = fs.existsSync(targetDir);
 
@@ -1430,12 +1449,20 @@ export class SkillManager {
       throw new Error('Built-in skills cannot be deleted');
     }
 
-    const targetDir = resolveWithin(root, id);
+    let targetDir: string | null = resolveWithin(root, id);
     if (!fs.existsSync(targetDir)) {
-      throw new Error('Skill not found');
+      const bundledRoot = this.getBundledSkillsRoot();
+      if (bundledRoot && bundledRoot !== root) {
+        const bundledTarget = resolveWithin(bundledRoot, id);
+        targetDir = fs.existsSync(bundledTarget) ? bundledTarget : null;
+      } else {
+        targetDir = null;
+      }
     }
 
-    fs.rmSync(targetDir, { recursive: true, force: true });
+    if (targetDir !== null) {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
     const state = this.loadSkillStateMap();
     delete state[id];
     this.saveSkillStateMap(state);
@@ -2134,6 +2161,17 @@ export class SkillManager {
     const builtInRoot = this.getBundledSkillsRoot();
     if (!builtInRoot || !fs.existsSync(builtInRoot)) {
       return new Set();
+    }
+    try {
+      const configPath = path.join(builtInRoot, SKILLS_CONFIG_FILE);
+      if (fs.existsSync(configPath)) {
+        const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (parsed?.defaults && typeof parsed.defaults === 'object') {
+          return new Set(Object.keys(parsed.defaults));
+        }
+      }
+    } catch (error) {
+      console.warn('[skills] Failed to parse skills.config.json for built-in skill list:', error);
     }
     return new Set(listSkillDirs(builtInRoot).map(dir => path.basename(dir)));
   }

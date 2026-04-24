@@ -14,6 +14,7 @@ import {
   appendAllRuns,
 } from '../store/slices/scheduledTaskSlice';
 import type {
+  ScheduledTask,
   ScheduledTaskChannelOption,
   ScheduledTaskConversationOption,
   ScheduledTaskInput,
@@ -22,6 +23,36 @@ import type {
   TaskState,
 } from '../../scheduledTask/types';
 import { TaskStatus } from '../../scheduledTask/constants';
+import { i18nService } from './i18n';
+
+function showToast(message: string): void {
+  window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+}
+
+function hasTaskDataAnomaly(task: ScheduledTask): boolean {
+  if (task.schedule.kind === 'every') {
+    const everyMs = task.schedule.everyMs;
+    if (!Number.isFinite(everyMs) || everyMs <= 0) return true;
+  }
+  if (task.schedule.kind === 'at') {
+    const date = new Date(task.schedule.at);
+    if (!Number.isFinite(date.getTime())) return true;
+  }
+  const values = [
+    task.state.nextRunAtMs,
+    task.state.lastRunAtMs,
+    task.state.lastDurationMs,
+    task.state.runningAtMs,
+  ];
+  return values.some((value) => value !== null && !Number.isFinite(value));
+}
+
+function checkTasksForAnomalies(tasks: ScheduledTask[]): void {
+  const anomalous = tasks.filter(hasTaskDataAnomaly);
+  if (anomalous.length === 0) return;
+  const message = i18nService.t('scheduledTasksDataAnomalyWarning').replace('{name}', anomalous[0].name);
+  showToast(message);
+}
 
 class ScheduledTaskService {
   private cleanupFns: (() => void)[] = [];
@@ -97,6 +128,7 @@ class ScheduledTaskService {
     try {
       const result = await api.list();
       if (result.success && result.tasks) {
+        checkTasksForAnomalies(result.tasks);
         store.dispatch(setTasks(result.tasks));
       }
     } catch (err: unknown) {
@@ -113,6 +145,10 @@ class ScheduledTaskService {
     try {
       const result = await api.create(input);
       if (result.success && result.task) {
+        if (hasTaskDataAnomaly(result.task)) {
+          const message = i18nService.t('scheduledTasksDataAnomalyWarning').replace('{name}', result.task.name);
+          showToast(message);
+        }
         store.dispatch(addTask(result.task));
       } else {
         throw new Error(result.error || 'Failed to create task');

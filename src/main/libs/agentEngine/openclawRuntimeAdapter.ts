@@ -28,6 +28,7 @@ import {
 import {
   extractGatewayHistoryEntries,
   extractGatewayMessageText,
+  isHeartbeatAckText,
   normalizeGatewayHistoryText,
 } from '../openclawHistory';
 import { buildTransientSessionFromOpenClawTranscript } from '../openclawTranscript';
@@ -60,7 +61,7 @@ type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
     method: string,
     params?: unknown,
-    opts?: { expectFinal?: boolean },
+    opts?: { expectFinal?: boolean; timeoutMs?: number },
   ) => Promise<T>;
 };
 
@@ -239,6 +240,12 @@ const stripQQBotSystemPrompt = (text: string): string => {
   }
 
   return text;
+};
+
+const stripPopoSystemHeader = (text: string): string => {
+  const match = text.match(/^System:\s*\[.*?\]\s+POPO\b.*$/m);
+  if (!match) return text;
+  return text.slice(match.index! + match[0].length).replace(/^\n+/, '').trim();
 };
 
 const extractMessageText = extractGatewayMessageText;
@@ -598,6 +605,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   /** Sessions that were manually stopped by the user. Used to suppress the timeout hint
    *  when the gateway sends back a late 'aborted' event after stopSession() already cleaned up the turn. */
   private readonly manuallyStoppedSessions = new Set<string>();
+  /** runId values that have already terminated with lifecycle phase=error. */
+  private readonly terminatedRunIds = new Set<string>();
   /** Session keys whose origin is "heartbeat" — discovered via polling, used to filter real-time events. */
   private readonly heartbeatSessionKeys = new Set<string>();
   private channelPollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -1044,6 +1053,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.cleanupSessionTurn(sessionId);
     this.clearPendingApprovalsBySession(sessionId);
     this.store.updateSession(sessionId, { status: 'idle' });
+    this.emit('sessionStopped', sessionId);
     this.resolveTurn(sessionId);
   }
 
@@ -1227,13 +1237,18 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (attachments) {
         console.log('[OpenClawRuntime] chat.send with attachments:', attachments.length, 'images,', attachments.map(a => ({ type: a.type, mimeType: a.mimeType, contentLength: a.content?.length ?? 0 })));
       }
+      const chatSendStartMs = Date.now();
       const sendResult = await client.request<Record<string, unknown>>('chat.send', {
         sessionKey,
         message: outboundMessage,
         deliver: false,
         idempotencyKey: runId,
         ...(attachments ? { attachments } : {}),
-      });
+      }, { timeoutMs: 90_000 });
+      const chatSendElapsedMs = Date.now() - chatSendStartMs;
+      if (chatSendElapsedMs > 10_000) {
+        console.warn(`[OpenClawRuntime] chat.send took ${chatSendElapsedMs}ms — gateway may still be initializing`);
+      }
       const returnedRunId = typeof sendResult?.runId === 'string' ? sendResult.runId.trim() : '';
       if (returnedRunId) {
         this.bindRunIdToTurn(sessionId, returnedRunId);
@@ -1947,7 +1962,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Re-create ActiveTurn for channel session follow-up turns.
     // Exclude stream=error events (e.g. seq gap notifications) — they are diagnostic alerts,
     // not new run events, and must not create a ghost ActiveTurn that blocks the next user turn.
-    if (sessionId && !this.activeTurns.has(sessionId) && sessionKey && stream !== 'error') {
+    if (sessionId && !this.activeTurns.has(sessionId) && sessionKey && stream !== 'error' && !this.terminatedRunIds.has(runId)) {
+      if (this.manuallyStoppedSessions.has(sessionId) && isManagedSessionKey(sessionKey)) {
+        console.log('[Debug:handleAgentEvent] suppressed — desktop session was manually stopped, sessionId:', sessionId);
+        return;
+      }
       console.log('[Debug:handleAgentEvent] re-creating ActiveTurn for follow-up turn, sessionId:', sessionId);
       this.ensureActiveTurn(sessionId, sessionKey, runId);
     }
@@ -2048,6 +2067,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
     if (stream === 'lifecycle') {
+      const lifecycleData = agentPayload.data;
+      const lifecycleRunId = typeof agentPayload.runId === 'string' ? agentPayload.runId.trim() : '';
+      if (
+        lifecycleRunId
+        && isRecord(lifecycleData)
+        && typeof lifecycleData.phase === 'string'
+        && lifecycleData.phase.trim() === 'error'
+      ) {
+        this.terminatedRunIds.add(lifecycleRunId);
+      }
       this.handleAgentLifecycleEvent(sessionId, agentPayload.data);
     }
   }
@@ -2588,6 +2617,17 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     turn.currentAssistantSegmentText = '';
   }
 
+  private deleteAssistantMessage(sessionId: string, messageId: string): void {
+    this.clearPendingStoreUpdate(messageId);
+    this.clearPendingMessageUpdate(messageId);
+    this.store.deleteMessage(sessionId, messageId);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('cowork:sessions:changed');
+      }
+    }
+  }
+
   private handleChatDelta(sessionId: string, turn: ActiveTurn, payload: ChatEventPayload): void {
     const previousText = turn.currentText;
     const previousContentText = turn.currentContentText;
@@ -2621,6 +2661,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     if (!streamedText) return;
+    if (isHeartbeatAckText(streamedText)) {
+      turn.currentText = streamedText;
+      turn.currentAssistantSegmentText = '';
+      if (turn.assistantMessageId) {
+        this.deleteAssistantMessage(sessionId, turn.assistantMessageId);
+        turn.assistantMessageId = null;
+      }
+      return;
+    }
     const segmentText = this.resolveAssistantSegmentText(turn, streamedText);
     if (!segmentText) return;
     if (segmentText === previousSegmentText && streamedText === previousText) return;
@@ -2660,6 +2709,19 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       `finalTextLen=${finalText.length}`,
       `finalText="${truncate(finalText, 200)}"`
     );
+    if (isHeartbeatAckText(finalText)) {
+      turn.currentText = finalText;
+      turn.currentAssistantSegmentText = '';
+      if (turn.assistantMessageId) {
+        this.deleteAssistantMessage(sessionId, turn.assistantMessageId);
+        turn.assistantMessageId = null;
+      }
+      this.store.updateSession(sessionId, { status: 'completed' });
+      this.emit('complete', sessionId, payload.runId ?? turn.runId);
+      this.cleanupSessionTurn(sessionId);
+      this.resolveTurn(sessionId);
+      return;
+    }
     turn.currentText = finalText;
     if (finalText && turn.currentContentBlocks.length === 0) {
       turn.currentContentText = finalText;
@@ -2973,6 +3035,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     );
 
     for (const entry of systemEntries) {
+      if (isHeartbeatAckText(entry.text)) {
+        continue;
+      }
       const normalizedText = entry.text.trim();
       const unwrappedText = unwrapInternalSystemPrompt(normalizedText);
       const isInjectedSystemPrompt = normalizedText.startsWith(INTERNAL_SYSTEM_PROMPT_HEADER)
@@ -3071,6 +3136,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         && this.channelSessionSync.isChannelSessionKey(sessionKey);
       const isDiscord = sessionKey.includes(':discord:');
       const isQQ = sessionKey.includes(':qqbot:');
+      const isPopo = sessionKey.includes(':moltbot-popo:');
 
       // Extract authoritative user/assistant entries from gateway history
       const authoritativeEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
@@ -3083,6 +3149,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           extractMessageText(message),
         );
         if (!text) continue;
+        if (isPopo && role === 'user') text = stripPopoSystemHeader(text);
         if (isDiscord) text = stripDiscordMentions(text);
         if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
         authoritativeEntries.push({ role: role as 'user' | 'assistant', text });
@@ -3232,20 +3299,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           return;
         }
 
-        if (isChannel) {
-          canonicalText = extractCurrentTurnAssistantText(history.messages);
-        } else {
-          for (let index = history.messages.length - 1; index >= 0; index -= 1) {
-            const message = history.messages[index];
-            if (!isRecord(message)) continue;
-            const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
-            if (role !== 'assistant') continue;
-            canonicalText = extractMessageText(message).trim();
-            if (canonicalText) {
-              break;
-            }
-          }
-        }
+        canonicalText = extractCurrentTurnAssistantText(history.messages);
 
         if (canonicalText) {
           break;
@@ -3344,6 +3398,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // POPO's moltbot-popo plugin converts newlines to HTML break tags (<br />),
       // causing raw <br /> to appear in the UI and AI conversation.
       if (isPopo) text = text.replace(/<br\s*\/?>/gi, '\n');
+      if (isPopo && role === 'user') text = stripPopoSystemHeader(text);
       if (isDiscord) text = stripDiscordMentions(text);
       if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
       if (text) {
@@ -3771,7 +3826,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private ensureActiveTurn(sessionId: string, sessionKey: string, runId: string): void {
     if (this.activeTurns.has(sessionId)) return;
     if (this.manuallyStoppedSessions.has(sessionId)) {
-      console.warn('[OpenClawRuntime] ensureActiveTurn called after manual stop — sessionId:', sessionId, 'runId:', runId, 'sessionKey:', sessionKey);
+      const isChannel = this.channelSessionSync
+        && !isManagedSessionKey(sessionKey)
+        && this.channelSessionSync.isChannelSessionKey(sessionKey);
+      if (isChannel) {
+        console.log('[Debug:ensureActiveTurn] cooldown expired, clearing manuallyStoppedSessions for channel re-activation, sessionId:', sessionId);
+        this.manuallyStoppedSessions.delete(sessionId);
+      } else {
+        console.log('[Debug:ensureActiveTurn] suppressed — desktop session was manually stopped, sessionId:', sessionId);
+        return;
+      }
     }
     const turnRunId = runId || randomUUID();
     const turnToken = this.nextTurnToken(sessionId);

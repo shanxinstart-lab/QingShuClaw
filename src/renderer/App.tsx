@@ -572,7 +572,8 @@ const App: React.FC = () => {
 
   const handleNewChat = useCallback(() => {
     disarmWakeFollowUp();
-    const shouldClearInput = mainView === 'cowork' || !!currentSessionId;
+    // 仅在已经位于首页时清空输入，保留从会话返回首页时的首页草稿与附件。
+    const shouldClearInput = mainView === 'cowork' && !currentSessionId;
     coworkService.clearSession();
     dispatch(clearSelection());
     setMainView('cowork');

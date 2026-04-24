@@ -26,6 +26,7 @@ type AuthAdapterDeps = {
   fetchFn: FetchFn;
   openExternal: OpenExternalFn;
   onAuthSessionInvalidated?: (reason: string) => void;
+  onServerModelMetadataUpdated?: () => void | Promise<void>;
   resolveApiBaseUrl: () => string | null;
   resolveWebBaseUrl: () => string | null;
   getAuthTokens: () => StoredAuthTokens | null;
@@ -140,6 +141,16 @@ type QtbModel = {
   apiFormat: string;
   supportsImage?: boolean;
 };
+
+function notifyServerModelMetadataUpdated(deps: AuthAdapterDeps, tag: string): void {
+  if (!deps.onServerModelMetadataUpdated) {
+    return;
+  }
+
+  Promise.resolve(deps.onServerModelMetadataUpdated()).catch((error) => {
+    console.warn(`[${tag}] Failed to refresh OpenClaw config after server model metadata update:`, error);
+  });
+}
 
 type QtbAuthResponse = {
   accessToken: string | null;
@@ -658,6 +669,7 @@ export const createLegacyLobsterAuthAdapter = (deps: AuthAdapterDeps): AuthAdapt
         }
 
         deps.updateServerModelMetadata(data.data);
+        notifyServerModelMetadataUpdated(deps, 'Auth:getModels');
         return { success: true, models: data.data };
       } catch (error) {
         console.error('[Auth:getModels] Error:', error);
@@ -1287,6 +1299,7 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
           console.log(`[QtbAuth] loaded ${body.data.length} server models`);
         }
         deps.updateServerModelMetadata(body.data);
+        notifyServerModelMetadataUpdated(deps, 'QtbAuth');
         return { success: true, models: body.data };
       } catch (error) {
         console.error('[QtbAuth] server models request crashed:', error);

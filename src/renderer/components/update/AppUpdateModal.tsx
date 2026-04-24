@@ -90,10 +90,10 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
               )}
 
               {currentLog.content.length > 0 && (
-                <ul className="mt-2 space-y-1.5 max-h-48 overflow-y-auto">
+                <ul className="mt-2 space-y-1.5 max-h-48 overflow-y-auto pl-2">
                   {currentLog.content.map((item, index) => (
                     <li key={index} className="flex items-start gap-2 text-sm text-secondary">
-                      <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/60" />
+                      <span className="mt-2 h-1 w-1 flex-shrink-0 rounded-full bg-gray-400 dark:bg-gray-500" />
                       <span>{item}</span>
                     </li>
                   ))}

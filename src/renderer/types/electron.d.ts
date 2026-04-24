@@ -426,6 +426,7 @@ interface IElectronAPI {
       skillId: string,
       config: Record<string, string>
     ) => Promise<{ success: boolean; result?: EmailConnectivityTestResult; error?: string }>;
+    fetchMarketplace: () => Promise<{ success: boolean; data?: string; error?: string }>;
     governance: {
       analyzeById: (skillId: string) => Promise<{ success: boolean; result?: QingShuSkillGovernanceResultIPC; error?: string }>;
       analyzeFiles: (skillFilePaths: string[]) => Promise<{ success: boolean; results?: QingShuSkillGovernanceBatchItemIPC[]; error?: string }>;

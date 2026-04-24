@@ -2214,34 +2214,40 @@ const Settings: React.FC<SettingsProps> = ({
 
     try {
       const raw = await file.text();
+      console.log(`[Settings] importing providers from file: ${file.name}, size: ${file.size}`);
       let payload: ProvidersImportPayload;
       try {
         payload = JSON.parse(raw) as ProvidersImportPayload;
-      } catch (parseError) {
+      } catch {
+        console.warn('[Settings] import failed: invalid JSON in file');
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
 
       if (!payload || payload.type !== EXPORT_FORMAT_TYPE || !payload.providers) {
+        console.warn(`[Settings] import failed: invalid format, type=${payload?.type}, hasProviders=${!!payload?.providers}`);
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
 
       // Check if it's version 2 (password-based encryption)
       if (payload.version === 2 && payload.encryption?.keySource === 'password') {
+        console.log('[Settings] import: detected v2 password-based encryption');
         await processImportPayloadWithPassword(payload);
         return;
       }
 
       // Version 1 (legacy local-store key) - try to decrypt with local key
       if (payload.version === 1) {
+        console.log('[Settings] import: detected v1 local-key encryption');
         await processImportPayloadWithLocalKey(payload);
         return;
       }
 
+      console.warn(`[Settings] import failed: unsupported version=${payload.version}`);
       setError(i18nService.t('invalidProvidersFile'));
     } catch (err) {
-      console.error('Failed to import providers:', err);
+      console.error('[Settings] import failed:', err);
       setError(i18nService.t('importProvidersFailed'));
     }
   };
@@ -2249,6 +2255,8 @@ const Settings: React.FC<SettingsProps> = ({
   const processImportPayloadWithLocalKey = async (payload: ProvidersImportPayload) => {
     setIsImportingProviders(true);
     try {
+      const fileKeys = Object.keys(payload.providers ?? {});
+      console.log(`[Settings] v1 import: processing ${fileKeys.length} providers from file`);
       const providerUpdates: Partial<ProvidersConfig> = {};
       let hadDecryptFailure = false;
       for (const providerKey of providerKeys) {
@@ -2263,32 +2271,36 @@ const Settings: React.FC<SettingsProps> = ({
         } else if (providerData.apiKey && typeof providerData.apiKey === 'object') {
           try {
             apiKey = await decryptSecret(providerData.apiKey as EncryptedPayload);
+            console.log(`[Settings] v1 import: decrypted key for ${providerKey}`);
           } catch (error) {
             hadDecryptFailure = true;
-            console.warn(`Failed to decrypt provider key for ${providerKey}`, error);
+            console.warn(`[Settings] v1 import: failed to decrypt key for ${providerKey}`, error);
           }
         } else if (typeof providerData.apiKeyEncrypted === 'string' && typeof providerData.apiKeyIv === 'string') {
           try {
             apiKey = await decryptSecret({ encrypted: providerData.apiKeyEncrypted, iv: providerData.apiKeyIv });
+            console.log(`[Settings] v1 import: decrypted key for ${providerKey}`);
           } catch (error) {
             hadDecryptFailure = true;
-            console.warn(`Failed to decrypt provider key for ${providerKey}`, error);
+            console.warn(`[Settings] v1 import: failed to decrypt key for ${providerKey}`, error);
           }
         }
 
         const models = normalizeModels(providerData.models);
+        const existing = providers[providerKey];
 
         providerUpdates[providerKey] = {
-          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : providers[providerKey].enabled,
-          apiKey: apiKey ?? providers[providerKey].apiKey,
-          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : providers[providerKey].baseUrl,
-          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? providers[providerKey].apiFormat),
-          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (providers[providerKey] as ProviderConfig).codingPlanEnabled,
-          models: models ?? providers[providerKey].models,
+          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : existing?.enabled ?? false,
+          apiKey: apiKey ?? existing?.apiKey ?? '',
+          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : existing?.baseUrl ?? '',
+          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? existing?.apiFormat),
+          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (existing as ProviderConfig | undefined)?.codingPlanEnabled,
+          models: models ?? existing?.models,
         };
       }
 
       if (Object.keys(providerUpdates).length === 0) {
+        console.warn(`[Settings] v1 import failed: no matching providers found, file keys: ${fileKeys.join(', ')}`);
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
@@ -2305,11 +2317,12 @@ const Settings: React.FC<SettingsProps> = ({
       });
       setIsTestResultModalOpen(false);
       setTestResult(null);
+      console.log(`[Settings] v1 import complete: updated ${Object.keys(providerUpdates).length} providers`);
       if (hadDecryptFailure) {
         setNoticeMessage(i18nService.t('decryptProvidersPartial'));
       }
     } catch (err) {
-      console.error('Failed to import providers:', err);
+      console.error('[Settings] v1 import failed:', err);
       const isDecryptError = err instanceof Error
         && (err.message === 'Invalid encrypted payload' || err.name === 'OperationError');
       const message = isDecryptError
@@ -2329,6 +2342,8 @@ const Settings: React.FC<SettingsProps> = ({
     setIsImportingProviders(true);
 
     try {
+      const fileKeys = Object.keys(payload.providers);
+      console.log(`[Settings] v2 import: processing ${fileKeys.length} providers from file`);
       const providerUpdates: Partial<ProvidersConfig> = {};
       let hadDecryptFailure = false;
 
@@ -2347,26 +2362,29 @@ const Settings: React.FC<SettingsProps> = ({
             // Version 2 password-based encryption
             try {
               apiKey = await decryptWithPassword(apiKeyObj, DEFAULT_EXPORT_PASSWORD);
+              console.log(`[Settings] v2 import: decrypted key for ${providerKey}`);
             } catch (error) {
               hadDecryptFailure = true;
-              console.warn(`Failed to decrypt provider key for ${providerKey}`, error);
+              console.warn(`[Settings] v2 import: failed to decrypt key for ${providerKey}`, error);
             }
           }
         }
 
         const models = normalizeModels(providerData.models);
+        const existing = providers[providerKey];
 
         providerUpdates[providerKey] = {
-          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : providers[providerKey].enabled,
-          apiKey: apiKey ?? providers[providerKey].apiKey,
-          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : providers[providerKey].baseUrl,
-          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? providers[providerKey].apiFormat),
-          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (providers[providerKey] as ProviderConfig).codingPlanEnabled,
-          models: models ?? providers[providerKey].models,
+          enabled: typeof providerData.enabled === 'boolean' ? providerData.enabled : existing?.enabled ?? false,
+          apiKey: apiKey ?? existing?.apiKey ?? '',
+          baseUrl: typeof providerData.baseUrl === 'string' ? providerData.baseUrl : existing?.baseUrl ?? '',
+          apiFormat: getEffectiveApiFormat(providerKey, providerData.apiFormat ?? existing?.apiFormat),
+          codingPlanEnabled: typeof providerData.codingPlanEnabled === 'boolean' ? providerData.codingPlanEnabled : (existing as ProviderConfig | undefined)?.codingPlanEnabled,
+          models: models ?? existing?.models,
         };
       }
 
       if (Object.keys(providerUpdates).length === 0) {
+        console.warn(`[Settings] v2 import failed: no matching providers found, file keys: ${fileKeys.join(', ')}`);
         setError(i18nService.t('invalidProvidersFile'));
         return;
       }
@@ -2378,6 +2396,7 @@ const Settings: React.FC<SettingsProps> = ({
 
       if (!anyKeyDecrypted && hadDecryptFailure) {
         // All decryptions failed - likely wrong password
+        console.warn('[Settings] v2 import failed: all key decryptions failed, likely wrong password');
         setError(i18nService.t('decryptProvidersFailed'));
         return;
       }
@@ -2394,11 +2413,12 @@ const Settings: React.FC<SettingsProps> = ({
       });
       setIsTestResultModalOpen(false);
       setTestResult(null);
+      console.log(`[Settings] v2 import complete: updated ${Object.keys(providerUpdates).length} providers`);
       if (hadDecryptFailure) {
         setNoticeMessage(i18nService.t('decryptProvidersPartial'));
       }
     } catch (err) {
-      console.error('Failed to import providers:', err);
+      console.error('[Settings] v2 import failed:', err);
       const isDecryptError = err instanceof Error
         && (err.message === 'Invalid encrypted payload' || err.name === 'OperationError');
       const message = isDecryptError

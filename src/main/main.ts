@@ -92,7 +92,7 @@ import { setProxyTokenRefresher,startCoworkOpenAICompatProxy, stopCoworkOpenAICo
 import { CoworkRunner } from './libs/coworkRunner';
 import { generateSessionTitle, probeCoworkModelReadiness } from './libs/coworkUtil';
 import { EdgeTtsService } from './libs/edgeTtsService';
-import { getServerApiBaseUrl, refreshEndpointsTestMode } from './libs/endpoints';
+import { getServerApiBaseUrl, getSkillStoreUrl, refreshEndpointsTestMode } from './libs/endpoints';
 import { mergeEnterpriseOpenclawConfig,resolveEnterpriseConfigPath, syncEnterpriseConfig } from './libs/enterpriseConfigSync';
 import { exportLogsZip } from './libs/logExport';
 import { broadcastSpeechState,MacSpeechService } from './libs/macSpeechService';
@@ -171,6 +171,9 @@ const IPC_MAX_KEYS = 80;
 const IPC_MAX_ITEMS = 40;
 const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ENGINE_NOT_READY_CODE = 'ENGINE_NOT_READY';
+const PowerSaveBlockerType = {
+  PreventAppSuspension: 'prevent-app-suspension',
+} as const;
 const MIME_EXTENSION_MAP: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',
@@ -745,7 +748,7 @@ let skillManager: SkillManager | null = null;
 let mcpStore: McpStore | null = null;
 let mcpServerManager: McpServerManager | null = null;
 let mcpBridgeServer: McpBridgeServer | null = null;
-let mcpBridgeSecret: string | null = null;
+let mcpBridgeSecret: string = require('crypto').randomUUID();
 let mcpBridgeStartPromise: Promise<McpBridgeConfig | null> | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
@@ -759,6 +762,20 @@ let openClawStatusForwarderBound = false;
 let coworkRuntimeForwarderBound = false;
 let memoryMigrationDone = false;
 let preventSleepBlockerId: number | null = null;
+
+function setPreventSleepBlockerEnabled(enabled: boolean): void {
+  if (enabled) {
+    if (preventSleepBlockerId === null || !powerSaveBlocker.isStarted(preventSleepBlockerId)) {
+      preventSleepBlockerId = powerSaveBlocker.start(PowerSaveBlockerType.PreventAppSuspension);
+    }
+    return;
+  }
+
+  if (preventSleepBlockerId !== null && powerSaveBlocker.isStarted(preventSleepBlockerId)) {
+    powerSaveBlocker.stop(preventSleepBlockerId);
+  }
+  preventSleepBlockerId = null;
+}
 
 const initStore = async (): Promise<SqliteStore> => {
   if (!storeInitPromise) {
@@ -1186,6 +1203,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           tools: mcpServerManager?.toolManifest ?? [],
         };
       },
+      getMcpBridgeSecret: () => mcpBridgeSecret,
       getAgents: () => getCoworkStore().listAgents(),
       getQingShuEnabledToolBundles: () => qingShuExtensionHost?.getEnabledToolBundles() ?? [],
       getQingShuSharedToolCatalog: () => qingShuExtensionHost?.getSharedToolCatalog() ?? {
@@ -1251,7 +1269,7 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
 
 const syncOpenClawConfig = async (
   options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
-): Promise<{ success: boolean; changed: boolean; status?: OpenClawEngineStatus; error?: string }> => {
+): Promise<{ success: boolean; changed: boolean; mcpBridgeConfigChanged?: boolean; status?: OpenClawEngineStatus; error?: string }> => {
   // When the gateway is running and there are active workloads (cowork
   // sessions OR running cron jobs), defer the entire sync — including the
   // config file write — to avoid triggering OpenClaw's built-in file-watcher
@@ -1297,15 +1315,16 @@ const syncOpenClawConfig = async (
   const secretEnvVarsChanged = JSON.stringify(nextSecretEnvVars) !== JSON.stringify(prevSecretEnvVars);
   getOpenClawEngineManager().setSecretEnvVars(nextSecretEnvVars);
 
-  // When secret env vars change, the running gateway must be restarted even if
-  // the caller didn't request it — the ${VAR} placeholders in openclaw.json
-  // resolve from the process environment which is fixed at spawn time.
-  const needsRestart = syncResult.changed || secretEnvVarsChanged;
+  // Secret env var changes and mcp-bridge callback/tool changes require a hard
+  // restart because the gateway snapshots both process env and plugin config.
+  const mcpBridgeForceRestart = !!syncResult.mcpBridgeConfigChanged;
+  const needsRestart = secretEnvVarsChanged || mcpBridgeForceRestart || (syncResult.changed && !!options.restartGatewayIfRunning);
 
-  if (!needsRestart || (!options.restartGatewayIfRunning && !secretEnvVarsChanged)) {
+  if (!needsRestart) {
     return {
       success: true,
       changed: syncResult.changed,
+      mcpBridgeConfigChanged: syncResult.mcpBridgeConfigChanged,
     };
   }
 
@@ -1315,6 +1334,7 @@ const syncOpenClawConfig = async (
     return {
       success: true,
       changed: true,
+      mcpBridgeConfigChanged: syncResult.mcpBridgeConfigChanged,
       status,
     };
   }
@@ -1333,6 +1353,7 @@ const syncOpenClawConfig = async (
     return {
       success: false,
       changed: true,
+      mcpBridgeConfigChanged: syncResult.mcpBridgeConfigChanged,
       status: restarted,
       error: restarted.message || 'Failed to restart OpenClaw gateway after config sync.',
     };
@@ -1340,6 +1361,7 @@ const syncOpenClawConfig = async (
   return {
     success: true,
     changed: true,
+    mcpBridgeConfigChanged: syncResult.mcpBridgeConfigChanged,
     status: restarted,
   };
 };
@@ -1531,12 +1553,6 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
   mcpBridgeStartPromise = (async (): Promise<McpBridgeConfig | null> => {
   try {
     console.log('[McpBridge] startMcpBridge called');
-
-    // Generate a per-session secret for bridge auth
-    if (!mcpBridgeSecret) {
-      const crypto = await import('crypto');
-      mcpBridgeSecret = crypto.randomUUID();
-    }
 
     if (!mcpServerManager) {
       mcpServerManager = new McpServerManager();
@@ -2694,7 +2710,7 @@ if (!gotTheLock) {
       refreshEndpointsTestMode(getStore());
       const syncResult = await syncOpenClawConfig({
         reason: 'app-config-change',
-        restartGatewayIfRunning: false,
+        restartGatewayIfRunning: true,
       });
       if (!syncResult.success) {
         console.error('[OpenClaw] Failed to sync config after app_config update:', syncResult.error);
@@ -2818,16 +2834,7 @@ if (!gotTheLock) {
       return { success: false, error: 'Invalid parameter: enabled must be boolean' };
     }
     try {
-      if (enabled) {
-        if (preventSleepBlockerId === null || !powerSaveBlocker.isStarted(preventSleepBlockerId)) {
-          preventSleepBlockerId = powerSaveBlocker.start('prevent-display-sleep');
-        }
-      } else {
-        if (preventSleepBlockerId !== null && powerSaveBlocker.isStarted(preventSleepBlockerId)) {
-          powerSaveBlocker.stop(preventSleepBlockerId);
-          preventSleepBlockerId = null;
-        }
-      }
+      setPreventSleepBlockerEnabled(enabled);
       getStore().set('prevent_sleep_enabled', enabled);
       return { success: true };
     } catch (error) {
@@ -2992,6 +2999,12 @@ if (!gotTheLock) {
         fetchFn: fetchForAuth,
         openExternal: openExternalForAuth,
         onAuthSessionInvalidated: clearLocalAuthSession,
+        onServerModelMetadataUpdated: async () => {
+          await syncOpenClawConfig({
+            reason: 'server-models-updated',
+            restartGatewayIfRunning: false,
+          });
+        },
         resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
         resolveWebBaseUrl: () => backendConfig.webBaseUrl,
         getAuthTokens,
@@ -3008,6 +3021,12 @@ if (!gotTheLock) {
       fetchFn: fetchForAuth,
       openExternal: openExternalForAuth,
       onAuthSessionInvalidated: clearLocalAuthSession,
+      onServerModelMetadataUpdated: async () => {
+        await syncOpenClawConfig({
+          reason: 'server-models-updated',
+          restartGatewayIfRunning: false,
+        });
+      },
       resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
       resolveWebBaseUrl: () => backendConfig.webBaseUrl,
       getAuthTokens,
@@ -3240,6 +3259,42 @@ if (!gotTheLock) {
 
   ipcMain.handle('skills:download', async (_event, source: string) => {
     return getSkillManager().downloadSkill(source);
+  });
+
+  ipcMain.handle('skills:fetchMarketplace', async () => {
+    const url = getSkillStoreUrl();
+    console.log(`[SkillMarketplace] fetching from: ${url}`);
+    try {
+      const https = await import('https');
+      const data = await new Promise<string>((resolve, reject) => {
+        const req = https.get(url, { timeout: 10000 }, (res) => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode}`));
+            res.resume();
+            return;
+          }
+
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => {
+            body += chunk;
+          });
+          res.on('end', () => resolve(body));
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.on('timeout', () => {
+          req.destroy();
+          reject(new Error('Request timeout'));
+        });
+      });
+      return { success: true, data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch skill marketplace',
+      };
+    }
   });
 
   ipcMain.handle('skills:upgrade', async (_event, skillId: string, downloadUrl: string) => {
@@ -6401,7 +6456,7 @@ if (!gotTheLock) {
     const preventSleepEnabled = getStore().get<boolean>('prevent_sleep_enabled');
     if (preventSleepEnabled) {
       try {
-        preventSleepBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+        setPreventSleepBlockerEnabled(true);
       } catch (err) {
         console.error('[Main] Failed to start prevent-sleep blocker:', err);
       }

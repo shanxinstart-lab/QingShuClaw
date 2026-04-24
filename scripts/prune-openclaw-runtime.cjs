@@ -88,7 +88,8 @@ const PACKAGES_TO_STUB = [
   '@napi-rs',
   'pdfjs-dist',
   '@matrix-org',
-  '@img',
+  // NOTE: @img 不能被 stub。它包含 sharp 的平台原生绑定，
+  // openclaw 的图片处理和部分 exec-tool 脚本都依赖这些绑定。
 ];
 
 const GENERIC_STUB_INDEX_CJS = `// Stub (CJS): this package is not needed for headless gateway operation.

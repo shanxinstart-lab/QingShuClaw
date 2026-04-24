@@ -88,6 +88,7 @@ export class IMCoworkHandler extends EventEmitter {
   private readonly onPermissionRequest = this.handlePermissionRequest.bind(this);
   private readonly onComplete = this.handleComplete.bind(this);
   private readonly onError = this.handleError.bind(this);
+  private readonly onSessionStopped = this.handleSessionStopped.bind(this);
 
   constructor(options: IMCoworkHandlerOptions) {
     super();
@@ -144,6 +145,7 @@ export class IMCoworkHandler extends EventEmitter {
     this.coworkRuntime.on('permissionRequest', this.onPermissionRequest);
     this.coworkRuntime.on('complete', this.onComplete);
     this.coworkRuntime.on('error', this.onError);
+    this.coworkRuntime.on('sessionStopped', this.onSessionStopped);
   }
 
   /**
@@ -912,6 +914,18 @@ export class IMCoworkHandler extends EventEmitter {
     }
   }
 
+  private handleSessionStopped(sessionId: string): void {
+    if (!this.ensureTrackedSession(sessionId)) return;
+
+    this.clearPendingPermissionsBySessionId(sessionId);
+    const accumulator = this.messageAccumulators.get(sessionId);
+    if (!accumulator) return;
+
+    const partialReply = this.formatReply(sessionId, accumulator.messages);
+    this.cleanupAccumulator(sessionId);
+    accumulator.resolve?.(partialReply || t('imSessionStoppedReply'));
+  }
+
   /**
    * Clean up accumulator
    */
@@ -1016,5 +1030,6 @@ export class IMCoworkHandler extends EventEmitter {
     this.coworkRuntime.off('permissionRequest', this.onPermissionRequest);
     this.coworkRuntime.off('complete', this.onComplete);
     this.coworkRuntime.off('error', this.onError);
+    this.coworkRuntime.off('sessionStopped', this.onSessionStopped);
   }
 }

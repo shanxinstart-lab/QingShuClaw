@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, chmodSync, statSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, chmodSync, statSync, readdirSync, realpathSync } from 'fs';
 import { delimiter, dirname, join } from 'path';
 import { buildEnvForConfig, getCurrentApiConfig, resolveCurrentApiConfig, resolveRawApiConfig } from './claudeSettings';
 import type { OpenAICompatProxyTarget } from './coworkOpenAICompatProxy';
@@ -1112,6 +1112,33 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
       env.PATH = [devBinDir, env.PATH].filter(Boolean).join(delimiter);
       coworkLog('INFO', 'applyPackagedEnvOverrides', `Dev mode: prepended node_modules/.bin to PATH: ${devBinDir}`);
     }
+
+    // 开发态也需要让 exec-tool 能解析 openclaw runtime 自带的依赖，
+    // 尤其是 sharp 这类放在 runtime/node_modules 下的原生模块。
+    const devRuntimeNodeModules = (() => {
+      const candidates = [
+        join(app.getAppPath(), 'vendor', 'openclaw-runtime', 'current', 'node_modules'),
+        join(process.cwd(), 'vendor', 'openclaw-runtime', 'current', 'node_modules'),
+      ];
+
+      for (const candidate of candidates) {
+        try {
+          const resolved = realpathSync(candidate);
+          if (existsSync(resolved)) {
+            return resolved;
+          }
+        } catch {
+          // 软链目标不存在时直接跳过。
+        }
+      }
+
+      return null;
+    })();
+
+    if (devRuntimeNodeModules) {
+      env.NODE_PATH = appendEnvPath(env.NODE_PATH, [devRuntimeNodeModules]);
+      coworkLog('INFO', 'applyPackagedEnvOverrides', `Dev mode: added openclaw runtime node_modules to NODE_PATH: ${devRuntimeNodeModules}`);
+    }
     return;
   }
 
@@ -1186,6 +1213,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
   const nodePaths = [
     join(resourcesPath, 'app.asar', 'node_modules'),
     join(resourcesPath, 'app.asar.unpacked', 'node_modules'),
+    join(resourcesPath, 'cfmind', 'node_modules'),
   ].filter((nodePath) => existsSync(nodePath));
 
   if (nodePaths.length > 0) {

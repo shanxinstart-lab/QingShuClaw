@@ -239,6 +239,15 @@ export class McpBridgeServer {
   }
 
   private async handleMcpExecute(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // 仅在连接被对端提前断开时中止工具调用，避免读取完请求体后的正常 close 被误判为取消。
+    const abortController = new AbortController();
+    const onClose = () => {
+      if (!res.writableFinished) {
+        abortController.abort();
+      }
+    };
+    res.on('close', onClose);
+
     try {
       const body = await this.readBody(req);
       const { server, tool, args } = JSON.parse(body) as {
@@ -256,7 +265,9 @@ export class McpBridgeServer {
       }
 
       const t0 = Date.now();
-      const result = await this.mcpManager.callTool(server, tool, args || {});
+      const result = await this.mcpManager.callTool(server, tool, args || {}, {
+        signal: abortController.signal,
+      });
       const contentPreview = serializeToolContentForLog(result.content);
       const textPreview = getToolTextPreview(result.content);
       log('INFO', `Execute completed for server="${server}" tool="${tool}" in ${Date.now() - t0}ms with isError=${result.isError}. Result=${contentPreview}`);
@@ -264,16 +275,22 @@ export class McpBridgeServer {
         log('WARN', `Execute completed for server="${server}" tool="${tool}" with transport-style error text but isError=false. Result text="${textPreview}"`);
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      if (!res.writableEnded) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       log('ERROR', `Request handling error: ${errMsg}`);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        content: [{ type: 'text', text: `Bridge error: ${errMsg}` }],
-        isError: true,
-      }));
+      if (!res.writableEnded) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          content: [{ type: 'text', text: `Bridge error: ${errMsg}` }],
+          isError: true,
+        }));
+      }
+    } finally {
+      res.removeListener('close', onClose);
     }
   }
 

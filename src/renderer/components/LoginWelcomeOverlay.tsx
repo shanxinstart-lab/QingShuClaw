@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { i18nService } from '../services/i18n';
 
-const LOGIN_WELCOME_DURATION_MS = 2300;
-const LOGIN_WELCOME_REDUCED_DURATION_MS = 1400;
+const LOGIN_WELCOME_DURATION_MS = 1500;
+const LOGIN_WELCOME_REDUCED_DURATION_MS = 900;
 
 type LoginWelcomeOverlayProps = {
   onClose: () => void;
@@ -117,44 +117,44 @@ const LoginWelcomeOverlay: React.FC<LoginWelcomeOverlayProps> = ({ onClose }) =>
           }
 
           .qs-login-welcome-shell {
-            animation: qs-login-welcome-fade 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-fade 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-shell-reduced {
-            animation-duration: 1400ms;
+            animation-duration: 900ms;
           }
 
           .qs-login-welcome-halo {
-            animation: qs-login-welcome-halo 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-halo 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-antenna-left {
-            animation: qs-login-welcome-antenna-left 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-antenna-left 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-antenna-right {
-            animation: qs-login-welcome-antenna-right 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-antenna-right 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-body {
             stroke-dasharray: 520;
-            animation: qs-login-welcome-body 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-body 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-tail {
-            animation: qs-login-welcome-tail 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-tail 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-plate {
-            animation: qs-login-welcome-plate 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-plate 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-glint {
-            animation: qs-login-welcome-glint 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-glint 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-copy {
-            animation: qs-login-welcome-copy 2300ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+            animation: qs-login-welcome-copy 1500ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
           }
 
           .qs-login-welcome-shell-reduced .qs-login-welcome-halo,
@@ -165,7 +165,7 @@ const LoginWelcomeOverlay: React.FC<LoginWelcomeOverlayProps> = ({ onClose }) =>
           .qs-login-welcome-shell-reduced .qs-login-welcome-plate,
           .qs-login-welcome-shell-reduced .qs-login-welcome-glint,
           .qs-login-welcome-shell-reduced .qs-login-welcome-copy {
-            animation-duration: 1400ms;
+            animation-duration: 900ms;
           }
 
           .qs-login-welcome-shell-reduced .qs-login-welcome-antenna-left,

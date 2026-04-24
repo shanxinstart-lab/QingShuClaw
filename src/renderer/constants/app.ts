@@ -6,6 +6,7 @@ export const EXPORT_PASSWORD = 'lobsterai-APP';
 export const AppCustomEvent = {
   ShowToast: 'app:showToast',
   ShowLoginWelcome: 'app:showLoginWelcome',
+  AgentCatalogRefreshed: 'app:agentCatalogRefreshed',
   FocusCoworkInput: 'app:focusCoworkInput',
   StartWakeDictation: 'app:startWakeDictation',
   UpdateWakeActivationOverlay: 'app:updateWakeActivationOverlay',

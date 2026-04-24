@@ -734,6 +734,7 @@ export type OpenClawConfigSyncResult = {
   configPath: string;
   error?: string;
   agentsMdWarning?: string;
+  mcpBridgeConfigChanged?: boolean;
 };
 
 type OpenClawConfigSyncDeps = {
@@ -751,6 +752,7 @@ type OpenClawConfigSyncDeps = {
   getWeixinConfig: () => WeixinOpenClawConfig | null;
   getIMSettings?: () => IMSettings | null;
   getMcpBridgeConfig?: () => McpBridgeConfig | null;
+  getMcpBridgeSecret?: () => string | null;
   getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   getAgents?: () => Agent[];
   getQingShuEnabledToolBundles?: () => QingShuToolBundleId[];
@@ -772,6 +774,7 @@ export class OpenClawConfigSync {
   private readonly getWeixinConfig: () => WeixinOpenClawConfig | null;
   private readonly getIMSettings?: () => IMSettings | null;
   private readonly getMcpBridgeConfig?: () => McpBridgeConfig | null;
+  private readonly getMcpBridgeSecret?: () => string | null;
   private readonly getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   private readonly getAgents?: () => Agent[];
   private readonly getQingShuEnabledToolBundles?: () => QingShuToolBundleId[];
@@ -792,6 +795,7 @@ export class OpenClawConfigSync {
     this.getWeixinConfig = deps.getWeixinConfig;
     this.getIMSettings = deps.getIMSettings;
     this.getMcpBridgeConfig = deps.getMcpBridgeConfig;
+    this.getMcpBridgeSecret = deps.getMcpBridgeSecret;
     this.getSkillsList = deps.getSkillsList;
     this.getAgents = deps.getAgents;
     this.getQingShuEnabledToolBundles = deps.getQingShuEnabledToolBundles;
@@ -1482,6 +1486,37 @@ export class OpenClawConfigSync {
     }
 
     const configChanged = currentContent !== nextContent;
+    let mcpBridgeConfigChanged = false;
+    try {
+      const currentObj = currentContent ? JSON.parse(currentContent) : {};
+      const nextObj = JSON.parse(nextContent);
+      const currentConfig = currentObj?.plugins?.entries?.['mcp-bridge']?.config;
+      const nextConfig = nextObj?.plugins?.entries?.['mcp-bridge']?.config;
+      const currentCallbackUrl = currentConfig?.callbackUrl;
+      const nextCallbackUrl = nextConfig?.callbackUrl;
+      const currentToolNames = Array.isArray(currentConfig?.tools)
+        ? currentConfig.tools
+          .map((tool: { name?: string }) => tool?.name ?? '')
+          .filter(Boolean)
+          .sort()
+          .join(',')
+        : '';
+      const nextToolNames = Array.isArray(nextConfig?.tools)
+        ? nextConfig.tools
+          .map((tool: { name?: string }) => tool?.name ?? '')
+          .filter(Boolean)
+          .sort()
+          .join(',')
+        : '';
+      mcpBridgeConfigChanged = currentCallbackUrl !== nextCallbackUrl || currentToolNames !== nextToolNames;
+      if (mcpBridgeConfigChanged) {
+        console.log(
+          `[OpenClawConfigSync] mcp-bridge config changed: callbackUrl ${currentCallbackUrl ?? 'null'} -> ${nextCallbackUrl ?? 'null'}, tools ${currentToolNames || '(none)'} -> ${nextToolNames || '(none)'}`,
+        );
+      }
+    } catch {
+      // Ignore JSON parse failures and fall back to regular configChanged handling.
+    }
 
     if (configChanged) {
       try {
@@ -1519,6 +1554,7 @@ export class OpenClawConfigSync {
       changed: configChanged || sessionStoreChanged,
       configPath,
       ...(agentsMdWarning ? { agentsMdWarning } : {}),
+      ...(mcpBridgeConfigChanged ? { mcpBridgeConfigChanged } : {}),
     };
   }
 
@@ -1547,7 +1583,7 @@ export class OpenClawConfigSync {
     // MCP Bridge Secret — always set so stale openclaw.json with
     // ${LOBSTER_MCP_BRIDGE_SECRET} placeholder doesn't crash the gateway.
     const mcpBridgeCfg = this.getMcpBridgeConfig?.();
-    env.LOBSTER_MCP_BRIDGE_SECRET = mcpBridgeCfg?.secret || 'unconfigured';
+    env.LOBSTER_MCP_BRIDGE_SECRET = mcpBridgeCfg?.secret || this.getMcpBridgeSecret?.() || 'unconfigured';
 
     // Telegram
     const tgConfig = this.getTelegramOpenClawConfig?.();

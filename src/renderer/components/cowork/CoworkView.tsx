@@ -420,17 +420,19 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
   useEffect(() => {
     const handleNewSession = () => {
+      // 仅在已经位于首页时清空输入，保留从会话返回首页时的首页草稿与附件。
+      const shouldClear = !currentSession;
       dispatch(clearCurrentSession());
       dispatch(clearSelection());
       window.dispatchEvent(new CustomEvent('cowork:focus-input', {
-        detail: { clear: true },
+        detail: { clear: shouldClear },
       }));
     };
     window.addEventListener('cowork:shortcut:new-session', handleNewSession);
     return () => {
       window.removeEventListener('cowork:shortcut:new-session', handleNewSession);
     };
-  }, [dispatch]);
+  }, [dispatch, currentSession]);
 
   useEffect(() => {
     if (!isOpenClawEngine) return;
@@ -572,7 +574,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
       {/* Main Content */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        <div className="max-w-3xl mx-auto px-4 py-16 space-y-12">
+        <div className="max-w-5xl mx-auto px-4 py-16 space-y-12">
           {/* Welcome Section */}
           <div className="text-center space-y-4">
             <img src="logo.png" alt="logo" className="w-16 h-16 mx-auto" />

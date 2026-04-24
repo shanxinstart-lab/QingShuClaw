@@ -29,3 +29,9 @@ export const getServerApiBaseUrl = (): string => {
     ? 'https://lobsterai-server.inner.youdao.com'
     : 'https://lobsterai-server.youdao.com';
 };
+
+export const getSkillStoreUrl = (): string => {
+  return isTestMode()
+    ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/skill-market'
+    : 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/skill-market';
+};

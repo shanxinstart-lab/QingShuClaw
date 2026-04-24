@@ -94,7 +94,7 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
           // "group:oc_xxx") but OpenClaw channel adapters expect raw platform IDs
           // (e.g. "ou_xxx", "oc_xxx").
           const rawTo = delivery.to;
-          const colonIdx = rawTo.indexOf(':');
+          const colonIdx = rawTo.lastIndexOf(':');
           if (colonIdx > 0) {
             delivery.to = rawTo.slice(colonIdx + 1);
             console.log('[IPC][scheduledTask:create] stripped IM subtype prefix from delivery.to:',
@@ -142,7 +142,7 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
           }
           // Strip IM subtype prefix (e.g. "direct:ou_xxx" -> "ou_xxx")
           const rawTo = delivery.to;
-          const colonIdx = rawTo.indexOf(':');
+          const colonIdx = rawTo.lastIndexOf(':');
           if (colonIdx > 0) {
             delivery.to = rawTo.slice(colonIdx + 1);
             console.log('[IPC][scheduledTask:update] stripped IM subtype prefix from delivery.to:',

@@ -39,6 +39,7 @@ const LazyRenderTurn: React.FC<LazyRenderTurnProps> = ({
   // Observe intersection
   useEffect(() => {
     if (alwaysRender) {
+      hasRenderedRef.current = true;
       setIsVisible(true);
       return;
     }
@@ -79,7 +80,9 @@ const LazyRenderTurn: React.FC<LazyRenderTurnProps> = ({
     return () => ro.disconnect();
   }, [isVisible, turnId]);
 
-  const shouldRender = isVisible || alwaysRender;
+  // Keep turns mounted once the user has actually seen them, so recent history
+  // does not collapse back into placeholders when long messages push it upward.
+  const shouldRender = isVisible || alwaysRender || hasRenderedRef.current;
   const cachedHeight = heightCache.get(turnId);
 
   return (

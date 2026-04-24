@@ -39,9 +39,22 @@ const AgentsView: React.FC<AgentsViewProps> = ({
   const [addingPreset, setAddingPreset] = useState<string | null>(null);
 
   useEffect(() => {
-    agentService.loadAgents();
-    agentService.getPresets().then(setPresets);
-  }, []);
+    let active = true;
+
+    const refreshAgentCatalog = async () => {
+      await agentService.loadAgents();
+      const nextPresets = await agentService.getPresets();
+      if (active) {
+        setPresets(nextPresets);
+      }
+    };
+
+    void refreshAgentCatalog();
+
+    return () => {
+      active = false;
+    };
+  }, [isLoggedIn]);
 
   // Refresh presets when agents change (to update installed status)
   useEffect(() => {

@@ -4,15 +4,22 @@ import {
   ChevronRightIcon,
   DocumentArrowDownIcon,
   PhotoIcon,
+  SpeakerWaveIcon,
+  SpeakerXMarkIcon,
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
-import React, { useCallback, useEffect, useMemo,useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
+import { DEFAULT_TTS_CONFIG } from '../../config';
+import { AppCustomEvent } from '../../constants/app';
+import { configService } from '../../services/config';
 import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
+import type { TtsAvailability } from '../../../shared/tts/constants';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
+import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 import { RootState } from '../../store';
 import {
   selectCurrentMessagesLength,
@@ -46,6 +53,7 @@ import {
   type ConversationTurn,
   type ToolGroupItem,
 } from './coworkConversationTurns';
+import { buildSpeakableAssistantText } from './coworkTtsText';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
@@ -66,6 +74,7 @@ const AUTO_SCROLL_THRESHOLD = 120;
 const NAV_SCROLL_LOCK_DURATION = 800;
 const NAV_BOTTOM_SNAP_THRESHOLD = 20;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
+const RECENT_TURNS_ALWAYS_RENDERED = 16;
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -736,7 +745,7 @@ const ToolCallGroup: React.FC<{
               {toolName}
             </span>
             {toolInputSummary && (
-              <code className="text-xs text-muted font-mono truncate max-w-[400px]">
+              <code className="text-xs text-muted font-mono truncate max-w-full">
                 {toolInputSummary}
               </code>
             )}
@@ -995,7 +1004,7 @@ export const UserMessageItem: React.FC<{
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className="max-w-3xl mx-auto flex items-start gap-3 flex-row-reverse position-relative">
+      <div className="max-w-5xl mx-auto flex items-start gap-3 flex-row-reverse position-relative">
         {/* User Avatar Placeholder */}
         <div className="shrink-0 flex items-center justify-center w-7 h-7 mt-0.5 rounded-full bg-surface-raised border border-border">
           <span className="text-secondary text-[10px] font-bold uppercase">U</span>
@@ -1084,16 +1093,33 @@ const AssistantMessageItem: React.FC<{
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
   showCopyButton?: boolean;
+  showTtsButton?: boolean;
+  isTtsPlaying?: boolean;
+  onPlayTts?: (message: CoworkMessage) => void;
+  onStopTts?: () => void;
 }> = ({
   message,
   resolveLocalFilePath,
   mapDisplayText,
   showCopyButton = false,
+  showTtsButton = false,
+  isTtsPlaying = false,
+  onPlayTts,
+  onStopTts,
 }) => {
+  const [isHovered, setIsHovered] = useState(false);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
+  const speakableText = buildSpeakableAssistantText(displayContent, {
+    skipKeywords: configService.getConfig().voice?.postProcess?.ttsSkipKeywords ?? [],
+  });
+  const hasSpeakableText = speakableText.length > 0;
 
   return (
-    <div className="relative group/content leading-[1.6]">
+    <div
+      className="relative group/content leading-[1.6]"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
       <div className="text-foreground text-[14px]">
         <MarkdownContent
           content={displayContent}
@@ -1102,8 +1128,36 @@ const AssistantMessageItem: React.FC<{
           showRevealInFolderAction
         />
       </div>
-      {showCopyButton && (
+      {(showCopyButton || showTtsButton) && (
         <div className="absolute -top-2 right-0 flex items-center gap-1.5 opacity-0 group-hover/content:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-border/50">
+          {showTtsButton && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!hasSpeakableText) {
+                  window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+                    detail: i18nService.t('ttsNoSpeakableContent'),
+                  }));
+                  return;
+                }
+                if (isTtsPlaying) {
+                  onStopTts?.();
+                  return;
+                }
+                onPlayTts?.(message);
+              }}
+              className={`p-1 rounded-md transition-colors ${
+                isHovered ? 'hover:bg-surface-raised' : ''
+              }`}
+              title={isTtsPlaying ? i18nService.t('ttsStop') : i18nService.t('ttsPlay')}
+            >
+              {isTtsPlaying ? (
+                <SpeakerXMarkIcon className="h-4 w-4 text-red-500" />
+              ) : (
+                <SpeakerWaveIcon className="h-4 w-4 text-secondary" />
+              )}
+            </button>
+          )}
           <CopyButton
             content={displayContent}
             visible={true}
@@ -1145,7 +1199,7 @@ const StreamingActivityBar: React.FC<{ messages: CoworkMessage[] }> = ({ message
 
   return (
     <div className="shrink-0 animate-fade-in px-4">
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         <div className="streaming-bar" />
         <div className="py-1">
           <span className="text-xs text-secondary">
@@ -1253,12 +1307,20 @@ export const AssistantTurnBlock: React.FC<{
   mapDisplayText?: (value: string) => string;
   showTypingIndicator?: boolean;
   showCopyButtons?: boolean;
+  showTtsButtons?: boolean;
+  ttsPlayingMessageId?: string | null;
+  onPlayTts?: (message: CoworkMessage) => void;
+  onStopTts?: () => void;
 }> = ({
   turn,
   resolveLocalFilePath,
   mapDisplayText,
   showTypingIndicator = false,
   showCopyButtons = true,
+  showTtsButtons = false,
+  ttsPlayingMessageId = null,
+  onPlayTts,
+  onStopTts,
 }) => {
   const visibleAssistantItems = getVisibleAssistantItems(turn.assistantItems);
 
@@ -1333,7 +1395,7 @@ export const AssistantTurnBlock: React.FC<{
 
   return (
     <div className="group relative px-4 py-6 bg-primary/5 dark:bg-primary/[0.02] transition-colors">
-      <div className="max-w-3xl mx-auto flex items-start gap-4 position-relative">
+      <div className="max-w-5xl mx-auto flex items-start gap-4 position-relative">
         {/* Assistant Avatar */}
         <div className="shrink-0 mt-0.5 flex items-center justify-center w-7 h-7 rounded-[8px] bg-primary/10 overflow-hidden shadow-sm border border-primary/20">
           <span className="text-[14px] leading-none drop-shadow-sm">🦞</span>
@@ -1363,6 +1425,10 @@ export const AssistantTurnBlock: React.FC<{
                   resolveLocalFilePath={resolveLocalFilePath}
                   mapDisplayText={mapDisplayText}
                   showCopyButton={showCopyButtons && !hasToolGroupAfter}
+                  showTtsButton={showTtsButtons}
+                  isTtsPlaying={ttsPlayingMessageId === item.message.id}
+                  onPlayTts={onPlayTts}
+                  onStopTts={onStopTts}
                 />
               );
             }
@@ -1428,6 +1494,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
+  const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
+  const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
 
   // Clear lazy-render height cache when session changes
   const sessionId = currentSession?.id;
@@ -1475,6 +1544,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   useEffect(() => {
     setShouldAutoScroll(true);
   }, [currentSession?.id]);
+
+  useEffect(() => {
+    if (!isMac) {
+      return;
+    }
+    let active = true;
+    void window.electron.tts.getAvailability().then((availability) => {
+      if (active) {
+        setTtsAvailability(availability);
+      }
+    }).catch((error) => {
+      console.error('Failed to inspect TTS availability:', error);
+    });
+
+    const unsubscribe = window.electron.tts.onStateChanged((event) => {
+      if (!active) {
+        return;
+      }
+      if (event.availability) {
+        setTtsAvailability(event.availability);
+      }
+      if (event.type === 'stopped' || event.type === 'error' || event.type === 'idle') {
+        setTtsPlayingMessageId(null);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [isMac]);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -1564,6 +1664,80 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     }
     setShowConfirmDelete(false);
   };
+
+  const stopTtsPlayback = useCallback(async () => {
+    setTtsPlayingMessageId(null);
+    await window.electron.tts.stop();
+  }, []);
+
+  const playAssistantMessage = useCallback(async (message: CoworkMessage) => {
+    const postProcessConfig = configService.getConfig().voice?.postProcess;
+    const text = buildSpeakableAssistantText(message.content, {
+      skipKeywords: postProcessConfig?.ttsSkipKeywords ?? [],
+    });
+    if (!text) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('ttsNoSpeakableContent'),
+      }));
+      return;
+    }
+
+    const ttsConfig = {
+      ...DEFAULT_TTS_CONFIG,
+      ...(configService.getConfig().tts ?? {}),
+    };
+    const speakText = postProcessConfig?.ttsLlmRewriteEnabled
+      ? await voiceTextPostProcessService.rewriteTtsText(text)
+      : text;
+    if (!speakText) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('ttsNoSpeakableContent'),
+      }));
+      return;
+    }
+
+    setTtsPlayingMessageId(message.id);
+    const result = await window.electron.tts.speak({
+      text: speakText,
+      voiceId: ttsConfig.voiceId,
+      rate: ttsConfig.rate,
+      volume: ttsConfig.volume,
+      source: 'assistant_reply',
+    });
+    if (!result.success) {
+      setTtsPlayingMessageId(null);
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: result.error || i18nService.t('coworkSpeechUnavailable'),
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isMac || !ttsAvailability?.supported || isStreaming || !currentSession) {
+      return;
+    }
+
+    const ttsConfig = {
+      ...DEFAULT_TTS_CONFIG,
+      ...(configService.getConfig().tts ?? {}),
+    };
+    if (!ttsConfig.enabled || !ttsConfig.autoPlayAssistantReply) {
+      return;
+    }
+
+    const skipKeywords = configService.getConfig().voice?.postProcess?.ttsSkipKeywords ?? [];
+    const lastAssistantMessage = [...currentSession.messages].reverse().find((message) => (
+      message.type === 'assistant' && buildSpeakableAssistantText(message.content, { skipKeywords }).length > 0
+    ));
+    if (!lastAssistantMessage) {
+      return;
+    }
+    if (lastAutoPlayedMessageIdRef.current === lastAssistantMessage.id) {
+      return;
+    }
+    lastAutoPlayedMessageIdRef.current = lastAssistantMessage.id;
+    void playAssistantMessage(lastAssistantMessage);
+  }, [currentSession, isMac, isStreaming, playAssistantMessage, ttsAvailability]);
 
   const closeMenu = () => {
     setMenuPosition(null);
@@ -2150,6 +2324,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             resolveLocalFilePath={resolveLocalFilePath}
             showTypingIndicator
             showCopyButtons={!isStreaming}
+            showTtsButtons={isMac && !!ttsAvailability?.supported}
+            ttsPlayingMessageId={ttsPlayingMessageId}
+            onPlayTts={playAssistantMessage}
+            onStopTts={stopTtsPlayback}
           />
         </div>
       );
@@ -2159,8 +2337,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const isLastTurn = index === turns.length - 1;
       const showTypingIndicator = isStreaming && isLastTurn && !hasRenderableAssistantContent(turn);
       const showAssistantBlock = turn.assistantItems.length > 0 || showTypingIndicator;
-      // Always render last 3 turns (needed for streaming, auto-scroll, and smooth UX)
-      const alwaysRender = index >= turns.length - 3;
+      // Keep a larger recent window mounted so long replies do not make
+      // just-finished conversation turns disappear behind placeholders.
+      const alwaysRender = index >= turns.length - RECENT_TURNS_ALWAYS_RENDERED;
 
       // Compute rail indices for user/assistant messages (must match rail IIFE logic)
       let asstContent = '';
@@ -2187,6 +2366,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 mapDisplayText={mapDisplayText}
                 showTypingIndicator={showTypingIndicator}
                 showCopyButtons={!isStreaming}
+                showTtsButtons={isMac && !!ttsAvailability?.supported}
+                ttsPlayingMessageId={ttsPlayingMessageId}
+                onPlayTts={playAssistantMessage}
+                onStopTts={stopTtsPlayback}
               />
             </div>
           )}
@@ -2642,7 +2825,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         
         {/* Actual Input Area */}
         <div className="px-4 pb-6 bg-background rounded-b-xl pointer-events-auto shrink-0 shadow-[0_-1px_3px_rgba(0,0,0,0.02)]">
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-5xl mx-auto">
             <CoworkPromptInput
               ref={promptInputRef}
               onSubmit={onContinue}

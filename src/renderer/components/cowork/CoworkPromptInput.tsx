@@ -422,6 +422,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         hideWakeActivationOverlay();
         setValue('');
         dispatch(clearDraftAttachments(draftKey));
+        setImageVisionHint(false);
       }
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
@@ -562,6 +563,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   useEffect(() => {
     setValue(draftPrompt);
     speechBaseValueRef.current = draftPrompt;
+    const hasImageWithoutVision = !modelSupportsImage && attachments.some((attachment) => (
+      attachment.isImage || isImagePath(attachment.path)
+    ));
+    setImageVisionHint(hasImageWithoutVision);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]); // intentionally omit draftPrompt to only trigger on session switch
 
   useEffect(() => {

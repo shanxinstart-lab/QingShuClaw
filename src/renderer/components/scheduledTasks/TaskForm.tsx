@@ -141,7 +141,9 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
     if (savedChannel && isIMChannel(savedChannel) && !base.some((option) => (
       option.value === savedChannel && option.accountId === savedAccountId
     ))) {
-      base.push({ value: savedChannel, label: savedChannel, accountId: savedAccountId });
+      const platform = PlatformRegistry.platformOfChannel(savedChannel);
+      const label = platform ? PlatformRegistry.get(platform).label : savedChannel;
+      base.push({ value: savedChannel, label, accountId: savedAccountId });
     }
     return base;
   });
@@ -149,6 +151,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const isAdvanced = form.planType === 'advanced';
   const showConversationSelector = isIMChannel(form.notifyChannel);
@@ -232,6 +235,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
     if (!validate()) return;
 
     setSubmitting(true);
+    setSubmitError(null);
     try {
       const schedule = isAdvanced && task
         ? task.schedule
@@ -264,8 +268,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
         await scheduledTaskService.updateTaskById(task.id, input);
       }
       onSaved();
-    } catch {
-      // Service handles error state.
+    } catch (err: unknown) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
@@ -512,6 +516,24 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
       {errors.schedule && <p className={errorClass}>{errors.schedule}</p>}
 
       {renderNotifyRow()}
+
+      {submitError && (
+        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40">
+          <span className="text-sm text-red-600 dark:text-red-400 break-words min-w-0">
+            {i18nService.t('scheduledTasksFormSubmitError')}{submitError}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSubmitError(null)}
+            className="shrink-0 ml-auto p-0.5 text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors"
+            aria-label="dismiss"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center justify-end gap-3 pt-2">
         <button

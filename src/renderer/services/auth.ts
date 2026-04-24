@@ -23,6 +23,7 @@ import type { Model } from '../store/slices/modelSlice';
 import { clearServerModels,setServerModels } from '../store/slices/modelSlice';
 import { clearActiveSkills, setSkills } from '../store/slices/skillSlice';
 import { disableQingShuManagedItems } from './authSessionReset';
+import { agentService } from './agent';
 import { configService } from './config';
 import { i18nService } from './i18n';
 import { qingshuManagedService } from './qingshuManaged';
@@ -136,6 +137,10 @@ class AuthService {
     window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, { detail: message }));
   }
 
+  private notifyAgentCatalogRefreshed() {
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.AgentCatalogRefreshed));
+  }
+
   private resetAuthRuntimeState(invalidateSession = false) {
     if (invalidateSession) {
       this.authSessionVersion += 1;
@@ -189,6 +194,14 @@ class AuthService {
     if (!shouldApply()) {
       return;
     }
+
+    // Re-apply the merged agent catalog after login so all workbench surfaces
+    // refresh managed agents in place without switching the active conversation.
+    await agentService.loadAgents({ shouldApply });
+    if (!shouldApply()) {
+      return;
+    }
+    this.notifyAgentCatalogRefreshed();
 
     void this.fetchProfileSummary(shouldApply);
   }
@@ -404,7 +417,7 @@ class AuthService {
   }
 
   /**
-   * Fetch login URL from overmind, fallback to server base + /login.
+   * Fetch login URL from overmind, fallback to Portal login page.
    */
   private async fetchLoginUrl(): Promise<string> {
     const { getLoginOvermindUrl } = await import('./endpoints');
@@ -424,8 +437,9 @@ class AuthService {
     } catch (e) {
       console.error('[Auth] Failed to fetch login URL from overmind:', e);
     }
-    // Fallback: let main process use its server base URL
-    return '';
+    // Fallback: use Portal login page directly
+    const { getPortalLoginUrl } = await import('./endpoints');
+    return getPortalLoginUrl();
   }
 
   /**
