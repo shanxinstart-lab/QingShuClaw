@@ -41,12 +41,22 @@ export function resolveOpenClawModelRef<T extends ModelRefInput>(
     const slashIndex = normalizedRef.indexOf('/');
     const providerId = normalizedRef.slice(0, slashIndex);
     const modelId = normalizedRef.slice(slashIndex + 1);
+
+    // OpenAI → OpenAICodex provider migration compatibility
     if (providerId === OpenClawProviderId.OpenAI) {
-      return availableModels.find((model) => (
+      const codexMatch = availableModels.find((model) => (
         model.id === modelId
         && model.providerKey === ProviderName.OpenAI
         && resolveModelOpenClawProviderId(model) === OpenClawProviderId.OpenAICodex
       )) ?? null;
+      if (codexMatch) return codexMatch;
+    }
+
+    // Generic provider fallback: match by model ID if unique
+    const idMatches = availableModels.filter((model) => model.id === modelId);
+    if (idMatches.length === 1) {
+      console.log('[openclawModelRef] provider fallback: resolved', normalizedRef, 'to', toOpenClawModelRef(idMatches[0]));
+      return idMatches[0];
     }
     return null;
   }
