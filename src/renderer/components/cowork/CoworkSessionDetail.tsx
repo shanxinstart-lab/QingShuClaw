@@ -1634,6 +1634,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       setRenameValue(currentSession.title);
       ignoreNextBlurRef.current = false;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRenaming, currentSession?.title]);
 
   useEffect(() => {
@@ -1692,7 +1693,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('resize', handleScroll);
     };
-  }, [menuPosition]);
+  }, [menuPosition, closeMenu]);
 
   // Helper: truncate path for display
   const truncatePath = (path: string, maxLength = 20): string => {
@@ -1729,10 +1730,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     setShowConfirmDelete(false);
   };
 
-  const closeMenu = () => {
+  const closeMenu = useCallback(() => {
     setMenuPosition(null);
     setShowConfirmDelete(false);
-  };
+  }, []);
 
   // Open folder in Finder/Explorer
   const handleOpenFolder = useCallback(async () => {
