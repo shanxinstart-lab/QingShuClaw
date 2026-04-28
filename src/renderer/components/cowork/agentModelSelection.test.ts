@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import type { Model } from '../../store/slices/modelSlice';
-import { resolveAgentModelSelection } from './agentModelSelection';
+import { resolveAgentModelSelection, resolveEffectiveModel } from './agentModelSelection';
 
 const models: Model[] = [
   { id: 'gpt-4o', name: 'GPT-4o', providerKey: 'openai' },
@@ -9,6 +9,9 @@ const models: Model[] = [
   { id: 'deepseek-v3.2', name: 'DeepSeek', providerKey: 'anthropic' },
   { id: 'deepseek-v3.2', name: 'DeepSeek Server', providerKey: 'openai', isServerModel: true },
 ];
+
+const visionModel: Model = { id: 'qwen3.5-plus', name: 'Qwen3.5 Plus', providerKey: 'qwen', supportsImage: true };
+const nonVisionModel: Model = { id: 'glm-5.1', name: 'GLM 5.1', providerKey: 'zhipu', supportsImage: false };
 
 describe('resolveAgentModelSelection', () => {
   test('uses explicit agent model when present', () => {
@@ -102,5 +105,41 @@ describe('resolveAgentModelSelection', () => {
     expect(result.selectedModel?.id).toBe('gpt-4o');
     expect(result.usesFallback).toBe(true);
     expect(result.hasInvalidExplicitModel).toBe(true);
+  });
+});
+
+describe('resolveEffectiveModel', () => {
+  test('home page (no sessionId) uses globalSelectedModel even when agent model differs', () => {
+    // Bug scenario: agent default model supports images, user picked a non-vision model in header
+    const result = resolveEffectiveModel({
+      sessionId: undefined,
+      agentSelectedModel: visionModel,
+      globalSelectedModel: nonVisionModel,
+    });
+
+    expect(result?.id).toBe('glm-5.1');
+    expect(result?.supportsImage).toBe(false);
+  });
+
+  test('home page uses globalSelectedModel supportsImage=true when user picks vision model', () => {
+    const result = resolveEffectiveModel({
+      sessionId: undefined,
+      agentSelectedModel: nonVisionModel,
+      globalSelectedModel: visionModel,
+    });
+
+    expect(result?.id).toBe('qwen3.5-plus');
+    expect(result?.supportsImage).toBe(true);
+  });
+
+  test('inside session (has sessionId) uses agentSelectedModel from session override', () => {
+    const result = resolveEffectiveModel({
+      sessionId: 'session-123',
+      agentSelectedModel: nonVisionModel,
+      globalSelectedModel: visionModel,
+    });
+
+    expect(result?.id).toBe('glm-5.1');
+    expect(result?.supportsImage).toBe(false);
   });
 });

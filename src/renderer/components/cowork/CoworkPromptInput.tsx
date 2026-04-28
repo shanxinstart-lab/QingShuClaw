@@ -12,9 +12,9 @@ import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
 import { selectDraftPrompts } from '../../store/selectors/coworkSelectors';
 import { addDraftAttachment, clearDraftAttachments, type DraftAttachment, setDraftAttachments, setDraftPrompt } from '../../store/slices/coworkSlice';
-import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import type { Model } from '../../store/slices/modelSlice';
 import { setSelectedModel } from '../../store/slices/modelSlice';
+import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { Skill } from '../../types/skill';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
@@ -23,7 +23,7 @@ import PaperClipIcon from '../icons/PaperClipIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import ModelSelector from '../ModelSelector';
 import { ActiveSkillBadge,SkillsButton } from '../skills';
-import { resolveAgentModelSelection } from './agentModelSelection';
+import { resolveAgentModelSelection, resolveEffectiveModel } from './agentModelSelection';
 import AttachmentCard from './AttachmentCard';
 import FolderSelectorPopover from './FolderSelectorPopover';
 
@@ -207,6 +207,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const minHeight = isLarge ? 60 : 24;
   const maxHeight = isLarge ? 200 : 200;
 
+  const effectiveSelectedModel = resolveEffectiveModel({
+    sessionId,
+    agentSelectedModel,
+    globalSelectedModel,
+  });
+  const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
+
   // Load skills on mount
   useEffect(() => {
     const loadSkills = async () => {
@@ -378,7 +385,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
     dispatch(clearDraftAttachments(draftKey));
     setImageVisionHint(false);
-  }, [value, isStreaming, disabled, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch, draftKey]);
+  }, [value, isStreaming, disabled, onSubmit, activeSkillIds, skills, attachments, showFolderSelector, workingDirectory, dispatch, draftKey, effectiveSelectedModel?.id, modelSupportsImage]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -458,9 +465,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       onWorkingDirectoryChange(path);
     }
   };
-
-  const effectiveSelectedModel = coworkAgentEngine === 'openclaw' ? agentSelectedModel : globalSelectedModel;
-  const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;
