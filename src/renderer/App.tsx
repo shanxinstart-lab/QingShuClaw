@@ -42,7 +42,7 @@ import {
   selectFirstPendingPermission,
 } from './store/selectors/coworkSelectors';
 import { setDraftPrompt } from './store/slices/coworkSlice';
-import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
+import { setAvailableModels, setDefaultSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
 import type { CoworkPermissionResult } from './types/cowork';
 
@@ -86,7 +86,7 @@ const App: React.FC = () => {
   const previousUpdateStatusRef = useRef<AppUpdateRuntimeState['status']>(AppUpdateStatus.Idle);
   const shouldInstallReadyUpdateRef = useRef(false);
   const dispatch = useDispatch();
-  const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const defaultSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
   const currentSessionId = useSelector(selectCurrentSessionId);
   const pendingPermission = useSelector(selectFirstPendingPermission);
   const authUser = useSelector((state: RootState) => state.auth.user);
@@ -193,7 +193,7 @@ const App: React.FC = () => {
             model => model.id === config.model.defaultModel
               && (!config.model.defaultModelProvider || model.providerKey === config.model.defaultModelProvider)
           ) ?? allModels[0];
-          dispatch(setSelectedModel(preferredModel));
+          dispatch(setDefaultSelectedModel(preferredModel));
         }
         mark('model resolution done');
 
@@ -275,22 +275,22 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!isInitialized || !selectedModel?.id) return;
+    if (!isInitialized || !defaultSelectedModel?.id) return;
     const config = configService.getConfig();
     if (
-      config.model.defaultModel === selectedModel.id
-      && (config.model.defaultModelProvider ?? '') === (selectedModel.providerKey ?? '')
+      config.model.defaultModel === defaultSelectedModel.id
+      && (config.model.defaultModelProvider ?? '') === (defaultSelectedModel.providerKey ?? '')
     ) {
       return;
     }
     void configService.updateConfig({
       model: {
         ...config.model,
-        defaultModel: selectedModel.id,
-        defaultModelProvider: selectedModel.providerKey,
+        defaultModel: defaultSelectedModel.id,
+        defaultModelProvider: defaultSelectedModel.providerKey,
       },
     });
-  }, [isInitialized, selectedModel?.id, selectedModel?.providerKey]);
+  }, [isInitialized, defaultSelectedModel?.id, defaultSelectedModel?.providerKey]);
 
   const handleShowSettings = useCallback((options?: SettingsOpenOptions) => {
     setSettingsOptions({

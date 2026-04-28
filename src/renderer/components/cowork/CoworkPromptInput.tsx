@@ -23,7 +23,7 @@ import PaperClipIcon from '../icons/PaperClipIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import ModelSelector from '../ModelSelector';
 import { ActiveSkillBadge,SkillsButton } from '../skills';
-import { resolveAgentModelSelection, resolveEffectiveModel } from './agentModelSelection';
+import { resolveAgentModelSelection, resolveEffectiveModel, useAgentSelectedModel } from './agentModelSelection';
 import AttachmentCard from './AttachmentCard';
 import FolderSelectorPopover from './FolderSelectorPopover';
 
@@ -144,7 +144,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const agents = useSelector((state: RootState) => state.agent.agents);
     const coworkAgentEngine = useSelector((state: RootState) => state.cowork.config.agentEngine);
     const availableModels = useSelector((state: RootState) => state.model.availableModels);
-    const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
     const currentSession = useSelector((state: RootState) => state.cowork.currentSession);
     const [value, setValue] = useState(draftPrompt);
     const [showFolderMenu, setShowFolderMenu] = useState(false);
@@ -188,6 +187,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
   const currentAgent = agents.find((agent) => agent.id === currentAgentId);
+  const currentAgentSelectedModel = useAgentSelectedModel(currentAgentId, currentAgent?.model ?? '');
   const {
     selectedModel: agentSelectedModel,
     hasInvalidExplicitModel: agentModelIsInvalid,
@@ -195,7 +195,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     sessionModel: currentSession && currentSession.id === sessionId ? currentSession.modelOverride : '',
     agentModel: currentAgent?.model ?? '',
     availableModels,
-    fallbackModel: globalSelectedModel,
+    fallbackModel: currentAgentSelectedModel,
     engine: coworkAgentEngine,
   });
 
@@ -210,7 +210,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const effectiveSelectedModel = resolveEffectiveModel({
     sessionId,
     agentSelectedModel,
-    globalSelectedModel,
+    globalSelectedModel: currentAgentSelectedModel,
   });
   const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
 
@@ -945,7 +945,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                             }
                             if (!currentAgent) return;
                             console.log('[CoworkPromptInput] home page model change (Redux only, no agent update):', { modelRef, modelName: nextModel.name, providerKey: nextModel.providerKey });
-                            dispatch(setSelectedModel(nextModel));
+                            dispatch(setSelectedModel({ agentId: currentAgentId, model: nextModel }));
                           }
                         : undefined}
                     />
