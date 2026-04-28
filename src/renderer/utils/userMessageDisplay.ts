@@ -11,13 +11,11 @@
 // --------------- Pattern A: NIM/DingTalk ---------------
 
 // Placeholder line — e.g. "[图片] https://nos.netease.com/..."
-const NIM_PLACEHOLDER_RE = /^\[(图片|语音消息|视频|文件|多媒体消息)\](?:\s+https?:\/\/\S+)?\s*$/m;
+// Capture the URL (group 2) so we can preserve it as plain text instead of stripping it.
+const NIM_PLACEHOLDER_RE = /^\[(图片|语音消息|视频|文件|多媒体消息)\](?:\s+(https?:\/\/\S+))?\s*$/m;
 
 // [附件信息] block — header line followed by "- ..." lines
 const ATTACHMENT_INFO_BLOCK_RE = /\n?\[附件信息\]\n(?:- .+(?:\n|$))+/;
-
-// Extract image paths from [附件信息] entries where 类型 is image
-const NIM_IMAGE_PATH_RE = /- 类型:\s*image[^]*?路径:\s*([^,\n]+)/g;
 
 // --------------- Pattern B: OpenClaw gateway ---------------
 
@@ -63,19 +61,8 @@ export function parseUserMessageForDisplay(content: string): string {
   if (result.includes('[图片]') || result.includes('[语音消息]') || result.includes('[视频]')
     || result.includes('[文件]') || result.includes('[多媒体消息]') || result.includes('[附件信息]')) {
 
-    // Extract image paths from [附件信息] block before stripping
-    const attachBlock = result.match(ATTACHMENT_INFO_BLOCK_RE);
-    if (attachBlock) {
-      const block = attachBlock[0];
-      let m: RegExpExecArray | null;
-      const re = new RegExp(NIM_IMAGE_PATH_RE.source, NIM_IMAGE_PATH_RE.flags);
-      while ((m = re.exec(block)) !== null) {
-        const p = m[1].trim();
-        if (p) imagePaths.push(p);
-      }
-    }
-
-    result = result.replace(NIM_PLACEHOLDER_RE, '');
+    // Strip [图片] etc. but preserve the URL as plain text
+    result = result.replace(NIM_PLACEHOLDER_RE, (_match, _type, url) => url || '');
     result = result.replace(ATTACHMENT_INFO_BLOCK_RE, '');
   }
 
