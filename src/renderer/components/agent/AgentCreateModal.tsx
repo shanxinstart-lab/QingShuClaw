@@ -41,7 +41,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [activeTab, setActiveTab] = useState<CreateTab>('basic');
-  const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const globalSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
   const agents = useSelector((state: RootState) => state.agent.agents);
   const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
 

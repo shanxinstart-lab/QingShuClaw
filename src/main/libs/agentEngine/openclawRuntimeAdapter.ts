@@ -2456,6 +2456,18 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         const turn = this.activeTurns.get(sessionId);
         if (!turn) return; // Already handled by handleChatError
         console.log('[OpenClawRuntime] agent lifecycle error fallback: surfacing error that missed chat error event, sessionId:', sessionId, 'error:', errorMessage);
+        // Abort the retrying run on the gateway so the session is freed for new messages.
+        // Without this, the gateway continues retrying indefinitely and rejects subsequent chat.send requests.
+        const client = this.gatewayClient;
+        if (client) {
+          console.log('[OpenClawRuntime] lifecycle error fallback: sending chat.abort to gateway, sessionKey:', turn.sessionKey, 'runId:', turn.runId);
+          void client.request('chat.abort', {
+            sessionKey: turn.sessionKey,
+            runId: turn.runId,
+          }).catch((err) => {
+            console.warn('[OpenClawRuntime] lifecycle error fallback: chat.abort failed:', err);
+          });
+        }
         const erroredSessionKey = turn.sessionKey;
         this.store.updateSession(sessionId, { status: 'error' });
         const errorMsg = this.store.addMessage(sessionId, {
@@ -3112,11 +3124,12 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Detect thinking-only response: the last API call returned no visible text
     // (only a thinking block), causing the run to complete silently without output.
     // This happens with qwen3.5-plus under very large context (~380K tokens).
-    // Signal: turn.currentText is empty AND there was at least one tool call in the run.
+    // Signal: turn.currentText is empty AND there was at least one tool call in THIS turn.
+    // Scoped to the current turn to avoid false positives when previous turns had tool calls
+    // but the current turn returned empty (e.g. session busy, network error).
     const sessionAfterReconcile = this.store.getSession(sessionId);
     if (sessionAfterReconcile) {
-      const msgs = sessionAfterReconcile.messages;
-      const hadToolCall = msgs.some((m) => m.type === 'tool_result');
+      const hadToolCall = turn.toolResultMessageIdByToolCallId.size > 0;
       const lastApiResponseHadNoText = !turn.currentText.trim();
       console.debug('[OpenClawRuntime] run end diagnostics, sessionId:', sessionId,
         'turn.currentText:', JSON.stringify(turn.currentText?.slice(0, 100)),

@@ -1168,6 +1168,13 @@ export const UserMessageItem: React.FC<{
   const [isHovered, setIsHovered] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!expandedImage) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpandedImage(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [expandedImage]);
+
   // Transform content for display: strip IM media metadata, render images inline
   const displayContent = useMemo(
     () => parseUserMessageForDisplay(message.content || ''),
@@ -1198,6 +1205,7 @@ export const UserMessageItem: React.FC<{
                   <MarkdownContent
                     content={displayContent}
                     className="max-w-none whitespace-pre-wrap break-words"
+                    onImageClick={setExpandedImage}
                   />
                 )}
                 {imageAttachments.length > 0 && (
@@ -1282,7 +1290,15 @@ const AssistantMessageItem: React.FC<{
   showCopyButton = false,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
+
+  useEffect(() => {
+    if (!expandedImage) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpandedImage(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [expandedImage]);
 
   return (
     <div
@@ -1296,6 +1312,7 @@ const AssistantMessageItem: React.FC<{
           className="prose dark:prose-invert max-w-none"
           resolveLocalFilePath={resolveLocalFilePath}
           showRevealInFolderAction
+          onImageClick={setExpandedImage}
         />
       </div>
       {showCopyButton && (
@@ -1303,6 +1320,19 @@ const AssistantMessageItem: React.FC<{
           <CopyButton
             content={displayContent}
             visible={isHovered}
+          />
+        </div>
+      )}
+      {expandedImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
+          onClick={() => setExpandedImage(null)}
+        >
+          <img
+            src={expandedImage}
+            alt="Preview"
+            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
           />
         </div>
       )}

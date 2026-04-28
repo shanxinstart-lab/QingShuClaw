@@ -34,7 +34,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   const controlled = onChange !== undefined;
-  const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const globalSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
+  const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const selectedModel = controlled ? value ?? null : globalSelectedModel;
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
 
@@ -74,7 +75,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     if (controlled) {
       onChange(model);
     } else if (model) {
-      dispatch(setSelectedModel(model));
+      dispatch(setSelectedModel({ agentId: currentAgentId, model }));
     }
     setIsOpen(false);
   };
