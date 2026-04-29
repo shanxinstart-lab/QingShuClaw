@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   extractGatewayHistoryEntry,
   extractGatewayMessageText,
+  isTransientGatewayStatusText,
   normalizeGatewayHistoryText,
 } from './openclawHistory';
 
@@ -101,5 +102,27 @@ describe('openclawHistory', () => {
   test('keeps assistant text unchanged when current request marker appears in content', () => {
     const text = '[Current user request]\n这是模型解释该标记含义时的正常输出';
     expect(normalizeGatewayHistoryText('assistant', text)).toBe(text);
+  });
+
+  test('filters transient gateway restart assistant status from history entries', () => {
+    const text = '网关正在重启中。等待重启完成后，我将继续创建飞书文档保存杭州和上海老乡鸡的流量供需分析数据。';
+
+    expect(isTransientGatewayStatusText(text)).toBe(true);
+    expect(
+      extractGatewayHistoryEntry({
+        role: 'assistant',
+        content: [{ type: 'text', text }],
+      }),
+    ).toBeNull();
+  });
+
+  test('does not treat normal gateway troubleshooting answers as transient status', () => {
+    const text = [
+      '可以按下面步骤检查 OpenClaw 网关重启问题：',
+      '1. 先查看 gateway.log。',
+      '2. 再确认 openclaw.json 是否有效。',
+    ].join('\n');
+
+    expect(isTransientGatewayStatusText(text)).toBe(false);
   });
 });

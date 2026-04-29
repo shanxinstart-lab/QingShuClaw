@@ -56,7 +56,6 @@ import {
 import { buildSpeakableAssistantText } from './coworkTtsText';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
-import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
@@ -74,7 +73,6 @@ const AUTO_SCROLL_THRESHOLD = 120;
 const NAV_SCROLL_LOCK_DURATION = 800;
 const NAV_BOTTOM_SNAP_THRESHOLD = 20;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
-const RECENT_TURNS_ALWAYS_RENDERED = 16;
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -1498,12 +1496,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
   const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
 
-  // Clear lazy-render height cache when session changes
-  const sessionId = currentSession?.id;
-  useEffect(() => {
-    clearHeightCache();
-  }, [sessionId]);
-
   // Rail navigation states
   const [currentRailIndex, setCurrentRailIndex] = useState(-1);
   const currentRailIndexRef = useRef(-1);
@@ -2337,10 +2329,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const isLastTurn = index === turns.length - 1;
       const showTypingIndicator = isStreaming && isLastTurn && !hasRenderableAssistantContent(turn);
       const showAssistantBlock = turn.assistantItems.length > 0 || showTypingIndicator;
-      // Keep a larger recent window mounted so long replies do not make
-      // just-finished conversation turns disappear behind placeholders.
-      const alwaysRender = index >= turns.length - RECENT_TURNS_ALWAYS_RENDERED;
-
       // Compute rail indices for user/assistant messages (must match rail IIFE logic)
       let asstContent = '';
       for (const item of turn.assistantItems) {
@@ -2352,7 +2340,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const asstRailIdx = asstContent ? railCounter++ : -1;
 
       return (
-        <LazyRenderTurn key={turn.id} turnId={turn.id} alwaysRender={alwaysRender} data-turn-index={index}>
+        <div key={turn.id} data-turn-index={index}>
           {turn.userMessage && (
             <div data-export-role="user-message" {...(userRailIdx >= 0 ? { 'data-rail-index': userRailIdx } : undefined)}>
               <UserMessageItem message={turn.userMessage} skills={skills} onReEdit={remoteManaged ? undefined : handleReEdit} />
@@ -2373,7 +2361,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               />
             </div>
           )}
-        </LazyRenderTurn>
+        </div>
       );
     });
   };

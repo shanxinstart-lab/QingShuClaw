@@ -22,7 +22,7 @@ class QingShuManagedService {
     if (shouldApply && !shouldApply()) {
       return;
     }
-    await agentService.loadAgents({ shouldApply });
+    await agentService.loadAgents({ shouldApply, refreshManagedCatalog: false });
   }
 
   async getCatalog() {

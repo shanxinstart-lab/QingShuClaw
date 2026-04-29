@@ -72,8 +72,16 @@ export function setServerBaseUrlGetter(getter: () => string): void {
 // Keyed by modelId → { supportsImage }
 let serverModelMetadataCache: Map<string, { supportsImage?: boolean }> = new Map();
 
-export function updateServerModelMetadata(models: Array<{ modelId: string; supportsImage?: boolean }>): void {
-  serverModelMetadataCache = new Map(models.map(m => [m.modelId, { supportsImage: m.supportsImage }]));
+export function updateServerModelMetadata(models: Array<{ modelId: string; supportsImage?: boolean }>): boolean {
+  const nextEntries = models.map(m => [m.modelId, { supportsImage: m.supportsImage }] as const);
+  const currentSnapshot = JSON.stringify(Array.from(serverModelMetadataCache.entries()));
+  const nextSnapshot = JSON.stringify(nextEntries);
+  if (currentSnapshot === nextSnapshot) {
+    return false;
+  }
+
+  serverModelMetadataCache = new Map(nextEntries);
+  return true;
 }
 
 export function clearServerModelMetadata(): void {

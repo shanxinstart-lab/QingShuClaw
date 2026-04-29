@@ -39,14 +39,19 @@ class AgentService {
     });
   }
 
-  async loadAgents(options?: { shouldApply?: () => boolean }): Promise<void> {
+  async loadAgents(options?: {
+    shouldApply?: () => boolean;
+    refreshManagedCatalog?: boolean;
+  }): Promise<void> {
     const shouldApply = options?.shouldApply;
     if (shouldApply && !shouldApply()) {
       return;
     }
     store.dispatch(setLoading(true));
     try {
-      const agents = await window.electron?.agents?.list();
+      const agents = await window.electron?.agents?.list({
+        refreshManagedCatalog: options?.refreshManagedCatalog !== false,
+      });
       if (shouldApply && !shouldApply()) {
         return;
       }

@@ -129,7 +129,7 @@ import {
 } from './libs/speechErrorRecovery';
 import {
   applySystemProxyEnv,
-  resolveSystemProxyUrl,
+  resolveSystemProxyUrlForTargets,
   restoreOriginalProxyEnv,
   setSystemProxyEnabled,
 } from './libs/systemProxy';
@@ -1218,15 +1218,19 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
 
 // Deferred gateway restart: when a config change requires a gateway restart
 // but active cowork sessions or cron jobs exist, we defer the restart until
-// all workloads complete.  A polling interval checks periodically; a hard
-// timeout ensures the restart eventually happens even if a session hangs.
+// all workloads complete.  Do not force-restart while work is active: doing so
+// pushes OpenClaw into a draining/restart window and causes user turns to fail.
 let deferredRestartTimer: ReturnType<typeof setInterval> | null = null;
 let deferredRestartTimeout: ReturnType<typeof setTimeout> | null = null;
+let deferredHardRestartTimer: ReturnType<typeof setInterval> | null = null;
+let deferredHardRestartTimeout: ReturnType<typeof setTimeout> | null = null;
 const DEFERRED_RESTART_POLL_MS = 3_000;
-const DEFERRED_RESTART_MAX_WAIT_MS = 5 * 60_000; // 5 minutes hard cap
+const DEFERRED_RESTART_WAIT_LOG_MS = 5 * 60_000;
+let mcpBridgeRefreshInProgress = false;
 
 const hasActiveGatewayWorkloads = (): boolean => {
   if (openClawRuntimeAdapter?.hasActiveSessions()) return true;
+  if (mcpBridgeRefreshInProgress) return true;
   try {
     if (getCronJobService()?.hasRunningJobs()) return true;
   } catch {
@@ -1240,7 +1244,17 @@ const clearDeferredRestart = () => {
   if (deferredRestartTimeout) { clearTimeout(deferredRestartTimeout); deferredRestartTimeout = null; }
 };
 
+const clearDeferredHardRestart = () => {
+  if (deferredHardRestartTimer) { clearInterval(deferredHardRestartTimer); deferredHardRestartTimer = null; }
+  if (deferredHardRestartTimeout) { clearTimeout(deferredHardRestartTimeout); deferredHardRestartTimeout = null; }
+};
+
 const executeDeferredGatewayRestart = async (reason: string) => {
+  if (hasActiveGatewayWorkloads()) {
+    console.log(`[OpenClaw] executeDeferredGatewayRestart: still waiting for active workloads (reason: ${reason})`);
+    return;
+  }
+
   clearDeferredRestart();
   console.log(`[OpenClaw] executeDeferredGatewayRestart: performing deferred restart (reason: ${reason})`);
   await syncOpenClawConfig({ reason: `deferred:${reason}`, restartGatewayIfRunning: true });
@@ -1260,11 +1274,67 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
     }
   }, DEFERRED_RESTART_POLL_MS);
 
-  // Hard timeout: restart anyway after max wait to avoid config drift.
   deferredRestartTimeout = setTimeout(() => {
-    console.warn(`[OpenClaw] scheduleDeferredGatewayRestart: max wait exceeded, forcing restart (reason: ${reason})`);
+    if (hasActiveGatewayWorkloads()) {
+      console.warn(`[OpenClaw] scheduleDeferredGatewayRestart: still waiting for active workloads, keeping restart deferred (reason: ${reason})`);
+      return;
+    }
     void executeDeferredGatewayRestart(reason);
-  }, DEFERRED_RESTART_MAX_WAIT_MS);
+  }, DEFERRED_RESTART_WAIT_LOG_MS);
+};
+
+const performGatewayRestart = async (reason: string): Promise<OpenClawEngineStatus> => {
+  if (openClawRuntimeAdapter) {
+    console.log(`[OpenClaw] performGatewayRestart: disconnecting runtime adapter before gateway restart (reason: ${reason})`);
+    openClawRuntimeAdapter.disconnectGatewayClient();
+  }
+  return getOpenClawEngineManager().restartGateway();
+};
+
+const executeDeferredHardGatewayRestart = async (reason: string) => {
+  if (hasActiveGatewayWorkloads()) {
+    console.log(`[OpenClaw] executeDeferredHardGatewayRestart: still waiting for active workloads (reason: ${reason})`);
+    return;
+  }
+
+  clearDeferredHardRestart();
+  console.log(`[OpenClaw] executeDeferredHardGatewayRestart: performing deferred restart (reason: ${reason})`);
+  await performGatewayRestart(`deferred:${reason}`);
+};
+
+const scheduleDeferredHardGatewayRestart = (reason: string) => {
+  if (deferredHardRestartTimer) {
+    console.log(`[OpenClaw] scheduleDeferredHardGatewayRestart: already scheduled, skipping (reason: ${reason})`);
+    return;
+  }
+
+  deferredHardRestartTimer = setInterval(() => {
+    if (!hasActiveGatewayWorkloads()) {
+      void executeDeferredHardGatewayRestart(reason);
+    }
+  }, DEFERRED_RESTART_POLL_MS);
+
+  deferredHardRestartTimeout = setTimeout(() => {
+    if (hasActiveGatewayWorkloads()) {
+      console.warn(`[OpenClaw] scheduleDeferredHardGatewayRestart: still waiting for active workloads, keeping restart deferred (reason: ${reason})`);
+      return;
+    }
+    void executeDeferredHardGatewayRestart(reason);
+  }, DEFERRED_RESTART_WAIT_LOG_MS);
+};
+
+const requestGatewayRestart = async (reason: string): Promise<OpenClawEngineStatus> => {
+  const manager = getOpenClawEngineManager();
+  const status = manager.getStatus();
+  if (status.phase === 'running' && hasActiveGatewayWorkloads()) {
+    console.log(`[OpenClaw] requestGatewayRestart: deferring restart because active workloads exist (reason: ${reason})`);
+    scheduleDeferredHardGatewayRestart(reason);
+    return {
+      ...status,
+      message: 'OpenClaw gateway restart deferred until active workloads finish.',
+    };
+  }
+  return performGatewayRestart(reason);
 };
 
 const syncOpenClawConfig = async (
@@ -1657,6 +1727,7 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
     return mcpBridgeRefreshPromise;
   }
   mcpBridgeRefreshPromise = (async () => {
+    mcpBridgeRefreshInProgress = true;
     try {
       console.log('[McpBridge] refreshing after config change...');
       broadcastMcpBridgeSync('mcp:bridge:syncStart');
@@ -1696,6 +1767,7 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
     broadcastMcpBridgeSync('mcp:bridge:syncDone', { tools: 0, error: message });
     return { tools: 0, error: message };
   }).finally(() => {
+    mcpBridgeRefreshInProgress = false;
     mcpBridgeRefreshPromise = null;
   });
   return mcpBridgeRefreshPromise;
@@ -2538,13 +2610,13 @@ const updateTitleBarOverlay = () => {
 };
 
 const applyProxyPreference = async (useSystemProxy: boolean): Promise<void> => {
+  setSystemProxyEnabled(useSystemProxy);
+
   try {
     await session.defaultSession.setProxy({ mode: useSystemProxy ? 'system' : 'direct' });
   } catch (error) {
     console.error('[Main] Failed to apply session proxy mode:', error);
   }
-
-  setSystemProxyEnabled(useSystemProxy);
 
   if (!useSystemProxy) {
     restoreOriginalProxyEnv();
@@ -2552,11 +2624,11 @@ const applyProxyPreference = async (useSystemProxy: boolean): Promise<void> => {
     return;
   }
 
-  const proxyUrl = await resolveSystemProxyUrl('https://openrouter.ai');
+  const { proxyUrl, targetUrl } = await resolveSystemProxyUrlForTargets();
   applySystemProxyEnv(proxyUrl);
 
   if (proxyUrl) {
-    console.log('[Main] System proxy enabled for process env:', proxyUrl);
+    console.log(`[Main] System proxy enabled for process env via ${targetUrl}:`, proxyUrl);
   } else {
     console.warn('[Main] System proxy mode enabled, but no proxy endpoint was resolved (DIRECT).');
   }
@@ -3468,8 +3540,7 @@ if (!gotTheLock) {
       return { success: status.phase === 'running' || status.phase === 'ready', status };
     }
     try {
-      const manager = getOpenClawEngineManager();
-      restartGatewayPromise = manager.restartGateway();
+      restartGatewayPromise = requestGatewayRestart('manual-restart');
       const status = await restartGatewayPromise;
       return {
         success: status.phase === 'running' || status.phase === 'ready',
@@ -3936,8 +4007,14 @@ if (!gotTheLock) {
 
   // ========== Agent IPC Handlers ==========
 
-  ipcMain.handle('agents:list', async () => {
+  ipcMain.handle('agents:list', async (_event, options?: { refreshManagedCatalog?: boolean }) => {
     try {
+      if (options?.refreshManagedCatalog !== false && hasQingShuAuthSession()) {
+        const syncResult = await getQingShuManagedCatalogService().syncCatalog();
+        if (!syncResult.success) {
+          console.warn('[QingShuManaged] Failed to refresh managed catalog before listing agents:', syncResult.error);
+        }
+      }
       const agents = getAgentManager().listAgents();
       return { success: true, agents };
     } catch (error) {
@@ -4825,7 +4902,7 @@ if (!gotTheLock) {
         // Restart gateway so the plugin picks up the new token and starts
         // a fresh monitor loop (the old one may be stuck in a session pause).
         console.log('[IMGatewayManager] Weixin login succeeded, restarting OpenClaw gateway');
-        await getOpenClawEngineManager().restartGateway();
+        await requestGatewayRestart('weixin-login-succeeded');
       }
       return { success: true, ...result };
     } catch (error) {
@@ -6311,6 +6388,16 @@ if (!gotTheLock) {
     bindCoworkRuntimeForwarder();
     bindOpenClawStatusForwarder();
 
+    // Start proxy BEFORE config sync so proxy-dependent providers get the
+    // correct baseURL on the first write, avoiding a mid-startup config
+    // overwrite that triggers unnecessary gateway hot-reload.
+    const appConfig = getStore().get<AppConfigSettings>('app_config');
+    await applyProxyPreference(getUseSystemProxyFromConfig(appConfig));
+
+    await startCoworkOpenAICompatProxy().catch((error) => {
+      console.error('Failed to start OpenAI compatibility proxy:', error);
+    });
+
     const startupSync = await syncOpenClawConfig({
       reason: 'startup',
       restartGatewayIfRunning: false,
@@ -6386,13 +6473,6 @@ if (!gotTheLock) {
     } catch (error) {
       console.error('[Main] initApp: skill services failed:', error);
     }
-
-    const appConfig = getStore().get<AppConfigSettings>('app_config');
-    await applyProxyPreference(getUseSystemProxyFromConfig(appConfig));
-
-    await startCoworkOpenAICompatProxy().catch((error) => {
-      console.error('Failed to start OpenAI compatibility proxy:', error);
-    });
 
     const wakeInputConfig = mergeWakeInputConfig(appConfig?.wakeInput);
     wakeInputService.updateConfig(wakeInputConfig);
@@ -6483,7 +6563,7 @@ if (!gotTheLock) {
       if (currentUseSystemProxy !== previousUseSystemProxy) {
         void applyProxyPreference(currentUseSystemProxy).then(() => {
           if (getOpenClawEngineManager().getStatus().phase === 'running') {
-            void getOpenClawEngineManager().restartGateway();
+            void requestGatewayRestart('system-proxy-changed');
           }
         });
       }

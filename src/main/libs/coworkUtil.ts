@@ -6,7 +6,7 @@ import { buildEnvForConfig, getCurrentApiConfig, resolveCurrentApiConfig, resolv
 import type { OpenAICompatProxyTarget } from './coworkOpenAICompatProxy';
 import { coworkLog } from './coworkLogger';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
-import { isSystemProxyEnabled, resolveSystemProxyUrl } from './systemProxy';
+import { isSystemProxyEnabled, resolveSystemProxyUrlForTargets } from './systemProxy';
 import {
   buildAnthropicMessagesUrl,
   buildGeminiGenerateContentUrl,
@@ -1369,13 +1369,13 @@ export async function getEnhancedEnv(target: OpenAICompatProxyTarget = 'local'):
   }
 
   // Resolve proxy from system settings
-  const proxyUrl = await resolveSystemProxyUrl('https://openrouter.ai');
+  const { proxyUrl, targetUrl } = await resolveSystemProxyUrlForTargets();
   if (proxyUrl) {
     env.http_proxy = proxyUrl;
     env.https_proxy = proxyUrl;
     env.HTTP_PROXY = proxyUrl;
     env.HTTPS_PROXY = proxyUrl;
-    console.log('Injected system proxy for subprocess:', proxyUrl);
+    console.log(`[CoworkUtil] Injected system proxy for subprocess via ${targetUrl}:`, proxyUrl);
   }
 
   return env;

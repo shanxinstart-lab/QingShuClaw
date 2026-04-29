@@ -35,7 +35,7 @@ type AuthAdapterDeps = {
   normalizeQuota: NormalizeQuotaFn;
   updateServerModelMetadata: (
     models: Array<{ modelId: string; supportsImage?: boolean }>
-  ) => void;
+  ) => boolean;
   clearServerModelMetadata: () => void;
 };
 
@@ -668,8 +668,9 @@ export const createLegacyLobsterAuthAdapter = (deps: AuthAdapterDeps): AuthAdapt
           return { success: false };
         }
 
-        deps.updateServerModelMetadata(data.data);
-        notifyServerModelMetadataUpdated(deps, 'Auth:getModels');
+        if (deps.updateServerModelMetadata(data.data)) {
+          notifyServerModelMetadataUpdated(deps, 'Auth:getModels');
+        }
         return { success: true, models: data.data };
       } catch (error) {
         console.error('[Auth:getModels] Error:', error);
@@ -1298,8 +1299,9 @@ export const createQtbAuthAdapter = (deps: AuthAdapterDeps): AuthAdapter => {
         } else {
           console.log(`[QtbAuth] loaded ${body.data.length} server models`);
         }
-        deps.updateServerModelMetadata(body.data);
-        notifyServerModelMetadataUpdated(deps, 'QtbAuth');
+        if (deps.updateServerModelMetadata(body.data)) {
+          notifyServerModelMetadataUpdated(deps, 'QtbAuth');
+        }
         return { success: true, models: body.data };
       } catch (error) {
         console.error('[QtbAuth] server models request crashed:', error);

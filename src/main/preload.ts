@@ -187,8 +187,8 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
   agents: {
-    list: async () => {
-      const result = await ipcRenderer.invoke('agents:list');
+    list: async (options?: { refreshManagedCatalog?: boolean }) => {
+      const result = await ipcRenderer.invoke('agents:list', options);
       return result?.success ? result.agents : [];
     },
     get: async (id: string) => {

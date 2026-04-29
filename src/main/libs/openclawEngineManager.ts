@@ -11,7 +11,7 @@ import {
   syncLocalOpenClawExtensionsIntoRuntime,
 } from './openclawLocalExtensions';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
-import { isSystemProxyEnabled, resolveSystemProxyUrl } from './systemProxy';
+import { isSystemProxyEnabled, resolveSystemProxyUrlForTargets } from './systemProxy';
 
 type GatewayProcess = UtilityProcess | ChildProcess;
 
@@ -198,6 +198,7 @@ export class OpenClawEngineManager extends EventEmitter {
   private gatewayPort: number | null = null;
   private startGatewayPromise: Promise<OpenClawEngineStatus> | null = null;
   private secretEnvVars: Record<string, string> = {};
+  private gatewaySpawnedAt: number | null = null;
 
   constructor() {
     super();
@@ -386,7 +387,7 @@ export class OpenClawEngineManager extends EventEmitter {
         }
       }
 
-      this.stopGatewayProcess(this.gatewayProcess);
+      await this.stopGatewayProcess(this.gatewayProcess);
       this.gatewayProcess = null;
     }
 
@@ -453,6 +454,11 @@ export class OpenClawEngineManager extends EventEmitter {
       // Point to dist/extensions for runtime-bundled plugins. Third-party and
       // local plugins are loaded separately from third-party-extensions.
       OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(runtime.root, 'dist', 'extensions'),
+      // Skip model-pricing bootstrap to avoid slow external metadata fetches
+      // during gateway startup.
+      OPENCLAW_SKIP_MODEL_PRICING: '1',
+      // Disable LAN service advertisement for the loopback-only desktop gateway.
+      OPENCLAW_DISABLE_BONJOUR: '1',
       // Enable debug-level logging so gateway emits phase-level detail during startup.
       OPENCLAW_LOG_LEVEL: 'debug',
       // Enable V8 compile cache for both CJS and ESM modules.
@@ -500,13 +506,13 @@ export class OpenClawEngineManager extends EventEmitter {
     }
 
     if (isSystemProxyEnabled()) {
-      const proxyUrl = await resolveSystemProxyUrl('https://openrouter.ai');
+      const { proxyUrl, targetUrl } = await resolveSystemProxyUrlForTargets();
       if (proxyUrl) {
         env.http_proxy = proxyUrl;
         env.https_proxy = proxyUrl;
         env.HTTP_PROXY = proxyUrl;
         env.HTTPS_PROXY = proxyUrl;
-        console.log('[OpenClaw] Injected system proxy for gateway:', proxyUrl);
+        console.log(`[OpenClaw] Injected system proxy for gateway via ${targetUrl}:`, proxyUrl);
       }
     }
 
@@ -543,6 +549,7 @@ export class OpenClawEngineManager extends EventEmitter {
     console.log(`[OpenClaw] startGateway: gateway process created (${elapsed()}), platform=${process.platform}`);
 
     this.gatewayProcess = child;
+    this.gatewaySpawnedAt = Date.now();
     this.attachGatewayProcessLogs(child);
     this.attachGatewayExitHandlers(child);
 
@@ -560,7 +567,7 @@ export class OpenClawEngineManager extends EventEmitter {
         message: 'OpenClaw gateway failed to become healthy in time.',
         canRetry: true,
       });
-      this.stopGatewayProcess(child);
+      await this.stopGatewayProcess(child);
       return this.getStatus();
     }
 
@@ -587,7 +594,9 @@ export class OpenClawEngineManager extends EventEmitter {
     }
 
     if (this.gatewayProcess) {
-      this.stopGatewayProcess(this.gatewayProcess);
+      console.log('[OpenClaw] stopping gateway process...');
+      await this.stopGatewayProcess(this.gatewayProcess);
+      console.log('[OpenClaw] gateway process stopped');
       this.gatewayProcess = null;
     }
 
@@ -1294,24 +1303,48 @@ export class OpenClawEngineManager extends EventEmitter {
     });
   }
 
-  private stopGatewayProcess(child: GatewayProcess): void {
+  private stopGatewayProcess(child: GatewayProcess): Promise<void> {
     this.expectedGatewayExits.add(child);
 
-    try {
-      child.kill();
-    } catch {
-      // ignore
-    }
+    return new Promise<void>((resolve) => {
+      if ('exitCode' in child && child.exitCode !== null) {
+        resolve();
+        return;
+      }
 
-    setTimeout(() => {
+      let forceTimer: ReturnType<typeof setTimeout> | null = null;
+      let hardTimer: ReturnType<typeof setTimeout> | null = null;
+
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        if (forceTimer) clearTimeout(forceTimer);
+        if (hardTimer) clearTimeout(hardTimer);
+        resolve();
+      };
+
+      hardTimer = setTimeout(done, 5_000);
+
+      child.once('exit', done);
+
       try {
-        if ('pid' in child && typeof child.pid === 'number') {
-          child.kill();
-        }
+        child.kill();
       } catch {
         // ignore
       }
-    }, 1200);
+
+      forceTimer = setTimeout(() => {
+        try {
+          if ('pid' in child && typeof child.pid === 'number') {
+            child.kill();
+          }
+        } catch {
+          // ignore
+        }
+        setTimeout(done, 2_000);
+      }, 1_200);
+    });
   }
 
   // Workaround: Electron utilityProcess V8 isolate reports getTimezoneOffset()=0.
@@ -1342,14 +1375,25 @@ export class OpenClawEngineManager extends EventEmitter {
       });
     };
 
+    const logStartupMilestone = (text: string) => {
+      if (!this.gatewaySpawnedAt) return;
+      if (/\[gateway\]/.test(text)) {
+        const elapsed = Date.now() - this.gatewaySpawnedAt;
+        const summary = text.replace(/\n+$/g, '').split('\n')[0].trim();
+        console.log(`[OpenClaw] startup milestone (${elapsed}ms since spawn): ${summary}`);
+      }
+    };
+
     child.stdout?.on('data', (chunk) => {
       appendLog(chunk, 'stdout');
       const text = typeof chunk === 'string' ? chunk : chunk.toString();
+      logStartupMilestone(text);
       console.log(`[OpenClaw stdout] ${OpenClawEngineManager.rewriteUtcTimestamps(text)}`);
     });
     child.stderr?.on('data', (chunk) => {
       appendLog(chunk, 'stderr');
       const text = typeof chunk === 'string' ? chunk : chunk.toString();
+      logStartupMilestone(text);
       console.error(`[OpenClaw stderr] ${OpenClawEngineManager.rewriteUtcTimestamps(text)}`);
     });
   }

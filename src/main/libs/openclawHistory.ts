@@ -20,6 +20,13 @@ export interface GatewayHistoryEntry {
 }
 
 const HEARTBEAT_ACK_RE = /^[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}HEARTBEAT_OK[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}$/i;
+const TRANSIENT_GATEWAY_STATUS_MAX_CHARS = 600;
+const TRANSIENT_GATEWAY_STATUS_PATTERNS = [
+  /^(?:OpenClaw\s*)?(?:网关|AI\s*引擎).{0,16}(?:正在)?(?:重启|启动|连接)(?:中)?[，,。.]/i,
+  /等待(?:网关|AI\s*引擎)?.{0,24}(?:重启|启动|连接)完成后.{0,120}(?:继续|恢复|我将继续)/i,
+  /^(?:the\s+)?(?:openclaw\s+)?(?:gateway|ai\s+engine).{0,32}(?:is\s+)?(?:restarting|starting|reconnecting|draining)[,.]/i,
+  /(?:wait|waiting).{0,24}(?:gateway|ai\s+engine).{0,48}(?:restart|start|reconnect).{0,120}(?:continue|resume)/i,
+] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -115,6 +122,17 @@ export const normalizeGatewayHistoryText = (
 
 export const isHeartbeatAckText = (text: string): boolean => HEARTBEAT_ACK_RE.test(text.trim());
 
+export const isTransientGatewayStatusText = (text: string): boolean => {
+  const normalized = text.trim();
+  if (!normalized || normalized.length > TRANSIENT_GATEWAY_STATUS_MAX_CHARS) {
+    return false;
+  }
+  if (normalized.includes('```')) {
+    return false;
+  }
+  return TRANSIENT_GATEWAY_STATUS_PATTERNS.some((pattern) => pattern.test(normalized));
+};
+
 const extractWrappedUserRequest = (text: string): string | null => {
   const normalized = text.trim();
   if (!normalized) {
@@ -183,6 +201,9 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
     return null;
   }
   if ((role === 'assistant' || role === 'system') && isHeartbeatAckText(text)) {
+    return null;
+  }
+  if (role === 'assistant' && isTransientGatewayStatusText(text)) {
     return null;
   }
 

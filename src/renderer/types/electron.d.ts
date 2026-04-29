@@ -450,7 +450,7 @@ interface IElectronAPI {
     onBridgeSyncDone?: (callback: (data: { tools: number; error?: string }) => void) => () => void;
   };
   agents: {
-    list: () => Promise<Agent[]>;
+    list: (options?: { refreshManagedCatalog?: boolean }) => Promise<Agent[]>;
     get: (id: string) => Promise<Agent | null>;
     create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
     update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => Promise<Agent>;

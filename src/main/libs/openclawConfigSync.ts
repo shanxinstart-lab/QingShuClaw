@@ -25,6 +25,7 @@ import {
 } from './openclawAgentModels';
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
+import { enforceLegacyFeishuPluginDisabled } from './openclawConfigGuards';
 import {
   resolveAgentToolBundleSelections,
   summarizeQingShuSharedToolCatalog,
@@ -33,6 +34,7 @@ import {
   type QingShuAgentToolBundleSelection,
   type QingShuToolBundleId,
 } from '../qingshuModules';
+import { isSystemProxyEnabled } from './systemProxy';
 
 export type McpBridgeConfig = {
   callbackUrl: string;
@@ -359,6 +361,11 @@ type OpenClawProviderSelection = {
     api: OpenClawProviderApi;
     apiKey: string;
     auth: typeof AuthType[keyof typeof AuthType];
+    request?: {
+      proxy: {
+        mode: 'env-proxy';
+      };
+    };
     models: Array<{
       id: string;
       name: string;
@@ -417,6 +424,22 @@ const stripChatCompletionsSuffix = (rawBaseUrl: string): string => {
   }
   return normalized;
 };
+
+const isLoopbackProviderBaseUrl = (rawBaseUrl: string): boolean => {
+  try {
+    const host = new URL(rawBaseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return host === 'localhost'
+      || host === '127.0.0.1'
+      || host === '::1'
+      || host === '0.0.0.0';
+  } catch {
+    return false;
+  }
+};
+
+const shouldUseEnvProxyForProviderBaseUrl = (rawBaseUrl: string): boolean => (
+  isSystemProxyEnabled() && !isLoopbackProviderBaseUrl(rawBaseUrl)
+);
 
 const normalizeKimiCodingBaseUrl = (rawBaseUrl: string): string => {
   const trimmed = rawBaseUrl.trim();
@@ -650,6 +673,9 @@ export const buildProviderSelection = (options: {
     providerName === ProviderName.Moonshot && !options.codingPlanEnabled
       ? options.modelId.includes('thinking')
       : undefined;
+  const request = shouldUseEnvProxyForProviderBaseUrl(baseUrl)
+    ? { proxy: { mode: 'env-proxy' as const } }
+    : undefined;
 
   return {
     providerId: descriptor.providerId,
@@ -661,6 +687,7 @@ export const buildProviderSelection = (options: {
       api,
       apiKey,
       auth: options.providerName === ProviderName.Copilot ? AuthType.OAuth : AuthType.ApiKey,
+      ...(request ? { request } : {}),
       models: [
         {
           id: sessionModelId,
@@ -690,6 +717,37 @@ export const buildProviderSelection = (options: {
 const isBundledPluginAvailable = (pluginId: string): boolean => {
   return hasBundledOpenClawExtension(pluginId);
 };
+
+function normalizeMcpToolInputSchemaForOpenAI(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map(normalizeMcpToolInputSchemaForOpenAI);
+  }
+  if (!schema || typeof schema !== 'object') {
+    return schema;
+  }
+
+  const record = schema as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    normalized[key] = normalizeMcpToolInputSchemaForOpenAI(value);
+  }
+
+  const schemaType = normalized.type;
+  const isArraySchema = schemaType === 'array'
+    || (Array.isArray(schemaType) && schemaType.includes('array'));
+  if (isArraySchema && normalized.items === undefined) {
+    normalized.items = {};
+  }
+
+  return normalized;
+}
+
+const normalizeMcpBridgeToolManifestEntry = (
+  tool: McpToolManifestEntry,
+): McpToolManifestEntry => ({
+  ...tool,
+  inputSchema: normalizeMcpToolInputSchemaForOpenAI(tool.inputSchema) as Record<string, unknown>,
+});
 
 const resolveExternalPluginLoadPaths = (pluginIds: string[]): string[] => {
   const seen = new Set<string>();
@@ -1139,7 +1197,7 @@ export class OpenClawConfigSync {
         config: {
           callbackUrl: mcpBridgeCfg.callbackUrl,
           secret: '${LOBSTER_MCP_BRIDGE_SECRET}',
-          tools: mcpBridgeCfg.tools,
+          tools: mcpBridgeCfg.tools.map(normalizeMcpBridgeToolManifestEntry),
         },
       };
     }
@@ -1470,8 +1528,10 @@ export class OpenClawConfigSync {
         if (boundAgentId && boundAgentId !== 'main') {
           channels[channelKey]._agentBinding = boundAgentId;
         }
-      }
+     }
     }
+
+    enforceLegacyFeishuPluginDisabled(managedConfig);
 
     const nextContent = `${JSON.stringify(managedConfig, null, 2)}\n`;
     console.log('[OpenClawConfigSync] sync() managedConfig key fields:', {
@@ -1494,24 +1554,16 @@ export class OpenClawConfigSync {
       const nextConfig = nextObj?.plugins?.entries?.['mcp-bridge']?.config;
       const currentCallbackUrl = currentConfig?.callbackUrl;
       const nextCallbackUrl = nextConfig?.callbackUrl;
-      const currentToolNames = Array.isArray(currentConfig?.tools)
-        ? currentConfig.tools
-          .map((tool: { name?: string }) => tool?.name ?? '')
-          .filter(Boolean)
-          .sort()
-          .join(',')
-        : '';
-      const nextToolNames = Array.isArray(nextConfig?.tools)
-        ? nextConfig.tools
-          .map((tool: { name?: string }) => tool?.name ?? '')
-          .filter(Boolean)
-          .sort()
-          .join(',')
-        : '';
-      mcpBridgeConfigChanged = currentCallbackUrl !== nextCallbackUrl || currentToolNames !== nextToolNames;
+      const currentTools = currentConfig?.tools;
+      const nextTools = nextConfig?.tools;
+      const currentToolsJson = JSON.stringify(Array.isArray(currentTools) ? currentTools : []);
+      const nextToolsJson = JSON.stringify(Array.isArray(nextTools) ? nextTools : []);
+      const currentToolCount = Array.isArray(currentTools) ? currentTools.length : 0;
+      const nextToolCount = Array.isArray(nextTools) ? nextTools.length : 0;
+      mcpBridgeConfigChanged = currentCallbackUrl !== nextCallbackUrl || currentToolsJson !== nextToolsJson;
       if (mcpBridgeConfigChanged) {
         console.log(
-          `[OpenClawConfigSync] mcp-bridge config changed: callbackUrl ${currentCallbackUrl ?? 'null'} -> ${nextCallbackUrl ?? 'null'}, tools ${currentToolNames || '(none)'} -> ${nextToolNames || '(none)'}`,
+          `[OpenClawConfigSync] mcp-bridge config changed: callbackUrl ${currentCallbackUrl ?? 'null'} -> ${nextCallbackUrl ?? 'null'}, tools ${currentToolCount} -> ${nextToolCount}`,
         );
       }
     } catch {

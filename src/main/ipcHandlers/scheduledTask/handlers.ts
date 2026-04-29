@@ -1,4 +1,6 @@
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
+import fs from 'fs';
+import path from 'path';
 import {
   IpcChannel as ScheduledTaskIpc,
   DeliveryMode as STDeliveryMode,
@@ -6,7 +8,8 @@ import {
   PayloadKind as STPayloadKind,
 } from '../../../scheduledTask/constants';
 import { PlatformRegistry } from '../../../shared/platform';
-import type { CronJobService } from '../../../scheduledTask/cronJobService';
+import { mapGatewayJob, type CronJobService } from '../../../scheduledTask/cronJobService';
+import type { ScheduledTask } from '../../../scheduledTask/types';
 import { listScheduledTaskChannels } from './helpers';
 
 export interface ScheduledTaskHandlerDeps {
@@ -38,13 +41,34 @@ export interface ScheduledTaskHandlerDeps {
 export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): void {
   const { getCronJobService, getIMGatewayManager, getOpenClawRuntimeAdapter } = deps;
 
+  const listPersistedJobs = (): ScheduledTask[] => {
+    const jobsPath = path.join(app.getPath('userData'), 'openclaw', 'state', 'cron', 'jobs.json');
+    try {
+      const raw = fs.readFileSync(jobsPath, 'utf8');
+      const parsed = JSON.parse(raw) as { jobs?: unknown[] };
+      if (!Array.isArray(parsed.jobs)) {
+        return [];
+      }
+      return parsed.jobs.flatMap((job) => {
+        try {
+          return [mapGatewayJob(job as Parameters<typeof mapGatewayJob>[0])];
+        } catch (error) {
+          console.warn('[ScheduledTask] Failed to map persisted cron job, skipping:', error);
+          return [];
+        }
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn('[ScheduledTask] Failed to read persisted cron jobs:', error);
+      }
+      return [];
+    }
+  };
+
   ipcMain.handle(ScheduledTaskIpc.List, async () => {
     try {
-      // If OpenClaw gateway is not connected yet, return empty list immediately
-      // to avoid blocking the renderer init. Tasks will be loaded later via the
-      // onRefresh listener when the gateway becomes available.
       if (!getOpenClawRuntimeAdapter()?.getGatewayClient()) {
-        return { success: true, tasks: [] };
+        return { success: true, tasks: listPersistedJobs() };
       }
       const tasks = await getCronJobService().listJobs();
       return { success: true, tasks };

@@ -4,7 +4,7 @@ import { useSelector } from 'react-redux';
 
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
-import { RootState } from '../../store';
+import { selectIsOpenClawEngine } from '../../store/selectors/coworkSelectors';
 import type { OpenClawEngineStatus } from '../../types/cowork';
 
 const resolveEngineStatusText = (status: OpenClawEngineStatus): string => {
@@ -34,8 +34,7 @@ type EngineStartupOverlayProps = {
 };
 
 const EngineStartupOverlay: React.FC<EngineStartupOverlayProps> = ({ suspended = false }) => {
-  const config = useSelector((state: RootState) => state.cowork.config);
-  const isOpenClawEngine = config.agentEngine !== 'yd_cowork';
+  const isOpenClawEngine = useSelector(selectIsOpenClawEngine);
   const [status, setStatus] = useState<OpenClawEngineStatus | null>(null);
 
   useEffect(() => {

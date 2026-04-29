@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type { SqliteStore } from '../sqliteStore';
 import type { IMStore } from '../im/imStore';
+import { enforceLegacyFeishuPluginDisabled } from './openclawConfigGuards';
 
 export type EnterpriseUIAction = 'hide' | 'disable' | 'readonly';
 
@@ -499,6 +500,7 @@ export function mergeEnterpriseOpenclawConfig(runtimeConfigPath: string): void {
     const enterpriseConfig = JSON.parse(enterpriseRaw) as Record<string, unknown>;
 
     const merged = deepMerge(runtimeConfig, enterpriseConfig);
+    enforceLegacyFeishuPluginDisabled(merged);
     fs.writeFileSync(runtimeConfigPath, JSON.stringify(merged, null, 2), 'utf-8');
     console.log('[Enterprise] merged enterprise openclaw.json into runtime config');
   } catch (error) {

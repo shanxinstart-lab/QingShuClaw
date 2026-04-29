@@ -568,7 +568,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     ));
     setImageVisionHint(hasImageWithoutVision);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftKey]); // intentionally omit draftPrompt to only trigger on session switch
+  }, [draftKey]); // intentionally omit other deps to only trigger on session switch
 
   useEffect(() => {
     if (!isSpeechActive) {
