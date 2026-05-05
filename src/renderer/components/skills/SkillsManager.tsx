@@ -99,12 +99,6 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   const addSkillButtonRef = useRef<HTMLButtonElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
-  const getImportSuccessKey = (source: DirectImportSource): string => {
-    if (source === 'zip') return 'skillImportSuccessFromZip';
-    if (source === 'folder') return 'skillImportSuccessFromFolder';
-    return 'skillImportSuccessFromRemote';
-  };
-
   const showToast = (message: string) => {
     window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
   };
@@ -304,7 +298,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     if (result.skills) {
       dispatch(setSkills(result.skills));
     }
-    showToast(i18nService.t(getImportSuccessKey(sourceType)));
+    showToast(i18nService.t('skillImportSuccess'));
     setSkillDownloadSource('');
     setIsAddSkillMenuOpen(false);
     setIsRemoteImportOpen(false);
@@ -526,7 +520,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       if (result.success && result.skills) {
         dispatch(setSkills(result.skills));
         if (action !== 'cancel' && pendingImportSource) {
-          showToast(i18nService.t(getImportSuccessKey(pendingImportSource)));
+          showToast(i18nService.t('skillImportSuccess'));
         }
       }
       if (!result.success && result.error) {
