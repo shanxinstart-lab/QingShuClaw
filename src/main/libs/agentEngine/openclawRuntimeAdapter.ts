@@ -3093,13 +3093,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // Flush any pending throttled updates so store content is current.
       this.flushPendingStoreUpdate(sessionId, turn.assistantMessageId);
       this.clearPendingMessageUpdate(turn.assistantMessageId);
-      const storeSession = this.store.getSession(sessionId);
-      const storeMsg = storeSession?.messages.find((m) => m.id === turn.assistantMessageId);
-      if (storeMsg?.content) {
-        this.emit('messageUpdate', sessionId, turn.assistantMessageId, storeMsg.content);
-      }
 
-      const persistedSegmentText = finalSegmentText || previousSegmentText;
+      // Prefer previousSegmentText (from agent stream, preserves formatting) over
+      // finalSegmentText (from extractGatewayMessageText which may corrupt tables).
+      // Fall back to finalSegmentText only when agent stream text is unavailable.
+      const persistedSegmentText = previousSegmentText || finalSegmentText;
       if (persistedSegmentText) {
         this.store.updateMessage(sessionId, turn.assistantMessageId, {
           content: persistedSegmentText,
@@ -3108,9 +3106,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
             isFinal: true,
           },
         });
-        if (persistedSegmentText !== previousSegmentText) {
-          this.emit('messageUpdate', sessionId, turn.assistantMessageId, persistedSegmentText);
-        }
+        this.emit('messageUpdate', sessionId, turn.assistantMessageId, persistedSegmentText);
       }
     } else if (finalSegmentText) {
       const reusedMessageId = this.reuseFinalAssistantMessage(sessionId, finalSegmentText);
