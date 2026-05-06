@@ -419,6 +419,7 @@ export class OpenClawChannelSessionSync {
             parsed.platform,
             newSession.id,
             currentAgentId,
+            sessionKey,
           );
           this.syncedSessionKeys.set(sessionKey, newSession.id);
           // Mark so pollChannelSessions skips full history sync for this session —
@@ -431,6 +432,9 @@ export class OpenClawChannelSessionSync {
           existingMapping.coworkSessionId,
         );
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
+        if (existingMapping.openClawSessionKey !== sessionKey) {
+          this.imStore.updateSessionOpenClawSessionKey(parsed.conversationId, parsed.platform, sessionKey);
+        }
         this.imStore.updateSessionLastActive(parsed.conversationId, parsed.platform);
         return existingMapping.coworkSessionId;
       }
@@ -468,7 +472,7 @@ export class OpenClawChannelSessionSync {
     );
 
     // 6. Persist mapping
-    this.imStore.createSessionMapping(parsed.conversationId, parsed.platform, session.id, agentId);
+    this.imStore.createSessionMapping(parsed.conversationId, parsed.platform, session.id, agentId, sessionKey);
     console.log(
       '[ChannelSessionSync] persisted mapping: conversationId=',
       parsed.conversationId,
@@ -509,6 +513,9 @@ export class OpenClawChannelSessionSync {
       const session = this.coworkStore.getSession(existingMapping.coworkSessionId);
       if (session) {
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
+        if (existingMapping.openClawSessionKey !== sessionKey) {
+          this.imStore.updateSessionOpenClawSessionKey(parsed.conversationId, parsed.platform, sessionKey);
+        }
         return existingMapping.coworkSessionId;
       }
       // Stale mapping, clean up
@@ -516,6 +523,24 @@ export class OpenClawChannelSessionSync {
     }
 
     return null;
+  }
+
+  getOpenClawSessionKeyForCoworkSession(sessionId: string): {
+    isChannelSession: boolean;
+    sessionKey: string | null;
+  } {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return { isChannelSession: false, sessionKey: null };
+    }
+
+    const mapping = this.imStore.getSessionMappingByCoworkSessionId(normalizedSessionId);
+    if (!mapping) {
+      return { isChannelSession: false, sessionKey: null };
+    }
+
+    const sessionKey = mapping.openClawSessionKey?.trim() || null;
+    return { isChannelSession: true, sessionKey };
   }
 
   /** Check whether a sessionKey belongs to a recognized channel, main agent, or cron session. */

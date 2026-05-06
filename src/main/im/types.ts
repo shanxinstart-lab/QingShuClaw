@@ -661,6 +661,7 @@ export interface IMSessionMapping {
   platform: Platform;
   coworkSessionId: string;
   agentId: string;
+  openClawSessionKey?: string;
   createdAt: number;
   lastActiveAt: number;
 }

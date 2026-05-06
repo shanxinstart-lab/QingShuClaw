@@ -746,6 +746,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private readonly bridgedSessions = new Set<string>();
   private readonly lastSystemPromptBySession = new Map<string, string>();
   private readonly lastPatchedModelBySession = new Map<string, string>();
+  private readonly sessionModelPatchQueue = new Map<string, Promise<void>>();
   private readonly gatewayHistoryCountBySession = new Map<string, number>();
   private readonly latestTurnTokenBySession = new Map<string, number>();
 
@@ -1231,11 +1232,21 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const activeTurnSessionKey = this.activeTurns.get(sessionId)?.sessionKey?.trim();
     const rememberedSessionKey = this.getSessionKeysForSession(sessionId)
       .find((key) => !isManagedSessionKey(key));
+    const persistedChannelSession = this.channelSessionSync
+      ?.getOpenClawSessionKeyForCoworkSession(sessionId);
+    const persistedChannelSessionKey = persistedChannelSession?.sessionKey
+      && !isManagedSessionKey(persistedChannelSession.sessionKey)
+      ? persistedChannelSession.sessionKey
+      : '';
     const agentId = session.agentId || 'main';
     const sessionKey = activeTurnSessionKey
       || rememberedSessionKey
-      || this.toSessionKey(sessionId, agentId);
-    this.rememberSessionKey(sessionId, sessionKey);
+      || persistedChannelSessionKey;
+    if (!sessionKey && persistedChannelSession?.isChannelSession) {
+      throw new Error('Cannot patch IM channel session because the OpenClaw session key is missing.');
+    }
+    const targetSessionKey = sessionKey || this.toSessionKey(sessionId, agentId);
+    this.rememberSessionKey(sessionId, targetSessionKey);
     await this.ensureGatewayClientReady();
 
     const normalizedPatch: OpenClawSessionPatch = {
@@ -1245,11 +1256,21 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         : {}),
     };
 
-    const client = this.requireGatewayClient();
-    await client.request('sessions.patch', {
-      key: sessionKey,
-      ...normalizedPatch,
-    });
+    const sendPatch = async (): Promise<void> => {
+      const client = this.requireGatewayClient();
+      await client.request('sessions.patch', {
+        key: targetSessionKey,
+        ...normalizedPatch,
+      });
+    };
+
+    if (normalizedPatch.model !== undefined) {
+      await this.enqueueSessionModelPatch(sessionId, sendPatch);
+      this.lastPatchedModelBySession.delete(sessionId);
+      return;
+    }
+
+    await sendPatch();
   }
 
   stopSession(sessionId: string): void {
@@ -1349,6 +1370,62 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     return this.confirmationModeBySession.get(sessionId) ?? null;
   }
 
+  private async enqueueSessionModelPatch(sessionId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.sessionModelPatchQueue.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch((): void => undefined).then(task);
+    this.sessionModelPatchQueue.set(sessionId, next);
+
+    try {
+      await next;
+    } finally {
+      if (this.sessionModelPatchQueue.get(sessionId) === next) {
+        this.sessionModelPatchQueue.delete(sessionId);
+      }
+    }
+  }
+
+  private async ensureSessionModelForTurn(options: {
+    sessionId: string;
+    sessionKey: string;
+    model: string;
+    source: 'sessionOverride' | 'agentModel';
+  }): Promise<void> {
+    const { sessionId, sessionKey, model, source } = options;
+    if (!model) {
+      this.lastPatchedModelBySession.delete(sessionId);
+      return;
+    }
+
+    const mustPatchBeforeTurn = source === 'sessionOverride';
+    if (!mustPatchBeforeTurn && model === this.lastPatchedModelBySession.get(sessionId)) {
+      return;
+    }
+
+    try {
+      await this.enqueueSessionModelPatch(sessionId, async () => {
+        if (!mustPatchBeforeTurn && model === this.lastPatchedModelBySession.get(sessionId)) {
+          return;
+        }
+
+        const client = this.requireGatewayClient();
+        console.debug(
+          '[OpenClawRuntime] patching the session model before chat.send',
+          `sessionId=${sessionId}`,
+          `sessionKey=${sessionKey}`,
+          `model=${model}`,
+          `source=${source}`,
+        );
+        await client.request('sessions.patch', { key: sessionKey, model });
+        this.lastPatchedModelBySession.set(sessionId, model);
+      });
+    } catch (error) {
+      console.warn('[OpenClawRuntime] failed to patch the session model before chat.send:', error);
+      if (mustPatchBeforeTurn) {
+        throw error;
+      }
+    }
+  }
+
   private async runTurn(
     sessionId: string,
     prompt: string,
@@ -1418,15 +1495,18 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (!session.modelOverride && currentModel && currentModel !== rawCurrentModel && agent?.id) {
       this.store.updateAgent(agent.id, { model: currentModel });
     }
-    if (currentModel && currentModel !== this.lastPatchedModelBySession.get(sessionId)) {
-      try {
-        const client = this.requireGatewayClient();
-        console.log('[OpenClawRuntime] patching session model:', { sessionId, sessionKey, model: currentModel, source: session.modelOverride ? 'sessionOverride' : 'agentModel' });
-        await client.request('sessions.patch', { key: sessionKey, model: currentModel });
-        this.lastPatchedModelBySession.set(sessionId, currentModel);
-      } catch (error) {
-        console.warn('[OpenClawRuntime] Failed to patch session model, will retry on next turn:', error);
-      }
+    try {
+      await this.ensureSessionModelForTurn({
+        sessionId,
+        sessionKey,
+        model: currentModel,
+        source: session.modelOverride ? 'sessionOverride' : 'agentModel',
+      });
+    } catch (error) {
+      this.store.updateSession(sessionId, { status: 'error' });
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit('error', sessionId, message);
+      throw error;
     }
 
     const outboundMessage = await this.buildOutboundPrompt(
@@ -4223,6 +4303,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.confirmationModeBySession.delete(sessionId);
     this.manuallyStoppedSessions.delete(sessionId);
     this.lastPatchedModelBySession.delete(sessionId);
+    this.sessionModelPatchQueue.delete(sessionId);
 
     // Propagate to channel session sync
     if (this.channelSessionSync) {
