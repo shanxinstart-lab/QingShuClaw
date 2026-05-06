@@ -534,10 +534,10 @@ describe('enterpriseConfigSync', () => {
       get: () => undefined,
       set: () => undefined,
     };
-    const setPopoConfigCalls: Array<Record<string, unknown>> = [];
+    const setPopoMultiInstanceCalls: Array<Record<string, unknown>> = [];
     const imStore = {
-      setPopoConfig: (config: Record<string, unknown>) => {
-        setPopoConfigCalls.push(config);
+      setPopoMultiInstanceConfig: (config: Record<string, unknown>) => {
+        setPopoMultiInstanceCalls.push(config);
       },
       setTelegramOpenClawConfig: () => undefined,
       setDiscordOpenClawConfig: () => undefined,
@@ -568,16 +568,22 @@ describe('enterpriseConfigSync', () => {
       () => undefined,
     );
 
-    expect(setPopoConfigCalls).toEqual([
+    expect(setPopoMultiInstanceCalls).toEqual([
       {
-        enabled: true,
-        appKey: 'new-key',
-        appSecret: 'new-secret',
-        connectionMode: 'webhook',
-        aesKey: 'old-aes',
-        dmPolicy: 'allowlist',
-        allowFrom: ['u1'],
-        webhookPort: 3200,
+        instances: [
+          {
+            enabled: true,
+            appKey: 'new-key',
+            appSecret: 'new-secret',
+            connectionMode: 'webhook',
+            aesKey: 'old-aes',
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+            webhookPort: 3200,
+            instanceId: 'default',
+            instanceName: 'POPO Bot 1',
+          },
+        ],
       },
     ]);
   });
