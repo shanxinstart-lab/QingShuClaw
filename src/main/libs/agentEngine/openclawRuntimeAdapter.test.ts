@@ -930,3 +930,43 @@ test('getSessionKeysForSession prefers channel keys before managed fallback', ()
     'agent:main:lobsterai:session-1',
   ]);
 });
+
+test('patchSession uses the persisted IM channel session key for model updates', async () => {
+  const channelSessionKey = 'agent:agent-1:openclaw-weixin:bot-1:direct:user-1';
+  const { session, store } = createHistoryStore([]);
+  session.agentId = 'agent-1';
+  session.modelOverride = 'qwen-portal/qwen3.6-plus';
+
+  const patchRequests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const adapter = new OpenClawRuntimeAdapter(store, {
+    startGateway: async () => ({ phase: 'running' }),
+    getGatewayConnectionInfo: () => ({}),
+  } as never);
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: async (method: string, params?: Record<string, unknown>) => {
+      patchRequests.push({ method, params });
+      return {};
+    },
+  };
+  adapter.ensureGatewayClientReady = async () => {};
+  adapter.setChannelSessionSync({
+    getOpenClawSessionKeyForCoworkSession: (sessionId: string) => ({
+      isChannelSession: sessionId === session.id,
+      sessionKey: channelSessionKey,
+    }),
+  } as never);
+
+  await adapter.patchSession(session.id, { model: 'deepseek/deepseek-v4' });
+
+  expect(patchRequests).toEqual([
+    {
+      method: 'sessions.patch',
+      params: {
+        key: channelSessionKey,
+        model: 'deepseek/deepseek-v4',
+      },
+    },
+  ]);
+});
