@@ -16,6 +16,7 @@ import { buildSessionTitleFromInput } from '../common/sessionTitle';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw,migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
 import { type Platform as SharedPlatform,PlatformRegistry } from '../shared/platform';
+import { ProviderName } from '../shared/providers';
 import {
   getQingShuManagedCapabilityErrorCode,
   QingShuManagedAccessState,
@@ -80,7 +81,7 @@ import {
 } from './libs/agentEngine';
 import { cancelActiveDownload,downloadUpdate, installUpdate } from './libs/appUpdateInstaller';
 import { AssistantSpeechGuard } from './libs/assistantSpeechGuard';
-import { clearServerModelMetadata,getCurrentApiConfig, resolveCurrentApiConfig, setAuthTokensGetter, setServerBaseUrlGetter, setStoreGetter, updateServerModelMetadata } from './libs/claudeSettings';
+import { clearServerModelMetadata,getAllServerModelMetadata, getCurrentApiConfig, resolveCurrentApiConfig, setAuthTokensGetter, setServerBaseUrlGetter, setStoreGetter, updateServerModelMetadata } from './libs/claudeSettings';
 import {
   clearCopilotTokenState,
   initCopilotTokenManager,
@@ -108,6 +109,7 @@ import {
 import type { McpBridgeConfig } from './libs/openclawConfigSync';
 import { OpenClawConfigSync } from './libs/openclawConfigSync';
 import { OpenClawEngineManager, type OpenClawEngineStatus } from './libs/openclawEngineManager';
+import { parsePrimaryModelRef } from './libs/openclawAgentModels';
 import {
   addMemoryEntry,
   deleteMemoryEntry,
@@ -996,6 +998,36 @@ const getAgentManager = () => {
   return agentManager;
 };
 
+const isLobsteraiServerModelRef = (modelRef: string): boolean => {
+  const normalized = modelRef.trim();
+  if (!normalized) return false;
+
+  const parsed = parsePrimaryModelRef(normalized);
+  if (parsed) {
+    return parsed.providerId === ProviderName.LobsteraiServer;
+  }
+
+  return getAllServerModelMetadata().some((model) => model.modelId === normalized);
+};
+
+const shouldRefreshServerQuotaForSession = (sessionId: string): boolean => {
+  const sessionRecord = getCoworkStore().getSession(sessionId);
+  const sessionModelRef = sessionRecord?.modelOverride?.trim();
+  if (sessionModelRef) {
+    return isLobsteraiServerModelRef(sessionModelRef);
+  }
+
+  const agentModelRef = sessionRecord?.agentId
+    ? getAgentManager().getAgent(sessionRecord.agentId)?.model?.trim()
+    : '';
+  if (agentModelRef) {
+    return isLobsteraiServerModelRef(agentModelRef);
+  }
+
+  const apiConfig = resolveCurrentApiConfig();
+  return apiConfig.providerMetadata?.providerName === ProviderName.LobsteraiServer;
+};
+
 const listWorkspaceSkillInstalls = (): Array<{
   agentId: string;
   agentName: string;
@@ -1553,10 +1585,9 @@ const bindCoworkRuntimeForwarder = (): void => {
       disarmSpeechFollowUp(`session ${sessionId} finished`);
       assistantSpeechGuard?.scheduleFollowUp(followUpDecision.request);
     }
-    // If session used a server model, notify renderer to refresh quota
+    // If this session used a server model, notify renderer to refresh quota.
     try {
-      const apiConfig = resolveCurrentApiConfig();
-      if (apiConfig.providerMetadata?.providerName === 'lobsterai-server') {
+      if (shouldRefreshServerQuotaForSession(sessionId)) {
         const windows = BrowserWindow.getAllWindows();
         windows.forEach((win) => {
           if (win.isDestroyed()) return;
