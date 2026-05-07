@@ -696,6 +696,26 @@ OpenClaw 本地处理：
    - 已执行 `./node_modules/.bin/tsc --noEmit`
    - 当前这轮新增改动通过编译
 
+## 补充：OpenClaw 网关启动失败兼容修复
+
+新包启动时报 `OpenClaw 网关未能在规定时间内启动成功`，检查网关日志后确认不是品牌层或青数治理链导致，而是 `openclaw.json` 中写入了当前打包 OpenClaw runtime schema 不支持的字段：
+
+1. 失败现象
+   - 日志文件：`~/Library/Application Support/LobsterAI/openclaw/logs/gateway-2026-05-07.log`
+   - 报错核心：`agents.defaults: Unrecognized key: "cwd"`
+   - 配置文件：`~/Library/Application Support/LobsterAI/openclaw/state/openclaw.json`
+2. 根因
+   - 合入 `main` 的 workspace / cwd 解耦逻辑后，当前分支在 `agents.defaults` 下额外写入了 `cwd`
+   - 当前打包 OpenClaw runtime 只接受 `workspace`，不接受 `agents.defaults.cwd`
+   - `chat.send` 和 `sessions.patch` 当前也不接受 `cwd`，所以不能把该字段简单换位置继续传
+3. 修复
+   - 文件：`src/main/libs/openclawConfigSync.ts`
+   - 处理：移除 `agents.defaults.cwd` 写入，只保留当前 schema 支持的 `agents.defaults.workspace`
+   - 影响：下一次配置同步会整份重写 `openclaw.json`，历史坏字段会被自然清理
+4. 后续注意
+   - 如果未来 OpenClaw runtime 明确支持 cwd 解耦，再恢复对应配置
+   - 在 runtime schema 未升级前，不要把 `cwd` 写入 `agents.defaults`、`chat.send` 或 `sessions.patch`
+
 ## 补充：2026-05-07 对齐最新 main 的公共能力更新
 
 本轮先将远程 `origin/main` 拉取到本地，并确认本地 `main` 已快进到 `origin/main` 最新提交 `2e211204`。当前工作分支仍为 `front-design-merge`，没有切换到 `main` 上直接开发。

@@ -1012,7 +1012,6 @@ export class OpenClawConfigSync {
     console.log(`[OpenClawConfigSync] sandbox mode: ${sandboxMode} (executionMode: ${coworkConfig.executionMode || 'auto'})`);
 
     const mainWorkspacePath = getMainAgentWorkspacePath(this.engineManager.getStateDir());
-    const taskWorkingDirectory = (coworkConfig.workingDirectory || '').trim();
     ensureDir(mainWorkspacePath);
 
     const hasMcpBridgePlugin = isBundledPluginAvailable('mcp-bridge');
@@ -1127,8 +1126,8 @@ export class OpenClawConfigSync {
           sandbox: {
             mode: sandboxMode,
           },
+          // 当前打包的 OpenClaw schema 不接受 agents.defaults.cwd，避免网关启动前配置校验失败。
           workspace: path.resolve(mainWorkspacePath),
-          ...(taskWorkingDirectory ? { cwd: path.resolve(taskWorkingDirectory) } : {}),
         },
         ...this.buildAgentsList(providerSelection.primaryModel, this.engineManager.getStateDir()),
       },

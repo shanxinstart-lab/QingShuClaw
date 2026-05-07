@@ -1206,8 +1206,21 @@ export class OpenClawEngineManager extends EventEmitter {
     try {
       const raw = fs.readFileSync(this.configPath, 'utf8');
       const config = JSON.parse(raw);
+      let changed = false;
       if (!config.gateway?.mode) {
         config.gateway = { ...config.gateway, mode: 'local' };
+        changed = true;
+      }
+      if (
+        config.agents?.defaults
+        && typeof config.agents.defaults === 'object'
+        && Object.prototype.hasOwnProperty.call(config.agents.defaults, 'cwd')
+      ) {
+        delete config.agents.defaults.cwd;
+        changed = true;
+        console.warn('[OpenClaw] removed unsupported agents.defaults.cwd from config before gateway start');
+      }
+      if (changed) {
         fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
       }
     } catch {
