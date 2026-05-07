@@ -4913,12 +4913,6 @@ if (!gotTheLock) {
   ipcMain.handle('im:weixin:qr-login-wait', async (_event, accountId?: string) => {
     try {
       const result = await getIMGatewayManager().weixinQrLoginWait(accountId);
-      if (result.connected) {
-        // Restart gateway so the plugin picks up the new token and starts
-        // a fresh monitor loop (the old one may be stuck in a session pause).
-        console.log('[IMGatewayManager] Weixin login succeeded, restarting OpenClaw gateway');
-        await requestGatewayRestart('weixin-login-succeeded');
-      }
       return { success: true, ...result };
     } catch (error) {
       return { success: false, connected: false, message: error instanceof Error ? error.message : 'Weixin QR login failed' };
