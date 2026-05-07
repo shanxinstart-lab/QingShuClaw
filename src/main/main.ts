@@ -176,6 +176,9 @@ const ENGINE_NOT_READY_CODE = 'ENGINE_NOT_READY';
 const PowerSaveBlockerType = {
   PreventAppSuspension: 'prevent-app-suspension',
 } as const;
+const RENAMED_PROVIDER_IDS: Record<string, string> = {
+  'github-copilot': 'lobsterai-copilot',
+};
 const MIME_EXTENSION_MAP: Record<string, string> = {
   'image/png': '.png',
   'image/jpeg': '.jpg',
@@ -6237,6 +6240,10 @@ if (!gotTheLock) {
     console.log('[Main] initApp: resetRunningSessions done, count:', resetCount);
     if (resetCount > 0) {
       console.log(`[Main] Reset ${resetCount} stuck cowork session(s) from running -> idle`);
+    }
+    const migratedAgentModelCount = getAgentManager().migrateRenamedProviderModelRefs(RENAMED_PROVIDER_IDS);
+    if (migratedAgentModelCount > 0) {
+      console.log(`[Main] Migrated ${migratedAgentModelCount} agent model ref(s) for renamed providers`);
     }
     // Inject store getter into claudeSettings
     setStoreGetter(() => store);

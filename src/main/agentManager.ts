@@ -5,6 +5,25 @@ type AgentManagerDeps = {
   getManagedAgents?: () => Agent[];
 };
 
+export function rewriteRenamedProviderModelRef(
+  modelRef: string,
+  renamedProviderIds: Record<string, string>,
+): string {
+  const normalized = modelRef.trim();
+  const slashIdx = normalized.indexOf('/');
+  if (slashIdx <= 0) {
+    return modelRef;
+  }
+
+  const providerId = normalized.slice(0, slashIdx);
+  const renamedProviderId = renamedProviderIds[providerId];
+  if (!renamedProviderId) {
+    return modelRef;
+  }
+
+  return `${renamedProviderId}${normalized.slice(slashIdx)}`;
+}
+
 /**
  * AgentManager handles CRUD operations for agents and preset agent installation.
  * Agents are stored in the SQLite `agents` table via CoworkStore.
@@ -42,6 +61,19 @@ export class AgentManager {
       throw new Error('Managed agents are read-only');
     }
     return this.store.updateAgent(agentId, updates);
+  }
+
+  migrateRenamedProviderModelRefs(renamedProviderIds: Record<string, string>): number {
+    let changed = 0;
+    for (const agent of this.store.listAgents()) {
+      const nextModel = rewriteRenamedProviderModelRef(agent.model, renamedProviderIds);
+      if (nextModel === agent.model) {
+        continue;
+      }
+      this.store.updateAgent(agent.id, { model: nextModel });
+      changed += 1;
+    }
+    return changed;
   }
 
   deleteAgent(agentId: string): boolean {
