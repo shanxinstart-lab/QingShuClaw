@@ -621,6 +621,32 @@ function main() {
     }
   }
 
+  // --- Post-install patch: openclaw-weixin dmPolicy from config ---
+  // Some openclaw-weixin builds hardcode dmPolicy:"pairing" and
+  // configuredAllowFrom:[] in process-message.ts, ignoring openclaw.json.
+  // Patch the plugin to honor channels.openclaw-weixin.dmPolicy/allowFrom.
+  const weixinProcessMsgPath = path.join(runtimeExtensionsDir, 'openclaw-weixin', 'src', 'messaging', 'process-message.ts');
+  if (fs.existsSync(weixinProcessMsgPath)) {
+    let pmSrc = fs.readFileSync(weixinProcessMsgPath, 'utf8');
+    const dmPolicyPatchMarker = 'chanCfg_dmPolicy_patch';
+    if (!pmSrc.includes(dmPolicyPatchMarker)) {
+      const oldDmPolicy = 'dmPolicy: "pairing",';
+      const oldAllowFrom = 'configuredAllowFrom: [],';
+      const patchedDmPolicy = `dmPolicy: (() => { /* ${dmPolicyPatchMarker} */ const _cc = (deps.config.channels)?.['openclaw-weixin'] ?? {}; return _cc.dmPolicy || 'pairing'; })(),`;
+      if (pmSrc.includes(oldDmPolicy) && pmSrc.includes(oldAllowFrom)) {
+        pmSrc = pmSrc.replaceAll(oldDmPolicy, patchedDmPolicy);
+        pmSrc = pmSrc.replace(
+          oldAllowFrom,
+          `configuredAllowFrom: (() => { const _cc = (deps.config.channels)?.['openclaw-weixin'] ?? {}; return Array.isArray(_cc.allowFrom) ? _cc.allowFrom.map(String) : []; })(),`,
+        );
+        fs.writeFileSync(weixinProcessMsgPath, pmSrc);
+        log('Patched openclaw-weixin/src/messaging/process-message.ts: dmPolicy/allowFrom now read from config');
+      }
+    } else {
+      log('openclaw-weixin/src/messaging/process-message.ts dmPolicy patch already applied, skipping');
+    }
+  }
+
   // --- Post-install patch: openclaw-lark deferred startup loading ---
   // The openclaw-lark plugin eagerly loads the 86K-line @larksuiteoapi/node-sdk and
   // 186 source files at startup, adding ~8s to the 30s plugin loading phase.
