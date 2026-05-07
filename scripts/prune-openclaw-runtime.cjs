@@ -258,6 +258,33 @@ function main() {
     }
   }
 
+  const thirdPartyDir = path.join(runtimeRoot, 'third-party-extensions');
+
+  // Step 1a: Prefer external openclaw-lark over bundled feishu when both are present.
+  const externalLarkDir = path.join(thirdPartyDir, 'openclaw-lark');
+  const bundledFeishuDir = path.join(distExtDir, 'feishu');
+  if (fs.existsSync(externalLarkDir) && fs.existsSync(bundledFeishuDir)) {
+    const size = getDirSize(bundledFeishuDir);
+    fs.rmSync(bundledFeishuDir, { recursive: true, force: true });
+    stats.bytesFreed += size;
+    stats.dirsRemoved++;
+    console.log(
+      `[prune-openclaw-runtime] Removed bundled feishu because openclaw-lark is present (${(size / 1024 / 1024).toFixed(1)} MB)`
+    );
+  }
+
+  // Step 1b: Remove stale external qqbot payloads from older builds.
+  const staleExternalQqbotDir = path.join(thirdPartyDir, 'openclaw-qqbot');
+  if (fs.existsSync(staleExternalQqbotDir)) {
+    const size = getDirSize(staleExternalQqbotDir);
+    fs.rmSync(staleExternalQqbotDir, { recursive: true, force: true });
+    stats.bytesFreed += size;
+    stats.dirsRemoved++;
+    console.log(
+      `[prune-openclaw-runtime] Removed stale external openclaw-qqbot (${(size / 1024 / 1024).toFixed(1)} MB)`
+    );
+  }
+
   // Step 2: Replace large unnecessary packages with stubs
   for (const pkgName of PACKAGES_TO_STUB) {
     stubPackage(path.join(nodeModulesDir, pkgName), pkgName, stats);
