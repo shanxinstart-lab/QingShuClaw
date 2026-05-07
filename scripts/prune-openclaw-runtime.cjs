@@ -330,6 +330,28 @@ function main() {
     } catch { /* ignore */ }
   }
 
+  // Step 2c: Remove openclaw SDK duplicates from third-party-extensions.
+  // The host gateway already provides the SDK, so plugin-local copies are redundant.
+  if (fs.existsSync(thirdPartyDir)) {
+    try {
+      for (const plugin of fs.readdirSync(thirdPartyDir, { withFileTypes: true })) {
+        if (!plugin.isDirectory()) continue;
+        const duplicateOpenClawDir = path.join(thirdPartyDir, plugin.name, 'node_modules', 'openclaw');
+        if (!fs.existsSync(duplicateOpenClawDir)) continue;
+
+        const size = getDirSize(duplicateOpenClawDir);
+        fs.rmSync(duplicateOpenClawDir, { recursive: true, force: true });
+        stats.bytesFreed += size;
+        stats.dirsRemoved++;
+        console.log(
+          `[prune-openclaw-runtime] Removed duplicate openclaw SDK from ${plugin.name} (${(size / 1024 / 1024).toFixed(1)} MB)`
+        );
+      }
+    } catch (err) {
+      console.warn(`[prune-openclaw-runtime] Failed to prune openclaw from third-party-extensions: ${err.message}`);
+    }
+  }
+
   // Step 3: Clean unnecessary files from node_modules only
   cleanDir(nodeModulesDir, stats);
 
