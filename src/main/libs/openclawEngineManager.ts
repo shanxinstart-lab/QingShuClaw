@@ -680,7 +680,16 @@ export class OpenClawEngineManager extends EventEmitter {
           path.join(process.cwd(), 'vendor', 'openclaw-runtime', 'current'),
         ];
 
-    const runtimeRoot = findPath(candidateRoots);
+    const runtimeRoot = (() => {
+      const found = findPath(candidateRoots);
+      if (!found) return null;
+
+      try {
+        return fs.realpathSync(found);
+      } catch {
+        return found;
+      }
+    })();
     const expectedPathHint = app.isPackaged
       ? path.join(process.resourcesPath, 'cfmind')
       : path.join(app.getAppPath(), 'vendor', 'openclaw-runtime', 'current');
