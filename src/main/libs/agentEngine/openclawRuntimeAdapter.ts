@@ -2489,11 +2489,19 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private handleAgentLifecycleEvent(sessionId: string, data: unknown): void {
     if (!isRecord(data)) return;
-    const phase = typeof data.phase === 'string' ? data.phase.trim() : '';
-    if (phase === 'start') {
+    const phase = getAgentLifecyclePhase(data);
+    if (phase === AgentLifecyclePhase.Fallback) {
+      return;
+    }
+    if (phase === AgentLifecyclePhase.Start) {
       this.store.updateSession(sessionId, { status: 'running' });
     }
-    if (phase === 'end') {
+    if (phase === AgentLifecyclePhase.End) {
+      // Deferred completion fallback: the gateway should send a `chat state=final`
+      // event that triggers handleChatFinal(). But after the OpenClaw upgrade, this
+      // event may not arrive reliably for IM channel sessions.  The agent lifecycle
+      // `phase=end` event IS reliable.  Wait a short window for handleChatFinal() to
+      // run; if the turn is still active after that, complete it ourselves.
       const FALLBACK_DELAY_MS = 3000;
       const endingTurn = this.activeTurns.get(sessionId);
       const endingRunId =
@@ -2508,13 +2516,30 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }, FALLBACK_DELAY_MS);
     }
 
-    if (phase === 'error') {
+    if (phase === AgentLifecyclePhase.Error) {
+      // Deferred error fallback: the gateway should also send a `chat state=error`
+      // event that triggers handleChatError().  But after the OpenClaw upgrade, this
+      // event may not arrive reliably — similar to the phase=end / chat final gap.
+      // Wait a short window for handleChatError() to run first; if the turn is still
+      // active after that, surface the error ourselves.
       const errorMessage = typeof data.error === 'string' ? data.error.trim() : 'OpenClaw run failed';
       const ERROR_FALLBACK_DELAY_MS = 2000;
       setTimeout(() => {
         const turn = this.activeTurns.get(sessionId);
         if (!turn) return;
         console.log('[OpenClawRuntime] agent lifecycle error fallback: surfacing error that missed chat error event, sessionId:', sessionId, 'error:', errorMessage);
+        // Abort the retrying run on the gateway so the session is freed for new messages.
+        // Without this, the gateway continues retrying indefinitely and rejects subsequent chat.send requests.
+        const client = this.gatewayClient;
+        if (client) {
+          console.log('[OpenClawRuntime] lifecycle error fallback: sending chat.abort to gateway, sessionKey:', turn.sessionKey, 'runId:', turn.runId);
+          void client.request('chat.abort', {
+            sessionKey: turn.sessionKey,
+            runId: turn.runId,
+          }).catch((err) => {
+            console.warn('[OpenClawRuntime] lifecycle error fallback: chat.abort failed:', err);
+          });
+        }
         const erroredSessionKey = turn.sessionKey;
         this.store.updateSession(sessionId, { status: 'error' });
         const errorMsg = this.store.addMessage(sessionId, {
@@ -2713,6 +2738,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const chatPayload = payload as ChatEventPayload;
     const state = chatPayload.state;
     if (!state) return;
+    const runId = typeof chatPayload.runId === 'string' ? chatPayload.runId.trim() : '';
     console.debug(
       '[OpenClawRuntime] handleChatEvent:',
       `state=${state}`,
@@ -2721,9 +2747,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       `message=${summarizeGatewayMessageShape(chatPayload.message)}`
     );
 
-    const chatRunId = typeof chatPayload.runId === 'string' ? chatPayload.runId.trim() : '';
-    const chatSessionKey = typeof chatPayload.sessionKey === 'string' ? chatPayload.sessionKey.trim() : '';
-    if (chatRunId && this.isRecentlyClosedRunId(chatRunId)) {
+    if (runId && this.isRecentlyClosedRunId(runId)) {
       console.debug('[OpenClawRuntime] dropped late chat event for a closed run.');
       return;
     }
@@ -2747,7 +2771,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
 
-    const runId = typeof chatPayload.runId === 'string' ? chatPayload.runId.trim() : '';
     if (typeof seq === 'number' && Number.isFinite(seq) && runId) {
       const lastSeq = this.lastChatSeqByRunId.get(runId);
       if (lastSeq !== undefined && seq <= lastSeq) {
@@ -3224,11 +3247,12 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Detect thinking-only response: the last API call returned no visible text
     // (only a thinking block), causing the run to complete silently without output.
     // This happens with qwen3.5-plus under very large context (~380K tokens).
-    // Signal: turn.currentText is empty AND there was at least one tool call in the run.
+    // Signal: turn.currentText is empty AND there was at least one tool call in THIS turn.
+    // Scoped to the current turn to avoid false positives when previous turns had tool calls
+    // but the current turn returned empty (e.g. session busy, network error).
     const sessionAfterReconcile = this.store.getSession(sessionId);
     if (sessionAfterReconcile) {
-      const msgs = sessionAfterReconcile.messages;
-      const hadToolCall = msgs.some((m) => m.type === 'tool_result');
+      const hadToolCall = turn.toolResultMessageIdByToolCallId.size > 0;
       const lastApiResponseHadNoText = !turn.currentText.trim();
       console.debug('[OpenClawRuntime] run end diagnostics, sessionId:', sessionId,
         'turn.currentText:', JSON.stringify(turn.currentText?.slice(0, 100)),
