@@ -160,7 +160,7 @@ type ActiveTurn = {
   agentAssistantTextLength: number;
   /**
    * Once true for the current assistant segment, chat.delta must not overwrite
-   * currentAssistantSegmentText, even if agentAssistantTextLength is reset.
+   * `currentAssistantSegmentText` (even if agentAssistantTextLength is reset).
    */
   hasSeenAgentAssistantStream: boolean;
   /** Dedup debug log when chat.delta tries to overwrite an agent-owned segment. */
@@ -2942,6 +2942,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       turn.hasSeenAgentAssistantStream = true;
     }
 
+    if (text.trim().length > 0) {
+      turn.hasSeenAgentAssistantStream = true;
+    }
+
     // Update turn text state and push to store.
     turn.currentText = text;
     turn.currentAssistantSegmentText = this.resolveAssistantSegmentText(turn, text);
@@ -3076,10 +3080,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     if (turn.assistantMessageId && segmentText !== previousSegmentText) {
-      // Only update segment text from chat.delta if this segment has NOT yet
-      // received agent assistant stream text. Agent stream preserves formatting;
-      // chat.delta uses normalized content extraction and can break GFM tables
-      // when the gateway splits content inside a table row.
+      // Only update segment text from chat delta if this segment has NOT yet received
+      // agent assistant stream text. Agent stream preserves formatting; chat delta uses
+      // extractGatewayMessageText (multi-block trim/join), which can break GFM tables.
+      // hasSeenAgentAssistantStream stays true across agentAssistantTextLength resets
+      // (e.g. split before tool) until a new assistant segment begins.
       if (!turn.hasSeenAgentAssistantStream) {
         turn.currentAssistantSegmentText = segmentText;
       } else if (!turn.chatDeltaOverwriteSkipLogged) {
