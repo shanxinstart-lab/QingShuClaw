@@ -381,4 +381,11 @@ function main() {
   );
 }
 
-main();
+module.exports = {
+  BUNDLED_EXTENSIONS_TO_KEEP,
+  shouldKeepBundledExtension,
+};
+
+if (require.main === module) {
+  main();
+}
