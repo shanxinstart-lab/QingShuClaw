@@ -9,7 +9,7 @@ import {
   getCoworkOpenAICompatProxyStatus,
 } from './coworkOpenAICompatProxy';
 import { normalizeProviderApiFormat, type AnthropicApiFormat } from './coworkFormatTransform';
-import { ProviderName, resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
 
 const LOBSTERAI_SERVER_PROXY_PATH = '/api/qingshu-claw/proxy/v1';
 
@@ -131,7 +131,11 @@ function normalizeProviderModels(providerName: string, models?: ProviderModel[])
       ...model,
       id: model.id,
       name: model.name || model.id,
-      supportsImage: model.supportsImage,
+      supportsImage: ProviderRegistry.resolveModelSupportsImage(
+        providerName,
+        model.id,
+        model.supportsImage,
+      ),
     }));
 }
 
@@ -320,7 +324,10 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   return {
     matched: {
       providerName,
-      providerConfig,
+      providerConfig: {
+        ...providerConfig,
+        models: normalizedModels,
+      },
       modelId,
       apiFormat,
       baseURL,

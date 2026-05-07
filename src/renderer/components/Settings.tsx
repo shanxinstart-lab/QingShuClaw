@@ -271,6 +271,11 @@ const shouldAutoSwitchProviderBaseUrl = (provider: ProviderType, currentBaseUrl:
 };
 const CONNECTIVITY_TEST_TOKEN_BUDGET = 64;
 
+const resolveModelSupportsImageForProvider = (
+  providerName: string,
+  model: { id: string; supportsImage?: boolean },
+): boolean => ProviderRegistry.resolveModelSupportsImage(providerName, model.id, model.supportsImage);
+
 const getDefaultProviders = (): ProvidersConfig => {
   const providers = (defaultConfig.providers ?? {}) as ProvidersConfig;
   const entries = Object.entries(providers) as Array<[string, ProviderConfig]>;
@@ -281,7 +286,7 @@ const getDefaultProviders = (): ProvidersConfig => {
         ...providerConfig,
         models: providerConfig.models?.map(model => ({
           ...model,
-          supportsImage: model.supportsImage ?? false,
+          supportsImage: resolveModelSupportsImageForProvider(providerKey, model),
         })),
       },
     ])
@@ -833,7 +838,7 @@ const Settings: React.FC<SettingsProps> = ({
             Object.entries(merged).map(([providerKey, providerConfig]) => {
               const models = providerConfig.models?.map(model => ({
                 ...model,
-                supportsImage: model.supportsImage ?? false,
+                supportsImage: resolveModelSupportsImageForProvider(providerKey, model),
               }));
               return [
                 providerKey,
@@ -1807,7 +1812,7 @@ const Settings: React.FC<SettingsProps> = ({
               name: model.name,
               provider: getProviderDisplayName(providerName, config),
               providerKey: providerName,
-              supportsImage: model.supportsImage ?? false,
+              supportsImage: resolveModelSupportsImageForProvider(providerName, model),
             });
           });
         }
@@ -1953,7 +1958,11 @@ const Settings: React.FC<SettingsProps> = ({
     const nextModel = {
       id: modelId,
       name: modelName,
-      supportsImage: newModelSupportsImage,
+      supportsImage: ProviderRegistry.resolveModelSupportsImage(
+        activeProvider,
+        modelId,
+        newModelSupportsImage,
+      ),
     };
     const updatedModels = isEditingModel && editingModelId
       ? currentModels.map(model => (model.id === editingModelId ? nextModel : model))
@@ -2156,10 +2165,10 @@ const Settings: React.FC<SettingsProps> = ({
     };
   };
 
-  const normalizeModels = (models?: Model[]) =>
+  const normalizeModels = (providerKey: string, models?: Model[]) =>
     models?.map(model => ({
       ...model,
-      supportsImage: model.supportsImage ?? false,
+      supportsImage: resolveModelSupportsImageForProvider(providerKey, model),
     }));
 
   const DEFAULT_EXPORT_PASSWORD = EXPORT_PASSWORD;
@@ -2276,7 +2285,7 @@ const Settings: React.FC<SettingsProps> = ({
           }
         }
 
-        const models = normalizeModels(providerData.models);
+        const models = normalizeModels(providerKey, providerData.models);
         const existing = providers[providerKey];
 
         providerUpdates[providerKey] = {
@@ -2360,7 +2369,7 @@ const Settings: React.FC<SettingsProps> = ({
           }
         }
 
-        const models = normalizeModels(providerData.models);
+        const models = normalizeModels(providerKey, providerData.models);
         const existing = providers[providerKey];
 
         providerUpdates[providerKey] = {

@@ -8,6 +8,7 @@ import {
   defaultConfig,
   isCustomProvider,
 } from '../config';
+import { type ProviderConfig, ProviderRegistry } from '../../shared/providers';
 import { TtsEngine } from '../../shared/tts/constants';
 import { localStore } from './store';
 
@@ -66,6 +67,18 @@ const normalizeProviderApiFormat = (providerKey: string, apiFormat: unknown): 'a
   return 'anthropic';
 };
 
+const normalizeProviderModels = (
+  providerKey: string,
+  models: ProviderConfig['models'],
+): ProviderConfig['models'] => models?.map(model => ({
+  ...model,
+  supportsImage: ProviderRegistry.resolveModelSupportsImage(
+    providerKey,
+    model.id,
+    model.supportsImage,
+  ),
+}));
+
 const normalizeProvidersConfig = (providers: AppConfig['providers']): AppConfig['providers'] => {
   if (!providers) {
     return providers;
@@ -78,6 +91,7 @@ const normalizeProvidersConfig = (providers: AppConfig['providers']): AppConfig[
         ...providerConfig,
         baseUrl: normalizeProviderBaseUrl(providerKey, providerConfig.baseUrl),
         apiFormat: normalizeProviderApiFormat(providerKey, providerConfig.apiFormat),
+        models: normalizeProviderModels(providerKey, providerConfig.models as ProviderConfig['models']),
       },
     ])
   ) as AppConfig['providers'];
@@ -181,6 +195,18 @@ const REMOVED_PROVIDER_MODELS: Record<string, string[]> = {
 // so the models follow normal user-editable behavior (same as other models).
 // position: 'start' inserts at the beginning, 'end' appends at the end.
 const ADDED_PROVIDER_MODELS: Record<string, { models: Array<{ id: string; name: string; supportsImage?: boolean }>; position: 'start' | 'end' }> = {
+  qwen: {
+    models: [
+      { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus', supportsImage: true },
+    ],
+    position: 'start',
+  },
+  volcengine: {
+    models: [
+      { id: 'doubao-seed-2-0-pro-260215', name: 'Doubao-Seed-2.0-pro', supportsImage: true },
+    ],
+    position: 'start',
+  },
   minimax: {
     models: [
       { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', supportsImage: false },
@@ -238,6 +264,10 @@ class ConfigService {
                     ...mergedProvider,
                     baseUrl: normalizeProviderBaseUrl(providerKey, mergedProvider.baseUrl),
                     apiFormat: normalizeProviderApiFormat(providerKey, mergedProvider.apiFormat),
+                    models: normalizeProviderModels(
+                      providerKey,
+                      mergedProvider.models as ProviderConfig['models'],
+                    ),
                   };
                 })(),
               ])

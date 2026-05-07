@@ -5,7 +5,7 @@ import type { CoworkConfig, CoworkExecutionMode, Agent } from '../coworkStore';
 import type { TelegramOpenClawConfig, DiscordOpenClawConfig, IMSettings } from '../im/types';
 import type { DingTalkInstanceConfig, FeishuInstanceConfig, QQInstanceConfig, WecomInstanceConfig, PopoOpenClawConfig, NimConfig, WeixinOpenClawConfig, NeteaseBeeChanConfig } from '../im/types';
 import { PlatformRegistry } from '../../shared/platform';
-import { AuthType, ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiConst } from '../../shared/providers';
+import { AuthType, ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiConst, ProviderRegistry } from '../../shared/providers';
 import { resolveRawApiConfig, resolveAllProviderApiKeys, resolveAllEnabledProviderConfigs, getAllServerModelMetadata } from './claudeSettings';
 import type { OpenClawEngineManager } from './openclawEngineManager';
 import { getMainAgentWorkspacePath } from './openclawMemoryFile';
@@ -667,7 +667,12 @@ export const buildProviderSelection = (options: {
     : options.modelId;
 
   const providerModelName = resolveModelDisplayName(sessionModelId, options.modelName);
-  const modelInput: string[] = options.supportsImage ? ['text', 'image'] : ['text'];
+  const supportsImage = ProviderRegistry.resolveModelSupportsImage(
+    providerName,
+    options.modelId,
+    options.supportsImage,
+  );
+  const modelInput: string[] = supportsImage ? ['text', 'image'] : ['text'];
 
   // moonshot reasoning depends on modelId containing 'thinking'
   const dynamicReasoning =
@@ -749,6 +754,21 @@ const normalizeMcpBridgeToolManifestEntry = (
   ...tool,
   inputSchema: normalizeMcpToolInputSchemaForOpenAI(tool.inputSchema) as Record<string, unknown>,
 });
+
+const upsertProviderModel = (
+  providerConfig: OpenClawProviderSelection['providerConfig'],
+  model: OpenClawProviderSelection['providerConfig']['models'][number],
+): void => {
+  const existingIndex = providerConfig.models.findIndex(existing => existing.id === model.id);
+  if (existingIndex >= 0) {
+    providerConfig.models[existingIndex] = {
+      ...providerConfig.models[existingIndex],
+      ...model,
+    };
+    return;
+  }
+  providerConfig.models.push(model);
+};
 
 const resolveExternalPluginLoadPaths = (pluginIds: string[]): string[] => {
   const seen = new Set<string>();
@@ -982,30 +1002,44 @@ export class OpenClawConfigSync {
     }
 
     const proxyPort = getOpenClawTokenProxyPort();
-    if (proxyPort && !allProvidersMap[ProviderName.LobsteraiServer]) {
+    if (proxyPort) {
       const serverModels = getAllServerModelMetadata();
-      const firstServerModelId = serverModels[0]?.modelId || modelId;
-      const firstServerSel = buildProviderSelection({
-        apiKey: 'proxy-managed',
-        baseURL: `http://127.0.0.1:${proxyPort}/v1`,
-        modelId: firstServerModelId,
-        apiType: 'openai',
-        providerName: ProviderName.LobsteraiServer,
-        supportsImage: serverModels[0]?.supportsImage,
-      });
-      const lobsteraiProviderConfig = { ...firstServerSel.providerConfig, models: [] as typeof firstServerSel.providerConfig.models };
-      for (const sm of serverModels) {
-        lobsteraiProviderConfig.models.push({
-          id: sm.modelId,
-          name: sm.modelId,
-          api: OpenClawApiConst.OpenAICompletions as OpenClawProviderApi,
-          input: sm.supportsImage ? ['text', 'image'] : ['text'],
+      const providerId = OpenClawProviderId.LobsteraiServer;
+
+      if (serverModels.length > 0 || !allProvidersMap[providerId]) {
+        const firstServerModelId = serverModels[0]?.modelId || modelId;
+        const firstServerSel = buildProviderSelection({
+          apiKey: 'proxy-managed',
+          baseURL: `http://127.0.0.1:${proxyPort}/v1`,
+          modelId: firstServerModelId,
+          apiType: 'openai',
+          providerName: ProviderName.LobsteraiServer,
+          supportsImage: serverModels[0]?.supportsImage,
         });
+        const lobsteraiProviderConfig =
+          allProvidersMap[providerId] ?? {
+            ...firstServerSel.providerConfig,
+            models: [] as typeof firstServerSel.providerConfig.models,
+          };
+        allProvidersMap[providerId] = lobsteraiProviderConfig;
+
+        if (serverModels.length === 0) {
+          upsertProviderModel(lobsteraiProviderConfig, firstServerSel.providerConfig.models[0]);
+        } else {
+          for (const sm of serverModels) {
+            const serverSel = buildProviderSelection({
+              apiKey: 'proxy-managed',
+              baseURL: `http://127.0.0.1:${proxyPort}/v1`,
+              modelId: sm.modelId,
+              apiType: 'openai',
+              providerName: ProviderName.LobsteraiServer,
+              supportsImage: sm.supportsImage,
+              modelName: sm.modelId,
+            });
+            upsertProviderModel(lobsteraiProviderConfig, serverSel.providerConfig.models[0]);
+          }
+        }
       }
-      if (lobsteraiProviderConfig.models.length === 0) {
-        lobsteraiProviderConfig.models.push(firstServerSel.providerConfig.models[0]);
-      }
-      allProvidersMap[OpenClawProviderId.LobsteraiServer] = lobsteraiProviderConfig;
     }
 
     const sandboxMode = mapExecutionModeToSandboxMode(coworkConfig.executionMode || 'auto');
