@@ -355,13 +355,19 @@ function main() {
   // Step 3: Clean unnecessary files from node_modules only
   cleanDir(nodeModulesDir, stats);
 
-  // Step 4: Clean node_modules inside third-party extensions (but not extension source files)
-  const thirdPartyExtensionsDir = path.join(runtimeRoot, 'third-party-extensions');
-  if (fs.existsSync(thirdPartyExtensionsDir)) {
+  // Step 4: Clean node_modules inside extensions (but not extension source files).
+  // Keep third-party-extensions for current packaged runtimes and include
+  // extensions for OpenClaw layouts that place bundled plugins there.
+  const extensionRoots = [
+    path.join(runtimeRoot, 'third-party-extensions'),
+    path.join(runtimeRoot, 'extensions'),
+  ];
+  for (const extensionsDir of extensionRoots) {
+    if (!fs.existsSync(extensionsDir)) continue;
     try {
-      for (const ext of fs.readdirSync(thirdPartyExtensionsDir, { withFileTypes: true })) {
+      for (const ext of fs.readdirSync(extensionsDir, { withFileTypes: true })) {
         if (!ext.isDirectory()) continue;
-        const extNodeModules = path.join(thirdPartyExtensionsDir, ext.name, 'node_modules');
+        const extNodeModules = path.join(extensionsDir, ext.name, 'node_modules');
         if (fs.existsSync(extNodeModules)) {
           cleanDir(extNodeModules, stats);
         }
