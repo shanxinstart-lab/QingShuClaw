@@ -32,6 +32,6 @@ export const getServerApiBaseUrl = (): string => {
 
 export const getSkillStoreUrl = (): string => {
   return isTestMode()
-    ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/skill-market'
-    : 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/skill-market';
+    ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/skill-store'
+    : 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/skill-store';
 };

@@ -130,6 +130,81 @@ function resolveWindowsRegistryPath(): string | null {
   }
 }
 
+function isWindowsDeletePermissionError(error: unknown): boolean {
+  if (process.platform !== 'win32') return false;
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+function tryWindowsDeleteFallbackAsync(targetDir: string): Promise<{ success: boolean; detail?: string }> {
+  if (process.platform !== 'win32') return Promise.resolve({ success: false, detail: 'not-windows' });
+
+  return new Promise<void>(resolve => setTimeout(resolve, 50)).then(() => {
+    const escapedPath = targetDir.replace(/"/g, '""');
+    const command = `icacls "${escapedPath}" /reset /t /c >nul 2>&1 & attrib -r -s -h "${escapedPath}" /s /d >nul 2>&1 & rmdir /s /q "${escapedPath}"`;
+
+    return new Promise<{ success: boolean; detail?: string }>((resolve) => {
+      let settled = false;
+      const settle = (result: { success: boolean; detail?: string }) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+
+      const child = spawn('cmd.exe', ['/d', '/s', '/c', command], {
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+
+      let stderr = '';
+      let stdout = '';
+      child.stderr?.on('data', (data: Buffer) => { stderr += data.toString('utf-8'); });
+      child.stdout?.on('data', (data: Buffer) => { stdout += data.toString('utf-8'); });
+
+      const timer = setTimeout(() => {
+        child.kill();
+        settle({ success: false, detail: 'timeout' });
+      }, 10000);
+
+      child.on('close', () => {
+        clearTimeout(timer);
+        if (!fs.existsSync(targetDir)) {
+          settle({ success: true });
+        } else {
+          const detail = stderr.trim() || stdout.trim() || 'unknown';
+          settle({ success: false, detail });
+        }
+      });
+
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        settle({ success: false, detail: err.message });
+      });
+    });
+  });
+}
+
+function normalizeWindowsSkillDirectoryAttrs(targetDir: string): { success: boolean; detail?: string } {
+  if (process.platform !== 'win32') return { success: true };
+
+  const escapedPath = targetDir.replace(/"/g, '""');
+  const result = spawnSync('cmd.exe', ['/d', '/s', '/c', `attrib -r -s -h "${escapedPath}" /s /d`], {
+    stdio: 'pipe',
+    windowsHide: true,
+    timeout: 10000,
+  });
+
+  if (result.status === 0) {
+    return { success: true };
+  }
+
+  const stderr = result.stderr?.toString('utf-8').trim();
+  const stdout = result.stdout?.toString('utf-8').trim();
+  const detail = stderr || stdout || result.error?.message || `status=${result.status ?? 'null'}`;
+  return { success: false, detail };
+}
+
 /**
  * Build an environment for spawning skill scripts.
  * Merges the user's shell PATH with the current process environment.
@@ -140,12 +215,18 @@ function buildSkillEnv(): Record<string, string | undefined> {
   // Normalize PATH key casing on Windows to avoid duplicate PATH/Path issues
   normalizePathKey(env);
 
-  if (app.isPackaged) {
-    // Ensure HOME is set (crucial for npm to find its config)
-    if (!env.HOME) {
-      env.HOME = app.getPath('home');
-    }
+  // Ensure HOME is available for tools such as clawhub that persist state
+  // under the user's home directory in packaged and dev environments.
+  if (!env.HOME) {
+    env.HOME = app.getPath('home');
+    console.debug('[skills] HOME was unset; using Electron user home directory');
+  }
+  if (process.platform === 'win32' && !env.USERPROFILE) {
+    env.USERPROFILE = env.HOME;
+    console.debug('[skills] USERPROFILE was unset; aligned with HOME for skill subprocesses');
+  }
 
+  if (app.isPackaged) {
     if (process.platform === 'win32') {
       // On Windows, merge the latest PATH from the registry to pick up
       // tools installed after the Electron app (or Explorer) was started.
@@ -510,6 +591,53 @@ const runCommand = (
   });
 });
 
+const WINDOWS_HIDE_SCRIPT = [
+  "'use strict';",
+  'if (process.platform === "win32") {',
+  '  const cp = require("child_process");',
+  '  const hide = (o) => {',
+  '    if (o == null) return { windowsHide: true };',
+  '    if (typeof o !== "object") return o;',
+  '    if (Object.prototype.hasOwnProperty.call(o, "windowsHide")) return o;',
+  '    return { ...o, windowsHide: true };',
+  '  };',
+  '  for (const fn of ["spawn", "spawnSync", "exec", "execFile", "fork"]) {',
+  '    const orig = cp[fn];',
+  '    if (typeof orig !== "function") continue;',
+  '    cp[fn] = function (...a) {',
+  '      const optsIdx = fn === "exec" ? 1 : fn === "fork" || fn === "spawn" || fn === "spawnSync" || fn === "execFile" ? 2 : 1;',
+  '      if (a.length > optsIdx && typeof a[optsIdx] === "object" && a[optsIdx] !== null) {',
+  '        a[optsIdx] = hide(a[optsIdx]);',
+  '      } else if (a.length === optsIdx) {',
+  '        a.push(hide(undefined));',
+  '      }',
+  '      return orig.apply(this, a);',
+  '    };',
+  '  }',
+  '}',
+].join('\n');
+
+let windowsHideScriptPath: string | null | undefined;
+
+const ensureWindowsHideScript = (): string | null => {
+  if (process.platform !== 'win32') return null;
+  if (windowsHideScriptPath !== undefined) return windowsHideScriptPath;
+  try {
+    const dir = path.join(app.getPath('userData'), 'bin');
+    fs.mkdirSync(dir, { recursive: true });
+    const scriptPath = path.join(dir, 'skill_windows_hide.cjs');
+    const existing = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf8') : '';
+    if (existing !== WINDOWS_HIDE_SCRIPT) {
+      fs.writeFileSync(scriptPath, WINDOWS_HIDE_SCRIPT, 'utf8');
+    }
+    windowsHideScriptPath = scriptPath;
+    return scriptPath;
+  } catch {
+    windowsHideScriptPath = null;
+    return null;
+  }
+};
+
 type SkillScriptRunResult = {
   success: boolean;
   exitCode: number | null;
@@ -856,6 +984,92 @@ const isNpmPackageSpec = (source: string): boolean => {
   return false;
 };
 
+const parseClawhubUrl = (source: string): { name: string } | null => {
+  try {
+    const url = new URL(source);
+    if (url.hostname !== 'clawhub.ai' && url.hostname !== 'www.clawhub.ai') return null;
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (segments.length >= 3 && segments[0] === 'skills') {
+      return { name: segments[2] };
+    }
+    if (segments.length >= 2 && segments[0] === 'skills') {
+      return { name: segments[1] };
+    }
+    if (segments.length >= 2) {
+      return { name: segments[1] };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveNpxCliJs = (): string | null => {
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'npm', 'bin', 'npx-cli.js')]
+    : [
+        path.join(app.getAppPath(), 'node_modules', 'npm', 'bin', 'npx-cli.js'),
+        path.join(process.cwd(), 'node_modules', 'npm', 'bin', 'npx-cli.js'),
+      ];
+  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+};
+
+const downloadClawhubSkill = async (
+  skillName: string,
+  targetDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> => {
+  fs.mkdirSync(targetDir, { recursive: true });
+  const npxCliJs = resolveNpxCliJs();
+  const electronPath = getElectronNodeRuntimePath();
+
+  let command: string;
+  let args: string[];
+  if (npxCliJs) {
+    console.log(
+      `[downloadClawhubSkill] cwd="${targetDir}" skill="${skillName}" `
+      + `electron="${electronPath}" npxCliJs="${npxCliJs}"`,
+    );
+    command = electronPath;
+    args = [npxCliJs, 'clawhub@latest', 'install', skillName, '--dir', targetDir, '--no-input', '--force'];
+    const hideScript = ensureWindowsHideScript();
+    if (hideScript) {
+      args = ['--require', hideScript, ...args];
+    }
+  } else {
+    const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    console.log(
+      `[downloadClawhubSkill] cwd="${targetDir}" skill="${skillName}" `
+      + `bundled npx not found, falling back to system "${npxCommand}"`,
+    );
+    if (!hasCommand(npxCommand, env)) {
+      throw new Error('npx is not available. Please install Node.js from https://nodejs.org/');
+    }
+    command = npxCommand;
+    args = ['clawhub@latest', 'install', skillName, '--dir', targetDir, '--no-input', '--force'];
+  }
+
+  try {
+    await runCommand(command, args, {
+      cwd: targetDir,
+      env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const cleaned = raw
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .replace(/%[0-9A-Fa-f]{2}/g, (match) => {
+        try { return decodeURIComponent(match); } catch { return match; }
+      })
+      .trim();
+
+    if (/skill not found/i.test(cleaned)) {
+      throw new Error(t('skillErrClawhubNotFound'));
+    }
+    throw new Error(t('skillErrClawhubDownloadFailed') + '\n' + cleaned);
+  }
+};
+
 /**
  * Resolve the bundled npm-cli.js path for running npm commands.
  */
@@ -1139,6 +1353,7 @@ export class SkillManager {
     existingSkillDir?: string;
   }>();
   private upgradingSkillIds = new Set<string>();
+  private deletingSkillIds = new Set<string>();
 
   constructor(private getStore: () => SqliteStore) {}
 
@@ -1436,7 +1651,7 @@ export class SkillManager {
     return this.listSkills();
   }
 
-  deleteSkill(id: string): SkillRecord[] {
+  async deleteSkill(id: string): Promise<SkillRecord[]> {
     const root = this.ensureSkillsRoot();
     if (id !== path.basename(id)) {
       throw new Error('Invalid skill id');
@@ -1448,7 +1663,19 @@ export class SkillManager {
     if (this.isBuiltInSkillId(id)) {
       throw new Error('Built-in skills cannot be deleted');
     }
+    if (this.deletingSkillIds.has(id)) {
+      throw new Error(`Skill "${id}" is already being deleted`);
+    }
 
+    this.deletingSkillIds.add(id);
+    try {
+      return await this.performDeleteSkill(id, root);
+    } finally {
+      this.deletingSkillIds.delete(id);
+    }
+  }
+
+  private async performDeleteSkill(id: string, root: string): Promise<SkillRecord[]> {
     let targetDir: string | null = resolveWithin(root, id);
     if (!fs.existsSync(targetDir)) {
       const bundledRoot = this.getBundledSkillsRoot();
@@ -1460,15 +1687,68 @@ export class SkillManager {
       }
     }
 
-    if (targetDir !== null) {
-      fs.rmSync(targetDir, { recursive: true, force: true });
+    console.log('[skills] deleteSkill: id=%s, targetDir=%s, platform=%s', id, targetDir, process.platform);
+
+    this.stopWatching();
+    if (process.platform === 'win32') {
+      await new Promise<void>(resolve => setTimeout(resolve, 100));
     }
-    const state = this.loadSkillStateMap();
-    delete state[id];
-    this.saveSkillStateMap(state);
-    this.startWatching();
-    this.notifySkillsChanged();
-    return this.listSkills();
+
+    try {
+      if (targetDir !== null) {
+        let removedByFallback = false;
+        const startMs = Date.now();
+        try {
+          await fs.promises.rm(targetDir, {
+            recursive: true,
+            force: true,
+            maxRetries: process.platform === 'win32' ? 5 : 0,
+            retryDelay: process.platform === 'win32' ? 200 : 0,
+          });
+        } catch (error) {
+          if (!isWindowsDeletePermissionError(error)) {
+            throw error;
+          }
+          const fallback = await tryWindowsDeleteFallbackAsync(targetDir);
+          if (!fallback.success) {
+            console.warn('[skills] deleteSkill: Windows fallback failed for "%s": %s', id, fallback.detail || 'unknown');
+            try {
+              const skillMdPath = path.join(targetDir, SKILL_FILE_NAME);
+              if (fs.existsSync(skillMdPath)) {
+                fs.unlinkSync(skillMdPath);
+              }
+              const tombstone = targetDir + '.deleted.' + Date.now();
+              fs.renameSync(targetDir, tombstone);
+              console.warn('[skills] deleteSkill: directory renamed to tombstone "%s" as last resort', path.basename(tombstone));
+              removedByFallback = true;
+            } catch (renameError) {
+              console.error('[skills] deleteSkill: last-resort rename also failed:', renameError);
+              throw error;
+            }
+          } else {
+            removedByFallback = true;
+          }
+        }
+        if (removedByFallback) {
+          console.warn('[skills] deleteSkill: directory removed via Windows fallback in %dms', Date.now() - startMs);
+        } else {
+          console.log('[skills] deleteSkill: directory removed in %dms', Date.now() - startMs);
+        }
+      } else {
+        console.warn('[skills] deleteSkill: directory not found on disk, cleaning state only');
+      }
+      const state = this.loadSkillStateMap();
+      delete state[id];
+      this.saveSkillStateMap(state);
+      this.notifySkillsChanged();
+      console.log('[skills] deleteSkill: completed successfully for "%s"', id);
+      return this.listSkills();
+    } catch (error) {
+      console.error('[skills] deleteSkill: failed to remove "%s" at %s:', id, targetDir, error);
+      throw error;
+    } finally {
+      this.startWatching();
+    }
   }
 
   async downloadSkill(source: string): Promise<{
@@ -1517,10 +1797,18 @@ export class SkillManager {
         cleanupPath = tempRoot;
         localSource = await downloadNpmPackage(trimmed, tempRoot);
         console.log(`[SkillManager] downloadSkill: npm package extracted to ${localSource}`);
+      } else if (parseClawhubUrl(trimmed)) {
+        const clawhubParsed = parseClawhubUrl(trimmed)!;
+        console.log(`[SkillManager] downloadSkill: detected ClawHub URL, skill name="${clawhubParsed.name}"`);
+        const tempRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'lobsterai-skill-clawhub-'));
+        cleanupPath = tempRoot;
+        const env = buildSkillEnv();
+        await downloadClawhubSkill(clawhubParsed.name, tempRoot, env);
+        localSource = tempRoot;
       } else {
         const normalized = this.normalizeGitSource(trimmed);
         if (!normalized) {
-          return { success: false, error: 'Invalid skill source. Use owner/repo, repo URL, npm package spec, or a GitHub tree/blob URL.' };
+          return { success: false, error: t('skillErrInvalidSource') };
         }
         const tempRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'lobsterai-skill-'));
         cleanupPath = tempRoot;
@@ -1648,6 +1936,12 @@ export class SkillManager {
           suffix += 1;
         }
         cpRecursiveSync(skillDir, targetDir);
+        const normalizeResult = normalizeWindowsSkillDirectoryAttrs(targetDir);
+        if (normalizeResult.success) {
+          console.log('[skills] install normalization applied for "%s" at %s', folderName, targetDir);
+        } else {
+          console.warn('[skills] install normalization failed for "%s" at %s: %s', folderName, targetDir, normalizeResult.detail || 'unknown');
+        }
       }
 
       cleanupPathSafely(cleanupPath);
@@ -1897,6 +2191,12 @@ export class SkillManager {
           suffix += 1;
         }
         cpRecursiveSync(skillDir, targetDir);
+        const normalizeResult = normalizeWindowsSkillDirectoryAttrs(targetDir);
+        if (normalizeResult.success) {
+          console.log('[skills] install normalization applied for "%s" at %s', folderName, targetDir);
+        } else {
+          console.warn('[skills] install normalization failed for "%s" at %s: %s', folderName, targetDir, normalizeResult.detail || 'unknown');
+        }
         installedIds.push(path.basename(targetDir));
       }
     }
@@ -2006,6 +2306,12 @@ export class SkillManager {
           };
         }
         cpRecursiveSync(matchingSkillDir, targetDir);
+        const normalizeResult = normalizeWindowsSkillDirectoryAttrs(targetDir);
+        if (normalizeResult.success) {
+          console.log('[skills] install normalization applied for "%s" at %s', descriptor.skillId, targetDir);
+        } else {
+          console.warn('[skills] install normalization failed for "%s" at %s: %s', descriptor.skillId, targetDir, normalizeResult.detail || 'unknown');
+        }
         action = 'installed';
       }
 
@@ -2035,11 +2341,51 @@ export class SkillManager {
     const primaryRoot = this.ensureSkillsRoot();
     const roots = this.getSkillRoots(primaryRoot);
 
-    const watchHandler = () => this.scheduleNotify();
+    if (process.platform === 'win32') {
+      for (const root of roots) {
+        if (!fs.existsSync(root)) continue;
+        try {
+          for (const entry of fs.readdirSync(root)) {
+            if (/\.deleted\.\d+$/.test(entry)) {
+              try {
+                fs.rmSync(path.join(root, entry), { recursive: true, force: true });
+                console.log('[skills] startWatching: cleaned up tombstone "%s"', entry);
+              } catch { /* will retry next time */ }
+            }
+          }
+        } catch { /* ignore scan errors */ }
+      }
+    }
+
+    const rootWatchHandler = (_event: string, filename: string | null) => {
+      if (!filename) {
+        this.scheduleNotify();
+        return;
+      }
+      if (filename.startsWith('.')) return;
+      if (filename === SKILLS_CONFIG_FILE) {
+        this.scheduleNotify();
+        return;
+      }
+      if (!path.extname(filename)) {
+        this.scheduleNotify();
+      }
+    };
+
+    const skillDirWatchHandler = (_event: string, filename: string | null) => {
+      if (!filename) {
+        this.scheduleNotify();
+        return;
+      }
+      if (filename === SKILL_FILE_NAME || filename === SKILL_META_FILE_NAME || filename === SKILLS_CONFIG_FILE) {
+        this.scheduleNotify();
+      }
+    };
+
     roots.forEach(root => {
       if (!fs.existsSync(root)) return;
       try {
-        this.watchers.push(fs.watch(root, watchHandler));
+        this.watchers.push(fs.watch(root, rootWatchHandler));
       } catch (error) {
         console.warn('[skills] Failed to watch skills root:', root, error);
       }
@@ -2047,7 +2393,7 @@ export class SkillManager {
       const skillDirs = listSkillDirs(root);
       skillDirs.forEach(dir => {
         try {
-          this.watchers.push(fs.watch(dir, watchHandler));
+          this.watchers.push(fs.watch(dir, skillDirWatchHandler));
         } catch (error) {
           console.warn('[skills] Failed to watch skill directory:', dir, error);
         }
@@ -2785,4 +3131,6 @@ export const __skillManagerTestUtils = {
   parseFrontmatter,
   isTruthy,
   extractDescription,
+  parseClawhubUrl,
+  isWindowsDeletePermissionError,
 };

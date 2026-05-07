@@ -42,13 +42,14 @@ export function parseManagedSessionKey(sessionKey: string | undefined | null): M
     return null;
   }
 
-  const parts = raw.split(':');
-  if (parts.length < 4 || parts[0] !== 'agent' || parts[2] !== 'lobsterai') {
+  const managedMarker = ':lobsterai:';
+  const markerIndex = raw.indexOf(managedMarker);
+  if (markerIndex <= 'agent:'.length) {
     return null;
   }
 
-  const agentId = parts[1]?.trim();
-  const sessionId = parts.slice(3).join(':').trim();
+  const agentId = raw.slice('agent:'.length, markerIndex).trim();
+  const sessionId = raw.slice(markerIndex + managedMarker.length).trim();
   if (!agentId || !sessionId) {
     return null;
   }
@@ -355,7 +356,7 @@ export class OpenClawChannelSessionSync {
           const cwd = this.getDefaultCwd();
           const newSession = this.coworkStore.createSession(title, cwd, '', 'local', [], currentAgentId);
           console.log('[ChannelSessionSync] created new session for agent change:', newSession.id);
-          this.imStore.updateSessionMappingTarget(parsed.conversationId, parsed.platform, newSession.id, currentAgentId);
+          this.imStore.updateSessionMappingTarget(parsed.conversationId, parsed.platform, newSession.id, currentAgentId, sessionKey);
           this.syncedSessionKeys.set(sessionKey, newSession.id);
           // Mark so pollChannelSessions skips full history sync for this session —
           // old gateway messages should not be pulled into the new session.
@@ -364,6 +365,9 @@ export class OpenClawChannelSessionSync {
         }
         console.log('[ChannelSessionSync] existing cowork session found, reusing:', existingMapping.coworkSessionId);
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
+        if (existingMapping.openClawSessionKey !== sessionKey) {
+          this.imStore.updateSessionOpenClawSessionKey(parsed.conversationId, parsed.platform, sessionKey);
+        }
         this.imStore.updateSessionLastActive(parsed.conversationId, parsed.platform);
         return existingMapping.coworkSessionId;
       }
@@ -396,7 +400,7 @@ export class OpenClawChannelSessionSync {
     );
 
     // 6. Persist mapping
-    this.imStore.createSessionMapping(parsed.conversationId, parsed.platform, session.id, agentId);
+    this.imStore.createSessionMapping(parsed.conversationId, parsed.platform, session.id, agentId, sessionKey);
     console.log('[ChannelSessionSync] persisted mapping: conversationId=', parsed.conversationId, '→ sessionId=', session.id);
 
     // 7. Cache
@@ -432,6 +436,9 @@ export class OpenClawChannelSessionSync {
       const session = this.coworkStore.getSession(existingMapping.coworkSessionId);
       if (session) {
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
+        if (existingMapping.openClawSessionKey !== sessionKey) {
+          this.imStore.updateSessionOpenClawSessionKey(parsed.conversationId, parsed.platform, sessionKey);
+        }
         return existingMapping.coworkSessionId;
       }
       // Stale mapping, clean up
@@ -439,6 +446,24 @@ export class OpenClawChannelSessionSync {
     }
 
     return null;
+  }
+
+  getOpenClawSessionKeyForCoworkSession(sessionId: string): {
+    isChannelSession: boolean;
+    sessionKey: string | null;
+  } {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return { isChannelSession: false, sessionKey: null };
+    }
+
+    const mapping = this.imStore.getSessionMappingByCoworkSessionId(normalizedSessionId);
+    if (!mapping) {
+      return { isChannelSession: false, sessionKey: null };
+    }
+
+    const sessionKey = mapping.openClawSessionKey?.trim() || null;
+    return { isChannelSession: true, sessionKey };
   }
 
   /** Check whether a sessionKey belongs to a recognized channel, main agent, or cron session. */

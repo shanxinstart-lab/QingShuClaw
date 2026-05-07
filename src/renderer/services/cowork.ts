@@ -135,6 +135,10 @@ class CoworkService {
     // Complete listener
     const completeCleanup = cowork.onStreamComplete(({ sessionId }) => {
       store.dispatch(updateSessionStatus({ sessionId, status: 'completed' }));
+      const state = store.getState().cowork;
+      if (state.currentSession?.id === sessionId) {
+        void this.loadSession(sessionId);
+      }
     });
     this.streamListenerCleanups.push(completeCleanup);
 
@@ -163,6 +167,10 @@ class CoworkService {
       void this.loadSessions().then(() => {
         const state = store.getState().cowork;
         console.log('[CoworkService] onSessionsChanged: loadSessions complete, total sessions:', state.sessions.length, 'sessionIds:', state.sessions.map(s => s.id).slice(0, 5));
+        const currentSessionId = state.currentSessionId;
+        if (currentSessionId && state.currentSession?.id === currentSessionId) {
+          void this.loadSession(currentSessionId);
+        }
       }).catch((err) => {
         console.error('[CoworkService] onSessionsChanged: loadSessions FAILED:', err);
       });
@@ -496,8 +504,11 @@ class CoworkService {
 
     const result = await sessionApi.patch({ sessionId, patch });
     if (result.success && result.session) {
-      store.dispatch(setCurrentSession(result.session));
-      store.dispatch(setStreaming(result.session.status === 'running'));
+      const currentSessionId = store.getState().cowork.currentSessionId;
+      if (currentSessionId === sessionId) {
+        store.dispatch(setCurrentSession(result.session));
+        store.dispatch(setStreaming(result.session.status === 'running'));
+      }
       return result.session;
     }
 

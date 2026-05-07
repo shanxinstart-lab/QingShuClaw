@@ -1235,8 +1235,8 @@ const IMSettings: React.FC = () => {
 
       {/* Platform Settings - Right Side */}
       <div className="flex-1 min-w-0 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
-        {/* Header with status (hidden for QQ which has per-instance headers) */}
-        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && activePlatform !== 'wecom' && (
+        {/* Header with status (only for single-instance platforms without per-instance headers) */}
+        {(activePlatform === 'weixin' || activePlatform === 'netease-bee') && (
         <div className="flex items-center gap-3 pb-3 border-b border-border-subtle">
           <div className="flex items-center gap-2">
              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-surface border border-border-subtle p-1">

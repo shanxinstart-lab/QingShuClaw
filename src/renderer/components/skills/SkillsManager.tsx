@@ -259,7 +259,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     const query = skillSearchQuery.toLowerCase();
     return skills.filter(skill => {
       const matchesSearch = skill.name.toLowerCase().includes(query)
-        || skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description).toLowerCase().includes(query);
+        || skillService.getInstalledSkillDescription(skill).toLowerCase().includes(query);
       return matchesSearch;
     });
   }, [skills, skillSearchQuery]);
@@ -1002,7 +1002,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               </div>
 
               <p className="text-xs text-secondary line-clamp-2 mb-2">
-                {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
+                {skillService.getInstalledSkillDescription(skill)}
               </p>
 
               {managedLockHint && (
@@ -1354,7 +1354,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             </div>
 
             <p className="text-sm text-secondary mb-4">
-              {skillService.getLocalizedSkillDescription(selectedSkill.id, selectedSkill.name, selectedSkill.description)}
+              {skillService.getInstalledSkillDescription(selectedSkill)}
             </p>
             {getManagedSkillLockHint(selectedSkill) && (
               <div className="mb-4 rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-xs text-secondary">

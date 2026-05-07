@@ -11,6 +11,7 @@ interface ModelSelectorProps {
   value?: Model | null;
   onChange?: (model: Model | null) => void;
   defaultLabel?: string;
+  disabled?: boolean;
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({
@@ -18,6 +19,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   value,
   onChange,
   defaultLabel,
+  disabled = false,
 }) => {
   const dispatch = useDispatch();
   const [isOpen, setIsOpen] = React.useState(false);
@@ -45,6 +47,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   }, [isOpen]);
 
   const handleModelSelect = (model: Model | null) => {
+    if (disabled) return;
     if (controlled) {
       onChange(model);
     } else if (model) {
@@ -109,10 +112,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   );
 
   return (
-    <div ref={containerRef} className="relative cursor-pointer">
+    <div ref={containerRef} className={`relative ${disabled ? 'cursor-wait' : 'cursor-pointer'}`}>
       <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl hover:bg-surface-raised text-foreground transition-colors cursor-pointer ${isOpen ? 'bg-surface-raised' : ''}`}
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          if (disabled) return;
+          setIsOpen(!isOpen);
+        }}
+        className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl hover:bg-surface-raised text-foreground transition-colors disabled:opacity-70 disabled:cursor-wait ${isOpen ? 'bg-surface-raised' : ''}`}
       >
         <span className="font-medium text-sm">{selectedModel?.name ?? defaultLabel ?? ''}</span>
         <ChevronDownIcon className="h-4 w-4 text-secondary" />

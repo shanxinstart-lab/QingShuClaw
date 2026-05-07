@@ -39,7 +39,16 @@ export interface OpenClawMemoryStats {
 const DEFAULT_OPENCLAW_WORKSPACE = path.join(os.homedir(), '.openclaw', 'workspace');
 
 /**
- * Resolve the MEMORY.md path from the user-configured working directory.
+ * Return the fixed workspace path for the main agent.
+ * All main-agent state files (MEMORY.md, IDENTITY.md, AGENTS.md, etc.) live here,
+ * decoupled from the user-visible working directory, which is only used as task cwd.
+ */
+export function getMainAgentWorkspacePath(stateDir: string): string {
+  return path.join(stateDir, 'workspace-main');
+}
+
+/**
+ * Resolve the MEMORY.md path from an agent workspace directory.
  * Falls back to `~/.openclaw/workspace/MEMORY.md` when unset.
  */
 export function resolveMemoryFilePath(workingDirectory: string | undefined): string {

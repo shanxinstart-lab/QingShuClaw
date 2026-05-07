@@ -23,6 +23,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     trayQuit: '退出',
 
     // Session titles (created by ChannelSessionSync)
+    coworkDefaultSessionTitle: '新对话',
     cronSessionPrefix: '定时',
     channelPrefixFeishu: '飞书',
     channelPrefixDingtalk: '钉钉',
@@ -67,6 +68,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Skill manager errors
     skillErrNoSkillMd: '来源中未找到 SKILL.md',
+    skillErrInvalidSource:
+      '无效的技能来源。请使用 owner/repo、仓库 URL、npm 包名、GitHub tree/blob URL 或 ClawHub 技能链接。',
+    skillErrClawhubNotFound: '在 ClawHub 上未找到该技能，请检查链接是否正确。',
+    skillErrClawhubDownloadFailed: '从 ClawHub 下载技能失败，请稍后重试。',
 
     // Auth quota
     authPlanFree: '免费',
@@ -188,6 +193,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     trayQuit: 'Quit',
 
     // Session titles
+    coworkDefaultSessionTitle: 'New Chat',
     cronSessionPrefix: 'Cron',
     channelPrefixFeishu: 'Feishu',
     channelPrefixDingtalk: 'DingTalk',
@@ -232,6 +238,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Skill manager errors
     skillErrNoSkillMd: 'No SKILL.md found in source',
+    skillErrInvalidSource:
+      'Invalid skill source. Use owner/repo, repo URL, npm package spec, GitHub tree/blob URL, or a ClawHub skill URL.',
+    skillErrClawhubNotFound: 'Skill not found on ClawHub. Please check the URL.',
+    skillErrClawhubDownloadFailed: 'Failed to download skill from ClawHub. Please try again later.',
 
     // Auth quota
     authPlanFree: 'Free',

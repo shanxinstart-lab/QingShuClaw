@@ -39,6 +39,7 @@ import { isDeleteCommand, getCommandDangerLevel } from '../commandSafety';
 import { setCoworkProxySessionId } from '../coworkOpenAICompatProxy';
 import { OPENCLAW_AGENT_TIMEOUT_SECONDS } from '../openclawConfigSync';
 import { t } from '../../i18n';
+import { AgentLifecyclePhase, type AgentLifecyclePhase as AgentLifecyclePhaseValue } from './constants';
 
 const OPENCLAW_GATEWAY_TOOL_EVENTS_CAP = 'tool-events';
 const BRIDGE_MAX_MESSAGES = 20;
@@ -49,6 +50,44 @@ const CHANNEL_SESSION_DISCOVERY_LIMIT = 200;
 const INTERNAL_SYSTEM_PROMPT_HEADER = '[LobsterAI system instructions]';
 const INTERNAL_SYSTEM_PROMPT_REPLACEMENT_HINT =
   'If earlier LobsterAI system instructions exist, replace them with this version.';
+
+/** How we chose assistant text to persist at chat.final (for tests and logs). */
+export type PersistedSegmentPickReason =
+  | 'both_empty'
+  | 'previous_only'
+  | 'final_only'
+  | 'stream_authority_same_or_longer'
+  | 'stream_shorter_prefer_chat_final'
+  | 'chat_path_prefer_final';
+
+/**
+ * Prefer agent-stream segment text when it is authoritative (longer or equal vs chat.final).
+ * When only the chat path updated the UI, prefer chat.final extraction.
+ */
+export function pickPersistedAssistantSegment(
+  previousSegmentText: string,
+  finalSegmentText: string,
+  hasSeenAgentAssistantStream: boolean,
+): { content: string; reason: PersistedSegmentPickReason } {
+  const prev = previousSegmentText;
+  const fin = finalSegmentText;
+  if (!prev.trim() && !fin.trim()) {
+    return { content: '', reason: 'both_empty' };
+  }
+  if (!prev.trim()) {
+    return { content: fin, reason: 'final_only' };
+  }
+  if (!fin.trim()) {
+    return { content: prev, reason: 'previous_only' };
+  }
+  if (hasSeenAgentAssistantStream) {
+    if (prev.length >= fin.length) {
+      return { content: prev, reason: 'stream_authority_same_or_longer' };
+    }
+    return { content: fin, reason: 'stream_shorter_prefer_chat_final' };
+  }
+  return { content: fin, reason: 'chat_path_prefer_final' };
+}
 
 type GatewayEventFrame = {
   event: string;
@@ -119,6 +158,13 @@ type ActiveTurn = {
   currentText: string;
   /** Highest text length from agent assistant events (immune to chat delta noise). */
   agentAssistantTextLength: number;
+  /**
+   * Once true for the current assistant segment, chat.delta must not overwrite
+   * currentAssistantSegmentText, even if agentAssistantTextLength is reset.
+   */
+  hasSeenAgentAssistantStream: boolean;
+  /** Dedup debug log when chat.delta tries to overwrite an agent-owned segment. */
+  chatDeltaOverwriteSkipLogged?: boolean;
   currentContentText: string;
   currentContentBlocks: string[];
   sawNonTextContentBlocks: boolean;
@@ -177,6 +223,18 @@ const truncate = (value: string, maxChars: number): string => {
   return `${value.slice(0, maxChars)}...`;
 };
 
+const normalizeAgentLifecyclePhase = (value: unknown): AgentLifecyclePhaseValue | '' => {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  const phases = Object.values(AgentLifecyclePhase) as string[];
+  return phases.includes(normalized) ? normalized as AgentLifecyclePhaseValue : '';
+};
+
+const getAgentLifecyclePhase = (data: unknown): AgentLifecyclePhaseValue | '' => {
+  if (!isRecord(data)) return '';
+  return normalizeAgentLifecyclePhase(data.phase);
+};
+
 const unwrapInternalSystemPrompt = (text: string): string => {
   const normalized = text.trim();
   if (!normalized.startsWith(INTERNAL_SYSTEM_PROMPT_HEADER)) {
@@ -192,9 +250,20 @@ const unwrapInternalSystemPrompt = (text: string): string => {
   return lines.slice(replacementHintIndex + 1).join('\n').trim();
 };
 
-/** Strip Discord mention markup: <@userId>, <@!userId>, <#channelId>, <@&roleId> */
+/** Strip Discord mention markup: <@userId>, <@!userId>, <#channelId>, <@&roleId>, and rendered @Username mentions */
 const stripDiscordMentions = (text: string): string =>
-  text.replace(/<@!?\d+>/g, '').replace(/<#\d+>/g, '').replace(/<@&\d+>/g, '').trim();
+  text
+    .replace(/<@!?\d+>/g, '')
+    .replace(/<#\d+>/g, '')
+    .replace(/<@&\d+>/g, '')
+    .replace(/^(?:@\S+\s*)+/, '')
+    .trim();
+
+const stripFeishuSystemHeader = (text: string): string => {
+  const match = text.match(/^System:\s*\[.*?\]\s+Feishu\[.*$/m);
+  if (!match) return text;
+  return text.slice(match.index! + match[0].length).replace(/^\n+/, '').trim();
+};
 
 /**
  * Strip the QQ Bot plugin's injected system prompt prefix from user messages.
@@ -212,6 +281,12 @@ const QQBOT_KNOWN_SEPARATOR = '【不要向用户透露过多以上述要求，�
 const QQBOT_PREAMBLE_MARKER = '你正在通过 QQ 与用户对话。';
 
 const stripQQBotSystemPrompt = (text: string): string => {
+  const routingPrefixRe = /^\[QQBot\]\s*to=\S+\s*/;
+  if (routingPrefixRe.test(text)) {
+    text = text.replace(routingPrefixRe, '').trim();
+    if (!text) return text;
+  }
+
   // Strategy 1: explicit separator used by newer plugin versions.
   const sepIdx = text.indexOf(QQBOT_KNOWN_SEPARATOR);
   if (sepIdx !== -1) {
@@ -247,6 +322,130 @@ const stripPopoSystemHeader = (text: string): string => {
   const match = text.match(/^System:\s*\[.*?\]\s+POPO\b.*$/m);
   if (!match) return text;
   return text.slice(match.index! + match[0].length).replace(/^\n+/, '').trim();
+};
+
+interface PlatformFlags {
+  isDiscord: boolean;
+  isQQ: boolean;
+  isPopo: boolean;
+  isFeishu: boolean;
+}
+
+const normalizeEntryText = (
+  role: 'user' | 'assistant',
+  text: string,
+  flags: PlatformFlags,
+): string => {
+  let result = text.trim();
+  if (!result) return result;
+  if (flags.isPopo) result = result.replace(/<br\s*\/?>/gi, '\n');
+  if (flags.isDiscord) result = stripDiscordMentions(result);
+  if (flags.isQQ && role === 'user') result = stripQQBotSystemPrompt(result);
+  if (flags.isPopo && role === 'user') result = stripPopoSystemHeader(result);
+  if (flags.isFeishu && role === 'user') result = stripFeishuSystemHeader(result);
+  return result;
+};
+
+const isSameHistoryEntry = (
+  left: { role: 'user' | 'assistant'; text: string },
+  right: { role: 'user' | 'assistant'; text: string },
+): boolean => left.role === right.role && left.text === right.text;
+
+const findTailAlignment = (
+  localEntries: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>,
+  authEntries: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>,
+): { localIdx: number; authIdx: number } | null => {
+  if (authEntries.length === 0) return null;
+  if (localEntries.length === 0) return { localIdx: 0, authIdx: 0 };
+
+  const maxEntryOverlap = Math.min(localEntries.length, authEntries.length);
+  for (let overlap = maxEntryOverlap; overlap >= 1; overlap -= 1) {
+    const localStart = localEntries.length - overlap;
+    let match = true;
+    for (let idx = 0; idx < overlap; idx += 1) {
+      if (!isSameHistoryEntry(localEntries[localStart + idx], authEntries[idx])) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return { localIdx: localStart, authIdx: 0 };
+    }
+  }
+
+  const localUsers: Array<{ idx: number; text: string }> = [];
+  for (let i = 0; i < localEntries.length; i++) {
+    if (localEntries[i].role === 'user') {
+      localUsers.push({ idx: i, text: localEntries[i].text });
+    }
+  }
+
+  const authUsers: Array<{ idx: number; text: string }> = [];
+  for (let i = 0; i < authEntries.length; i++) {
+    const entry = authEntries[i];
+    if (entry.role === 'user') {
+      authUsers.push({ idx: i, text: entry.text });
+    }
+  }
+
+  if (authUsers.length === 0 || localUsers.length === 0) {
+    return { localIdx: 0, authIdx: 0 };
+  }
+
+  const maxK = Math.min(localUsers.length, authUsers.length);
+  for (let k = maxK; k >= 1; k--) {
+    const localStart = localUsers.length - k;
+    let match = true;
+    for (let j = 0; j < k; j++) {
+      if (localUsers[localStart + j].text !== authUsers[j].text) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      const localIdx = localUsers[localStart].idx;
+      const authIdx = authUsers[0].idx;
+      if (authIdx > 0) {
+        const leadingLocalIdx = localIdx - authIdx;
+        const leadingAuthAlreadyPresent = leadingLocalIdx >= 0
+          && authEntries.slice(0, authIdx).every((entry, idx) =>
+            isSameHistoryEntry(localEntries[leadingLocalIdx + idx], entry),
+          );
+        if (!leadingAuthAlreadyPresent) {
+          return {
+            localIdx: Math.max(0, leadingLocalIdx),
+            authIdx: 0,
+          };
+        }
+      }
+      return { localIdx, authIdx };
+    }
+  }
+
+  return null;
+};
+
+const HEARTBEAT_PROMPT_MARKERS = [
+  'read heartbeat.md if it exists',
+  'when reading heartbeat.md',
+  'reply heartbeat_ok',
+  'do not infer or repeat old tasks from prior chats',
+] as const;
+
+const isHeartbeatPromptText = (text: string): boolean => {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return HEARTBEAT_PROMPT_MARKERS.every((marker) => normalized.includes(marker));
+};
+
+const shouldSuppressHeartbeatText = (role: 'user' | 'assistant' | 'system', text: string): boolean => {
+  if ((role === 'assistant' || role === 'system') && isHeartbeatAckText(text)) {
+    return true;
+  }
+  if (role === 'user' && isHeartbeatPromptText(text)) {
+    return true;
+  }
+  return false;
 };
 
 const extractMessageText = extractGatewayMessageText;
@@ -609,6 +808,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private readonly manuallyStoppedSessions = new Set<string>();
   /** runId values that have already terminated with lifecycle phase=error. */
   private readonly terminatedRunIds = new Set<string>();
+  /**
+   * Recently completed/aborted/errored runIds are kept briefly so late gateway
+   * events cannot re-create a ghost turn or attach to the next user turn.
+   */
+  private readonly recentlyClosedRunIds = new Map<string, number>();
   /** Session keys whose origin is "heartbeat" — discovered via polling, used to filter real-time events. */
   private readonly heartbeatSessionKeys = new Set<string>();
   private channelPollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -624,6 +828,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private gatewayStoppingIntentionally = false;
   private static readonly GATEWAY_RECONNECT_MAX_ATTEMPTS = 10;
   private static readonly GATEWAY_RECONNECT_DELAYS = [2_000, 5_000, 10_000, 15_000, 30_000]; // ms
+  private static readonly RECENTLY_CLOSED_RUN_ID_TTL_MS = 120_000;
+  private static readonly RECENTLY_CLOSED_RUN_ID_LIMIT = 1000;
 
   /** Gateway tick heartbeat watchdog state */
   private lastTickTimestamp = 0;
@@ -1190,7 +1396,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (currentModel && currentModel !== this.lastPatchedModelBySession.get(sessionId)) {
       try {
         const client = this.requireGatewayClient();
-        await client.request('sessions.patch', { key: sessionKey, model: currentModel });
+        const channelSessionKey = this.channelSessionSync
+          ?.getOpenClawSessionKeyForCoworkSession(sessionId)
+          .sessionKey;
+        await client.request('sessions.patch', { key: channelSessionKey || sessionKey, model: currentModel });
         this.lastPatchedModelBySession.set(sessionId, currentModel);
       } catch (error) {
         console.warn('[OpenClawRuntime] Failed to patch session model, will retry on next turn:', error);
@@ -1218,6 +1427,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       currentAssistantSegmentText: '',
       currentText: '',
       agentAssistantTextLength: 0,
+      hasSeenAgentAssistantStream: false,
       currentContentText: '',
       currentContentBlocks: [],
       sawNonTextContentBlocks: false,
@@ -1578,6 +1788,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.channelSessionSync?.clearCache();
     this.knownChannelSessionIds.clear();
     this.heartbeatSessionKeys.clear();
+    this.recentlyClosedRunIds.clear();
     this.browserPrewarmAttempted = false;
     this.lastTickTimestamp = 0;
     // Clear messageUpdate throttle state
@@ -1587,6 +1798,43 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.pendingMessageUpdateTimer.clear();
     this.lastMessageUpdateEmitTime.clear();
     this.gatewayStoppingIntentionally = false;
+  }
+
+  private pruneRecentlyClosedRunIds(now = Date.now()): void {
+    for (const [runId, expiresAt] of this.recentlyClosedRunIds.entries()) {
+      if (expiresAt <= now) {
+        this.recentlyClosedRunIds.delete(runId);
+      }
+    }
+
+    while (this.recentlyClosedRunIds.size > OpenClawRuntimeAdapter.RECENTLY_CLOSED_RUN_ID_LIMIT) {
+      const oldestRunId = this.recentlyClosedRunIds.keys().next().value as string | undefined;
+      if (!oldestRunId) return;
+      this.recentlyClosedRunIds.delete(oldestRunId);
+    }
+  }
+
+  private rememberRecentlyClosedRunId(runId: string): void {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) return;
+    const now = Date.now();
+    this.recentlyClosedRunIds.set(
+      normalizedRunId,
+      now + OpenClawRuntimeAdapter.RECENTLY_CLOSED_RUN_ID_TTL_MS,
+    );
+    this.pruneRecentlyClosedRunIds(now);
+  }
+
+  private isRecentlyClosedRunId(runId: string): boolean {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) return false;
+    const expiresAt = this.recentlyClosedRunIds.get(normalizedRunId);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
+      this.recentlyClosedRunIds.delete(normalizedRunId);
+      return false;
+    }
+    return true;
   }
 
   private cancelGatewayReconnect(): void {
@@ -1974,7 +2222,18 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const agentPayload = payload as AgentEventPayload;
     const runId = typeof agentPayload.runId === 'string' ? agentPayload.runId.trim() : '';
     const sessionKey = typeof agentPayload.sessionKey === 'string' ? agentPayload.sessionKey.trim() : '';
-    const stream = typeof agentPayload.stream === 'string' ? agentPayload.stream : '';
+    const stream = typeof agentPayload.stream === 'string' ? agentPayload.stream.trim() : '';
+    const lifecyclePhase = stream === 'lifecycle' ? getAgentLifecyclePhase(agentPayload.data) : '';
+
+    if (runId && this.isRecentlyClosedRunId(runId)) {
+      console.debug('[OpenClawRuntime] dropped late agent event for a closed run.');
+      return;
+    }
+
+    if (lifecyclePhase === AgentLifecyclePhase.Fallback) {
+      console.debug('[OpenClawRuntime] ignored agent lifecycle fallback event.');
+      return;
+    }
 
     const sessionIdByRunId = runId ? this.sessionIdByRunId.get(runId) : undefined;
     const sessionIdBySessionKey = sessionKey ? this.resolveSessionIdBySessionKey(sessionKey) ?? undefined : undefined;
@@ -2092,9 +2351,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       const lifecycleRunId = typeof agentPayload.runId === 'string' ? agentPayload.runId.trim() : '';
       if (
         lifecycleRunId
-        && isRecord(lifecycleData)
-        && typeof lifecycleData.phase === 'string'
-        && lifecycleData.phase.trim() === 'error'
+        && getAgentLifecyclePhase(lifecycleData) === AgentLifecyclePhase.Error
       ) {
         this.terminatedRunIds.add(lifecycleRunId);
       }
@@ -2105,8 +2362,12 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private enqueuePendingAgentEvent(runId: string, payload: AgentEventPayload, seq?: number): void {
     const normalizedRunId = runId.trim();
     if (!normalizedRunId) return;
+    if (this.isRecentlyClosedRunId(normalizedRunId)) return;
 
     const stream = typeof payload.stream === 'string' ? payload.stream.trim() : '';
+    if (stream === 'lifecycle' && getAgentLifecyclePhase(payload.data) === AgentLifecyclePhase.Fallback) {
+      return;
+    }
     const hasToolShape = isRecord(payload.data) && typeof payload.data.toolCallId === 'string';
     const isSupportedStream = stream === 'tool'
       || stream === 'tools'
@@ -2457,6 +2718,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const chatRunId = typeof chatPayload.runId === 'string' ? chatPayload.runId.trim() : '';
     const chatSessionKey = typeof chatPayload.sessionKey === 'string' ? chatPayload.sessionKey.trim() : '';
+    if (chatRunId && this.isRecentlyClosedRunId(chatRunId)) {
+      console.debug('[OpenClawRuntime] dropped late chat event for a closed run.');
+      return;
+    }
 
     const sessionId = this.resolveSessionIdFromChatPayload(chatPayload);
     if (!sessionId) {
@@ -2602,6 +2867,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const runId = typeof p.runId === 'string' ? p.runId.trim() : '';
     const sessionKey = typeof p.sessionKey === 'string' ? p.sessionKey.trim() : '';
+    if (runId && this.isRecentlyClosedRunId(runId)) {
+      console.debug('[OpenClawRuntime] dropped late assistant text for a closed run.');
+      return;
+    }
     let sessionId = runId ? this.sessionIdByRunId.get(runId) : undefined;
     if (!sessionId && sessionKey) {
       sessionId = this.resolveSessionIdBySessionKey(sessionKey) ?? undefined;
@@ -2664,6 +2933,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     // Track high-water mark.
     turn.agentAssistantTextLength = Math.max(turn.agentAssistantTextLength, text.length);
+    if (text.trim().length > 0) {
+      turn.hasSeenAgentAssistantStream = true;
+    }
 
     // Update turn text state and push to store.
     turn.currentText = text;
@@ -2713,6 +2985,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     turn.assistantMessageId = null;
     turn.currentAssistantSegmentText = '';
+    turn.hasSeenAgentAssistantStream = false;
+    turn.chatDeltaOverwriteSkipLogged = false;
   }
 
   private deleteAssistantMessage(sessionId: string, messageId: string): void {
@@ -2797,9 +3071,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     if (turn.assistantMessageId && segmentText !== previousSegmentText) {
-      // Only update in-memory state; SQLite write and IPC emit are handled
-      // by processAgentAssistantText on the agent event path.
-      turn.currentAssistantSegmentText = segmentText;
+      // Only update segment text from chat.delta if this segment has NOT yet
+      // received agent assistant stream text. Agent stream preserves formatting;
+      // chat.delta uses normalized content extraction and can break GFM tables
+      // when the gateway splits content inside a table row.
+      if (!turn.hasSeenAgentAssistantStream) {
+        turn.currentAssistantSegmentText = segmentText;
+      } else if (!turn.chatDeltaOverwriteSkipLogged) {
+        turn.chatDeltaOverwriteSkipLogged = true;
+        console.debug('[OpenClawRuntime] skipping further chat.delta segment overwrite; agent stream owns this assistant segment until split');
+      }
     }
   }
 
@@ -2854,14 +3135,22 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // Flush any pending throttled updates so store content is current.
       this.flushPendingStoreUpdate(sessionId, turn.assistantMessageId);
       this.clearPendingMessageUpdate(turn.assistantMessageId);
-      const storeSession = this.store.getSession(sessionId);
-      const storeMsg = storeSession?.messages.find((m) => m.id === turn.assistantMessageId);
-      if (storeMsg?.content) {
-        this.emit('messageUpdate', sessionId, turn.assistantMessageId, storeMsg.content);
-      }
-
-      const persistedSegmentText = finalSegmentText || previousSegmentText;
+      const { content: persistedSegmentText, reason: persistPickReason } = pickPersistedAssistantSegment(
+        previousSegmentText,
+        finalSegmentText,
+        turn.hasSeenAgentAssistantStream,
+      );
       if (persistedSegmentText) {
+        console.debug(
+          '[OpenClawRuntime] persisting assistant segment at chat.final',
+          `sessionId=${sessionId}`,
+          `messageId=${turn.assistantMessageId}`,
+          `reason=${persistPickReason}`,
+          `previousLen=${previousSegmentText.length}`,
+          `finalLen=${finalSegmentText.length}`,
+          `persistedLen=${persistedSegmentText.length}`,
+          `hadAgentStreamAuthority=${turn.hasSeenAgentAssistantStream}`,
+        );
         this.store.updateMessage(sessionId, turn.assistantMessageId, {
           content: persistedSegmentText,
           metadata: {
@@ -2869,9 +3158,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
             isFinal: true,
           },
         });
-        if (persistedSegmentText !== previousSegmentText) {
-          this.emit('messageUpdate', sessionId, turn.assistantMessageId, persistedSegmentText);
-        }
+        this.emit('messageUpdate', sessionId, turn.assistantMessageId, persistedSegmentText);
       }
     } else if (finalSegmentText) {
       const reusedMessageId = this.reuseFinalAssistantMessage(sessionId, finalSegmentText);
@@ -3250,29 +3537,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         previousCount: previousHistoryCount,
       });
 
-      // Determine if this is a channel session (for Discord/QQ text normalization)
+      // Determine if this is a channel session (for platform text normalization)
       const isChannel = this.channelSessionSync
         && !isManagedSessionKey(sessionKey)
         && this.channelSessionSync.isChannelSessionKey(sessionKey);
-      const isDiscord = sessionKey.includes(':discord:');
-      const isQQ = sessionKey.includes(':qqbot:');
-      const isPopo = sessionKey.includes(':moltbot-popo:');
+      const platformFlags = {
+        isDiscord: sessionKey.includes(':discord:'),
+        isQQ: sessionKey.includes(':qqbot:'),
+        isPopo: sessionKey.includes(':moltbot-popo:'),
+        isFeishu: sessionKey.includes(':feishu:'),
+      };
 
       // Extract authoritative user/assistant entries from gateway history
       const authoritativeEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
-      for (const message of history.messages) {
-        if (!isRecord(message)) continue;
-        const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
+      for (const entry of extractGatewayHistoryEntries(history.messages)) {
+        const role = entry.role;
         if (role !== 'user' && role !== 'assistant') continue;
-        let text = normalizeGatewayHistoryText(
-          role as 'user' | 'assistant',
-          extractMessageText(message),
-        );
-        if (!text) continue;
-        if (role === 'assistant' && isTransientGatewayStatusText(text)) continue;
-        if (isPopo && role === 'user') text = stripPopoSystemHeader(text);
-        if (isDiscord) text = stripDiscordMentions(text);
-        if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
+        const text = normalizeEntryText(role, entry.text, platformFlags);
+        if (!text || shouldSuppressHeartbeatText(role, text)) continue;
         authoritativeEntries.push({ role: role as 'user' | 'assistant', text });
       }
 
@@ -3305,8 +3587,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (session) {
         for (const msg of session.messages) {
           if (msg.type !== 'user' && msg.type !== 'assistant') continue;
-          const text = msg.content.trim();
-          if (!text) continue;
+          const text = normalizeEntryText(msg.type, msg.content, platformFlags);
+          if (!text || shouldSuppressHeartbeatText(msg.type, text)) continue;
           localEntries.push({ role: msg.type, text });
         }
       }
@@ -3324,12 +3606,60 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         return;
       }
 
-      // Replace local messages with authoritative ones
-      console.log(
-        '[Reconcile] replacing messages — sessionId:', sessionId,
-        'local:', localEntries.length, '→ authoritative:', authoritativeEntries.length,
-      );
-      this.store.replaceConversationMessages(sessionId, authoritativeEntries);
+      const alignment = findTailAlignment(localEntries, authoritativeEntries);
+      let entriesToStore: Array<{ role: 'user' | 'assistant'; text: string }>;
+
+      if (alignment && (alignment.localIdx > 0 || alignment.authIdx > 0)) {
+        const authoritativeTail = authoritativeEntries.slice(alignment.authIdx);
+        const tail = localEntries.slice(alignment.localIdx);
+        const tailInSync = tail.length === authoritativeTail.length
+          && tail.every((entry, idx) =>
+            isSameHistoryEntry(entry, authoritativeTail[idx]),
+          );
+        if (tailInSync) {
+          console.log(
+            '[Reconcile] tail in sync — sessionId:', sessionId,
+            'preserved:', alignment.localIdx, 'tail:', tail.length,
+            'authSkipped:', alignment.authIdx,
+          );
+          this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+          return;
+        }
+        entriesToStore = [...localEntries.slice(0, alignment.localIdx), ...authoritativeTail];
+        console.log(
+          '[Reconcile] tail replace — sessionId:', sessionId,
+          'preserved:', alignment.localIdx, 'auth:', authoritativeTail.length,
+          'authSkipped:', alignment.authIdx,
+          'total:', entriesToStore.length,
+        );
+      } else if (isChannel && localEntries.length > authoritativeEntries.length) {
+        console.warn(
+          '[Reconcile] skipped shrinking channel history because gateway history may be windowed — sessionId:', sessionId,
+          'local:', localEntries.length, 'auth:', authoritativeEntries.length,
+          'rawHistory:', history.messages.length, 'limit:', limit,
+        );
+        this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+        return;
+      } else {
+        entriesToStore = authoritativeEntries;
+        console.log(
+          '[Reconcile] full replace — sessionId:', sessionId,
+          'local:', localEntries.length, '-> auth:', authoritativeEntries.length,
+          'alignIdx:', alignment?.localIdx ?? -1,
+        );
+      }
+
+      if (isChannel && entriesToStore.length < localEntries.length) {
+        console.warn(
+          '[Reconcile] skipped shortening channel history after tail alignment — sessionId:', sessionId,
+          'local:', localEntries.length, 'next:', entriesToStore.length,
+          'rawHistory:', history.messages.length, 'limit:', limit,
+        );
+        this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+        return;
+      }
+
+      this.store.replaceConversationMessages(sessionId, entriesToStore);
       this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
 
       // Notify renderer to refresh
@@ -3412,7 +3742,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         );
         if (isChannel) {
           const latestOnly = this.reCreatedChannelSessionIds.has(sessionId);
-          this.syncChannelUserMessages(sessionId, history.messages, latestOnly, turn.sessionKey.includes(':discord:'), turn.sessionKey.includes(':qqbot:'), turn.sessionKey.includes(':moltbot-popo:'));
+          this.syncChannelUserMessages(sessionId, history.messages, latestOnly, turn.sessionKey.includes(':discord:'), turn.sessionKey.includes(':qqbot:'), turn.sessionKey.includes(':moltbot-popo:'), turn.sessionKey.includes(':feishu:'));
         }
 
         if (!this.isCurrentTurnToken(sessionId, turn.turnToken)) {
@@ -3509,24 +3839,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     isDiscord: boolean,
     isQQ: boolean,
     isPopo: boolean = false,
+    isFeishu: boolean = false,
   ): ChannelHistorySyncEntry[] {
     const historyEntries: ChannelHistorySyncEntry[] = [];
     for (const message of historyMessages) {
-      if (!isRecord(message)) continue;
-      const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : '';
+      const entry = extractGatewayHistoryEntries([message])[0];
+      if (!entry) continue;
+      const role = entry.role;
       if (role !== 'user' && role !== 'assistant') continue;
-      let text = normalizeGatewayHistoryText(
-        role as 'user' | 'assistant',
-        extractMessageText(message),
-      );
-      if (role === 'assistant' && isTransientGatewayStatusText(text)) continue;
-      // POPO's moltbot-popo plugin converts newlines to HTML break tags (<br />),
-      // causing raw <br /> to appear in the UI and AI conversation.
-      if (isPopo) text = text.replace(/<br\s*\/?>/gi, '\n');
-      if (isPopo && role === 'user') text = stripPopoSystemHeader(text);
-      if (isDiscord) text = stripDiscordMentions(text);
-      if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
-      if (text) {
+      const text = normalizeEntryText(role, entry.text, { isDiscord, isQQ, isPopo, isFeishu });
+      if (text && !shouldSuppressHeartbeatText(role, text)) {
         historyEntries.push({ role: role as 'user' | 'assistant', text });
       }
     }
@@ -3667,8 +3989,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    * because OpenClaw's `chat.history` window can slide due to byte limits well before
    * the requested message count is reached.
    */
-  private syncChannelUserMessages(sessionId: string, historyMessages: unknown[], latestOnly = false, isDiscord = false, isQQ = false, isPopo = false): void {
-    const historyEntries = this.collectChannelHistoryEntries(historyMessages, isDiscord, isQQ, isPopo);
+  private syncChannelUserMessages(sessionId: string, historyMessages: unknown[], latestOnly = false, isDiscord = false, isQQ = false, isPopo = false, isFeishu = false): void {
+    const historyEntries = this.collectChannelHistoryEntries(historyMessages, isDiscord, isQQ, isPopo, isFeishu);
 
     const cursor = this.channelSyncCursor.get(sessionId) ?? 0;
 
@@ -3862,6 +4184,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         this.lastStoreUpdateTime.delete(turn.assistantMessageId);
       }
       turn.knownRunIds.forEach((knownRunId) => {
+        this.rememberRecentlyClosedRunId(knownRunId);
         this.sessionIdByRunId.delete(knownRunId);
         this.pendingAgentEventsByRunId.delete(knownRunId);
         this.lastChatSeqByRunId.delete(knownRunId);
@@ -3951,6 +4274,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    */
   private ensureActiveTurn(sessionId: string, sessionKey: string, runId: string): void {
     if (this.activeTurns.has(sessionId)) return;
+    if (runId && this.isRecentlyClosedRunId(runId)) {
+      console.debug('[OpenClawRuntime] suppressed active turn creation for a closed run.');
+      return;
+    }
     if (this.manuallyStoppedSessions.has(sessionId)) {
       const isChannel = this.channelSessionSync
         && !isManagedSessionKey(sessionKey)
@@ -3980,6 +4307,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       currentAssistantSegmentText: '',
       currentText: '',
       agentAssistantTextLength: 0,
+      hasSeenAgentAssistantStream: false,
       currentContentText: '',
       currentContentBlocks: [],
       sawNonTextContentBlocks: false,
@@ -4034,7 +4362,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           this.markGatewayHistoryWindowConsumed(sessionId, history.messages);
           const latestOnly = this.reCreatedChannelSessionIds.has(sessionId);
           const beforeCount = this.getUserMessageCount(sessionId);
-                  this.syncChannelUserMessages(sessionId, history.messages, latestOnly, sessionKey.includes(':discord:'), sessionKey.includes(':qqbot:'), sessionKey.includes(':moltbot-popo:'));
+                  this.syncChannelUserMessages(sessionId, history.messages, latestOnly, sessionKey.includes(':discord:'), sessionKey.includes(':qqbot:'), sessionKey.includes(':moltbot-popo:'), sessionKey.includes(':feishu:'));
           const afterCount = this.getUserMessageCount(sessionId);
           const newUserMessages = afterCount - beforeCount;
           console.log('[Debug:prefetch] synced user messages:', newUserMessages, '(before:', beforeCount, 'after:', afterCount, ')');
@@ -4123,6 +4451,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private bindRunIdToTurn(sessionId: string, runId: string): void {
     const normalizedRunId = runId.trim();
     if (!normalizedRunId) return;
+    if (this.isRecentlyClosedRunId(normalizedRunId)) {
+      console.debug('[OpenClawRuntime] suppressed run binding for a closed run.');
+      return;
+    }
     const turn = this.activeTurns.get(sessionId);
     if (!turn) return;
     turn.knownRunIds.add(normalizedRunId);

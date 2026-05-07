@@ -73,15 +73,14 @@ export function setServerBaseUrlGetter(getter: () => string): void {
 let serverModelMetadataCache: Map<string, { supportsImage?: boolean }> = new Map();
 
 export function updateServerModelMetadata(models: Array<{ modelId: string; supportsImage?: boolean }>): boolean {
-  const nextEntries = models.map(m => [m.modelId, { supportsImage: m.supportsImage }] as const);
-  const currentSnapshot = JSON.stringify(Array.from(serverModelMetadataCache.entries()));
-  const nextSnapshot = JSON.stringify(nextEntries);
-  if (currentSnapshot === nextSnapshot) {
-    return false;
-  }
-
-  serverModelMetadataCache = new Map(nextEntries);
-  return true;
+  const previous = serializeServerModelMetadata(getAllServerModelMetadata());
+  const nextCache = new Map(models.map(m => [m.modelId, { supportsImage: m.supportsImage }]));
+  const next = serializeServerModelMetadata(Array.from(nextCache.entries()).map(([modelId, meta]) => ({
+    modelId,
+    supportsImage: meta.supportsImage,
+  })));
+  serverModelMetadataCache = nextCache;
+  return previous !== next;
 }
 
 export function clearServerModelMetadata(): void {
@@ -93,6 +92,47 @@ export function getAllServerModelMetadata(): Array<{ modelId: string; supportsIm
     modelId,
     supportsImage: meta.supportsImage,
   }));
+}
+
+const serializeServerModelMetadata = (
+  models: Array<{ modelId: string; supportsImage?: boolean }>,
+): string => JSON.stringify(
+  models
+    .map((model) => ({
+      modelId: model.modelId,
+      supportsImage: model.supportsImage,
+    }))
+    .sort((a, b) => a.modelId.localeCompare(b.modelId)),
+);
+
+function buildServerFallbackModels(effectiveModelId: string): NonNullable<ProviderConfig['models']> {
+  const models = getAllServerModelMetadata().map((model) => ({
+    id: model.modelId,
+    name: model.modelId,
+    supportsImage: model.supportsImage,
+  }));
+
+  if (!models.some(model => model.id === effectiveModelId)) {
+    const cachedMeta = serverModelMetadataCache.get(effectiveModelId);
+    models.unshift({
+      id: effectiveModelId,
+      name: effectiveModelId,
+      supportsImage: cachedMeta?.supportsImage,
+    });
+  }
+
+  return models;
+}
+
+function normalizeProviderModels(providerName: string, models?: ProviderModel[]): Array<Required<Pick<ProviderModel, 'id' | 'name'>> & Pick<ProviderModel, 'supportsImage'>> {
+  return (models ?? [])
+    .filter(model => model.id?.trim())
+    .map(model => ({
+      ...model,
+      id: model.id,
+      name: model.name || model.id,
+      supportsImage: model.supportsImage,
+    }));
 }
 
 const getStore = (): SqliteStore | null => {
@@ -165,7 +205,7 @@ function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
   console.log('[ClaudeSettings] lobsterai-server fallback activated:', { baseURL, modelId: effectiveModelId, supportsImage: cachedMeta?.supportsImage });
   return {
     providerName: ProviderName.LobsteraiServer,
-    providerConfig: { enabled: true, apiKey: tokens.accessToken, baseUrl: baseURL, apiFormat: 'openai', models: [{ id: effectiveModelId, supportsImage: cachedMeta?.supportsImage }] },
+    providerConfig: { enabled: true, apiKey: tokens.accessToken, baseUrl: baseURL, apiFormat: 'openai', models: buildServerFallbackModels(effectiveModelId) },
     modelId: effectiveModelId,
     apiFormat: 'openai',
     baseURL,
@@ -274,7 +314,8 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
     return { matched: null, error: `Provider ${providerName} requires API key for Anthropic-compatible mode.` };
   }
 
-  const matchedModel = providerConfig.models?.find((m) => m.id === modelId);
+  const normalizedModels = normalizeProviderModels(providerName, providerConfig.models);
+  const matchedModel = normalizedModels.find((m) => m.id === modelId);
 
   return {
     matched: {
@@ -500,7 +541,7 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
       apiKey: apiKey || 'sk-lobsterai-local',
       apiType: effectiveApiFormat === 'anthropic' ? 'anthropic' : 'openai',
       codingPlanEnabled: !!providerConfig.codingPlanEnabled,
-      models,
+      models: normalizeProviderModels(providerName, models),
     });
   }
 

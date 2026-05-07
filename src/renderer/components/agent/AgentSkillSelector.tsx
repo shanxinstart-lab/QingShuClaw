@@ -123,7 +123,7 @@ const AgentSkillSelector: React.FC<AgentSkillSelectorProps> = ({
                   {skill.description && (
                     <div className="text-xs text-secondary/60 truncate">
                       {i18nReady
-                        ? skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)
+                        ? skillService.getInstalledSkillDescription(skill)
                         : skill.description}
                     </div>
                   )}

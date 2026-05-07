@@ -13,7 +13,13 @@ import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 import { RootState } from '../../store';
-import { clearDraftAttachments, type DraftAttachment,setDraftAttachments, setDraftPrompt } from '../../store/slices/coworkSlice';
+import {
+  clearDraftAttachments,
+  type DraftAttachment,
+  setDraftAttachments,
+  setDraftPrompt,
+  updateCurrentSessionModelOverride,
+} from '../../store/slices/coworkSlice';
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { Skill } from '../../types/skill';
@@ -153,6 +159,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [speechStatus, setSpeechStatus] = useState<InputSpeechStatus>('idle');
     const [speechVisible, setSpeechVisible] = useState(window.electron.platform === 'darwin');
     const [speechCommandNonce, setSpeechCommandNonce] = useState(0);
+    const [isPatchingModel, setIsPatchingModel] = useState(false);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const folderButtonRef = useRef<HTMLButtonElement>(null);
@@ -165,6 +172,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const wakeDictationTimerRef = useRef<number | null>(null);
     const pendingWakeDictationStartRef = useRef<WakeDictationCommandConfig | null>(null);
     const activeWakeOverlayRef = useRef(false);
+    const modelPatchRequestIdRef = useRef(0);
 
     const isLarge = size === 'large';
     const minHeight = isLarge ? 44 : 24;
@@ -415,6 +423,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [speechStatus]);
 
   useEffect(() => {
+    modelPatchRequestIdRef.current += 1;
+    setIsPatchingModel(false);
+  }, [sessionId]);
+
+  useEffect(() => {
     const handleFocusInput = (event: Event) => {
       const detail = (event as CustomEvent<{ clear?: boolean }>).detail;
       const shouldClear = detail?.clear ?? true;
@@ -624,7 +637,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
 
     const trimmedValue = value.trim();
-    if ((!trimmedValue && attachments.length === 0) || isStreaming || disabled || isSpeechActive) return;
+    if ((!trimmedValue && attachments.length === 0) || isStreaming || disabled || isSpeechActive || isPatchingModel) return;
     setShowFolderRequiredWarning(false);
 
     // Get active skills prompts and combine them
@@ -702,6 +715,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     isStreaming,
     disabled,
     isSpeechActive,
+    isPatchingModel,
     onSubmit,
     activeSkillIds,
     skills,
@@ -794,7 +808,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
     if (event.key === 'Enter' && !isComposing) {
       const hasModifier = event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
-      if (!hasModifier && !isStreaming && !disabled && !isSpeechActive) {
+      if (!hasModifier && !isStreaming && !disabled && !isSpeechActive && !isPatchingModel) {
         event.preventDefault();
         handleSubmit();
       } else if (hasModifier && !event.shiftKey) {
@@ -1183,7 +1197,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     void handleIncomingFiles(files);
   }, [disabled, handleIncomingFiles, isSpeechActive, isStreaming]);
 
-  const canSubmit = !disabled && !isSpeechActive && (!!value.trim() || attachments.length > 0);
+  const canSubmit = !disabled && !isSpeechActive && !isPatchingModel && (!!value.trim() || attachments.length > 0);
   const enhancedContainerClass = isDraggingFiles
     ? `${containerClass} ring-2 ring-primary/50 border-primary/60`
     : containerClass;
@@ -1289,17 +1303,47 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   <div className="flex flex-col items-start gap-1">
                     <ModelSelector
                       dropdownDirection="up"
+                      disabled={isPatchingModel}
                       value={coworkAgentEngine === 'openclaw' ? explicitSelectedModel : undefined}
                       onChange={coworkAgentEngine === 'openclaw'
                         ? async (nextModel) => {
-                            if (sessionId) {
-                              await coworkService.patchSession(sessionId, {
-                                model: nextModel ? toOpenClawModelRef(nextModel) : null,
+                          if (sessionId) {
+                            if (isPatchingModel) return;
+                            const nextModelRef = nextModel ? toOpenClawModelRef(nextModel) : '';
+                            const previousModelOverride = currentSession?.id === sessionId
+                              ? currentSession.modelOverride ?? ''
+                              : '';
+                            const requestId = modelPatchRequestIdRef.current + 1;
+                            modelPatchRequestIdRef.current = requestId;
+                            setIsPatchingModel(true);
+                            dispatch(updateCurrentSessionModelOverride({ sessionId, modelOverride: nextModelRef }));
+                            try {
+                              const patchedSession = await coworkService.patchSession(sessionId, {
+                                model: nextModelRef || null,
                               });
-                              return;
+                              if (requestId !== modelPatchRequestIdRef.current) return;
+                              if (!patchedSession) {
+                                dispatch(updateCurrentSessionModelOverride({
+                                  sessionId,
+                                  modelOverride: previousModelOverride,
+                                }));
+                              }
+                            } catch {
+                              if (requestId === modelPatchRequestIdRef.current) {
+                                dispatch(updateCurrentSessionModelOverride({
+                                  sessionId,
+                                  modelOverride: previousModelOverride,
+                                }));
+                              }
+                            } finally {
+                              if (requestId === modelPatchRequestIdRef.current) {
+                                setIsPatchingModel(false);
+                              }
                             }
-                            if (!currentAgent) return;
-                            await agentService.updateAgent(currentAgent.id, {
+                            return;
+                          }
+                          if (!currentAgent) return;
+                          await agentService.updateAgent(currentAgent.id, {
                               model: nextModel ? toOpenClawModelRef(nextModel) : '',
                             });
                           }

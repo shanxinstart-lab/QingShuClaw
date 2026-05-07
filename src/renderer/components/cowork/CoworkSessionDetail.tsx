@@ -32,6 +32,7 @@ import { setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { CoworkImageAttachment,CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
 import type { Skill } from '../../types/skill';
 import { getCompactFolderName } from '../../utils/path';
+import { parseUserMessageForDisplay } from '../../utils/userMessageDisplay';
 import Modal from '../common/Modal';
 import ComposeIcon from '../icons/ComposeIcon';
 import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
@@ -995,6 +996,18 @@ export const UserMessageItem: React.FC<{
 
   // Get image attachments from metadata
   const imageAttachments = ((message.metadata as CoworkMessageMetadata)?.imageAttachments ?? []) as CoworkImageAttachment[];
+  const displayContent = parseUserMessageForDisplay(message.content);
+
+  useEffect(() => {
+    if (!expandedImage) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setExpandedImage(null);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [expandedImage]);
 
   return (
     <div
@@ -1010,10 +1023,11 @@ export const UserMessageItem: React.FC<{
         
         <div className="flex-1 min-w-0 relative group/content flex flex-col items-end">
           <div className="text-foreground text-[14px] leading-relaxed w-fit max-w-[42rem] rounded-2xl px-4 py-2.5 bg-surface shadow-subtle text-left">
-            {message.content?.trim() && (
+            {displayContent.trim() && (
               <MarkdownContent
-                content={message.content}
+                content={displayContent}
                 className="max-w-none whitespace-pre-wrap break-words"
+                onImageClick={setExpandedImage}
               />
             )}
             {imageAttachments.length > 0 && (
@@ -1106,11 +1120,23 @@ const AssistantMessageItem: React.FC<{
   onStopTts,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
   const speakableText = buildSpeakableAssistantText(displayContent, {
     skipKeywords: configService.getConfig().voice?.postProcess?.ttsSkipKeywords ?? [],
   });
   const hasSpeakableText = speakableText.length > 0;
+
+  useEffect(() => {
+    if (!expandedImage) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setExpandedImage(null);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [expandedImage]);
 
   return (
     <div
@@ -1124,6 +1150,7 @@ const AssistantMessageItem: React.FC<{
           className="prose dark:prose-invert max-w-none prose-p:leading-[1.6] prose-li:leading-[1.6] prose-p:mb-3"
           resolveLocalFilePath={resolveLocalFilePath}
           showRevealInFolderAction
+          onImageClick={setExpandedImage}
         />
       </div>
       {(showCopyButton || showTtsButton) && (
@@ -1159,6 +1186,19 @@ const AssistantMessageItem: React.FC<{
           <CopyButton
             content={displayContent}
             visible={true}
+          />
+        </div>
+      )}
+      {expandedImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
+          onClick={() => setExpandedImage(null)}
+        >
+          <img
+            src={expandedImage}
+            alt="Preview"
+            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
           />
         </div>
       )}
@@ -1791,6 +1831,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     if (!currentSession) return;
     await coworkService.setSessionPinned(currentSession.id, !currentSession.pinned);
     closeMenu();
+  };
+
+  const handleCopySessionId = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!currentSession) return;
+    try {
+      await navigator.clipboard.writeText(currentSession.id);
+      closeMenu();
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('sessionIdCopied'),
+      }));
+    } catch (error) {
+      console.error('Failed to copy session ID:', error);
+    }
   };
 
   // Delete handlers
@@ -2479,6 +2533,15 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           >
             <ShareIcon className="h-4 w-4 text-secondary" />
             {i18nService.t('coworkShareSession')}
+          </button>
+          <button
+            type="button"
+            onClick={handleCopySessionId}
+            title={`${i18nService.t('sessionIdLabel')}: ${currentSession.id}`}
+            className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-foreground hover:bg-surface-raised transition-colors"
+          >
+            <DocumentArrowDownIcon className="h-4 w-4 text-secondary" />
+            {i18nService.t('copySessionId')}
           </button>
           <button
             type="button"

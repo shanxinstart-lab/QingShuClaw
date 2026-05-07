@@ -8,6 +8,7 @@ import { PlatformRegistry } from '../../shared/platform';
 import { AuthType, ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiConst } from '../../shared/providers';
 import { resolveRawApiConfig, resolveAllProviderApiKeys, resolveAllEnabledProviderConfigs, getAllServerModelMetadata } from './claudeSettings';
 import type { OpenClawEngineManager } from './openclawEngineManager';
+import { getMainAgentWorkspacePath } from './openclawMemoryFile';
 import { parseChannelSessionKey } from './openclawChannelSessionSync';
 import type { McpToolManifestEntry } from './mcpServerManager';
 import { getCoworkOpenAICompatProxyBaseURL } from './coworkOpenAICompatProxy';
@@ -877,6 +878,31 @@ export class OpenClawConfigSync {
     );
   }
 
+  /**
+   * Stamp the `meta` field onto an openclaw config object before writing.
+   *
+   * OpenClaw monitors config snapshots and treats a missing `meta` field as a
+   * suspicious clobber. LobsterAI writes openclaw.json directly, so we stamp
+   * the metadata here while ignoring it during change detection.
+   */
+  private stampConfigMeta(config: Record<string, unknown>): Record<string, unknown> {
+    let version: string | null = null;
+    try {
+      version =
+        this.engineManager.getStatus().version ||
+        this.engineManager.getDesiredVersion();
+    } catch {
+      // Engine manager may not be fully initialized in tests.
+    }
+    return {
+      ...config,
+      meta: {
+        ...(version ? { lastTouchedVersion: version } : {}),
+        lastTouchedAt: new Date().toISOString(),
+      },
+    };
+  }
+
   sync(reason: string): OpenClawConfigSyncResult {
     const configPath = this.engineManager.getConfigPath();
     const coworkConfig = this.getCoworkConfig();
@@ -889,10 +915,9 @@ export class OpenClawConfigSync {
       const result = this.writeMinimalConfig(configPath, reason);
       // Still sync AGENTS.md even when API is not configured — skills/systemPrompt
       // may already be set and should be available when the user configures a model.
-      const workspaceDir = (coworkConfig.workingDirectory || '').trim();
-      const resolvedWorkspaceDir = workspaceDir || path.join(app.getPath('home'), '.openclaw', 'workspace');
-      const agentsMdWarning = this.syncAgentsMd(resolvedWorkspaceDir, coworkConfig);
-      this.syncPerAgentWorkspaces(resolvedWorkspaceDir, coworkConfig);
+      const mainWorkspacePath = getMainAgentWorkspacePath(this.engineManager.getStateDir());
+      const agentsMdWarning = this.syncAgentsMd(mainWorkspacePath, coworkConfig);
+      this.syncPerAgentWorkspaces(mainWorkspacePath, coworkConfig);
       if (agentsMdWarning) result.agentsMdWarning = agentsMdWarning;
       return result;
     }
@@ -986,7 +1011,9 @@ export class OpenClawConfigSync {
     const sandboxMode = mapExecutionModeToSandboxMode(coworkConfig.executionMode || 'auto');
     console.log(`[OpenClawConfigSync] sandbox mode: ${sandboxMode} (executionMode: ${coworkConfig.executionMode || 'auto'})`);
 
-    const workspaceDir = (coworkConfig.workingDirectory || '').trim();
+    const mainWorkspacePath = getMainAgentWorkspacePath(this.engineManager.getStateDir());
+    const taskWorkingDirectory = (coworkConfig.workingDirectory || '').trim();
+    ensureDir(mainWorkspacePath);
 
     const hasMcpBridgePlugin = isBundledPluginAvailable('mcp-bridge');
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
@@ -1100,7 +1127,8 @@ export class OpenClawConfigSync {
           sandbox: {
             mode: sandboxMode,
           },
-          ...(workspaceDir ? { workspace: path.resolve(workspaceDir) } : {}),
+          workspace: path.resolve(mainWorkspacePath),
+          ...(taskWorkingDirectory ? { cwd: path.resolve(taskWorkingDirectory) } : {}),
         },
         ...this.buildAgentsList(providerSelection.primaryModel, this.engineManager.getStateDir()),
       },
@@ -1545,7 +1573,18 @@ export class OpenClawConfigSync {
       currentContent = '';
     }
 
-    const configChanged = currentContent !== nextContent;
+    const configChanged = (() => {
+      if (!currentContent) return true;
+      try {
+        const cur = JSON.parse(currentContent);
+        delete cur.meta;
+        const nxt = JSON.parse(nextContent);
+        delete nxt.meta;
+        return JSON.stringify(cur) !== JSON.stringify(nxt);
+      } catch {
+        return currentContent !== nextContent;
+      }
+    })();
     let mcpBridgeConfigChanged = false;
     try {
       const currentObj = currentContent ? JSON.parse(currentContent) : {};
@@ -1573,8 +1612,9 @@ export class OpenClawConfigSync {
     if (configChanged) {
       try {
         ensureDir(path.dirname(configPath));
+        const stampedContent = `${JSON.stringify(this.stampConfigMeta(managedConfig), null, 2)}\n`;
         const tmpPath = `${configPath}.tmp-${Date.now()}`;
-        fs.writeFileSync(tmpPath, nextContent, 'utf8');
+        fs.writeFileSync(tmpPath, stampedContent, 'utf8');
         fs.renameSync(tmpPath, configPath);
       } catch (error) {
         return {
@@ -1595,11 +1635,10 @@ export class OpenClawConfigSync {
     // Sync AGENTS.md with skills routing prompt to the OpenClaw workspace directory.
     // This runs on every sync regardless of openclaw.json changes, because skills
     // may have been installed/enabled/disabled independently.
-    const resolvedWorkspaceDir = workspaceDir || path.join(app.getPath('home'), '.openclaw', 'workspace');
-    const agentsMdWarning = this.syncAgentsMd(resolvedWorkspaceDir, coworkConfig);
+    const agentsMdWarning = this.syncAgentsMd(mainWorkspacePath, coworkConfig);
 
     // Sync per-agent workspace files (SOUL.md, IDENTITY.md, AGENTS.md) for non-main agents
-    this.syncPerAgentWorkspaces(resolvedWorkspaceDir, coworkConfig);
+    this.syncPerAgentWorkspaces(mainWorkspacePath, coworkConfig);
 
     return {
       ok: true,
@@ -2219,7 +2258,7 @@ export class OpenClawConfigSync {
   * user sets up a model in the UI.
   */
   private writeMinimalConfig(configPath: string, _reason: string): OpenClawConfigSyncResult {
-    const minimalConfig: Record<string, unknown> = {
+    const baseMinimalConfig: Record<string, unknown> = {
       gateway: {
         mode: 'local',
       },
@@ -2229,7 +2268,6 @@ export class OpenClawConfigSync {
       // configures an API model and a full config sync runs.
     };
 
-    const nextContent = `${JSON.stringify(minimalConfig, null, 2)}\n`;
     let currentContent = '';
     try {
       currentContent = fs.readFileSync(configPath, 'utf8');
@@ -2237,34 +2275,46 @@ export class OpenClawConfigSync {
       currentContent = '';
     }
 
-    // If the file already has a meaningful config (from a previous sync or
-    // user configuration), don't downgrade it to the minimal version.
-    // Check for models (API configured), plugin entries (IM channels like
-    // DingTalk/WeCom), or gateway.mode already set.
-    if (currentContent && currentContent !== nextContent) {
+    let mergedConfig: Record<string, unknown> = { ...baseMinimalConfig };
+    if (currentContent) {
       try {
         const existing = JSON.parse(currentContent);
-        if (
-          existing.models?.providers ||
-          existing.plugins?.entries ||
-          existing.gateway?.mode
-        ) {
-          // Already has a config with substance — keep it.
-          return { ok: true, changed: false, configPath };
+        if (existing.plugins) {
+          mergedConfig.plugins = existing.plugins;
         }
+        if (existing.gateway && existing.gateway.mode !== 'local') {
+          mergedConfig.gateway = existing.gateway;
+        }
+        // existing.models is intentionally not preserved: it can reference
+        // provider env placeholders that are no longer injected.
       } catch {
-        // Malformed JSON — overwrite with minimal config.
+        // Malformed JSON — overwrite with base minimal config.
       }
     }
 
-    if (currentContent === nextContent) {
+    const nextContent = `${JSON.stringify(mergedConfig, null, 2)}\n`;
+    const unchanged = (() => {
+      if (!currentContent) return false;
+      try {
+        const cur = JSON.parse(currentContent);
+        delete cur.meta;
+        const nxt = JSON.parse(nextContent);
+        delete nxt.meta;
+        return JSON.stringify(cur) === JSON.stringify(nxt);
+      } catch {
+        return currentContent === nextContent;
+      }
+    })();
+
+    if (unchanged) {
       return { ok: true, changed: false, configPath };
     }
 
     try {
       ensureDir(path.dirname(configPath));
+      const stampedContent = `${JSON.stringify(this.stampConfigMeta(mergedConfig), null, 2)}\n`;
       const tmpPath = `${configPath}.tmp-${Date.now()}`;
-      fs.writeFileSync(tmpPath, nextContent, 'utf8');
+      fs.writeFileSync(tmpPath, stampedContent, 'utf8');
       fs.renameSync(tmpPath, configPath);
       return { ok: true, changed: true, configPath };
     } catch (error) {

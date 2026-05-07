@@ -429,6 +429,15 @@ class SkillService {
     if (marketDesc != null) return resolveLocalizedText(marketDesc);
     return fallback;
   }
+
+  getInstalledSkillDescription(skill: Skill): string {
+    const fallback = skill.description || '';
+    const shouldUseMarketplaceDescription = skill.isBuiltIn || skill.sourceType === 'preset';
+    if (!shouldUseMarketplaceDescription) {
+      return fallback;
+    }
+    return this.getLocalizedSkillDescription(skill.id, skill.name, fallback);
+  }
 }
 
 export const skillService = new SkillService();
