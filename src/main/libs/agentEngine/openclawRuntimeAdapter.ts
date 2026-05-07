@@ -2532,7 +2532,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   /**
-   * Fallback completion for channel turns that never received a `chat state=final`
+   * Fallback completion for turns that never received a `chat state=final`
    * event. Called from handleAgentLifecycleEvent after a delay to give the normal
    * handleChatFinal path time to run first.
    */
@@ -2540,11 +2540,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (!this.activeTurns.has(sessionId)) return;
 
     try {
-      await this.reconcileWithHistory(sessionId, turn.sessionKey);
+      if (isManagedSessionKey(turn.sessionKey)) {
+        await this.syncFinalAssistantWithHistory(sessionId, turn);
+      } else {
+        await this.reconcileWithHistory(sessionId, turn.sessionKey);
+      }
     } catch (error) {
-      console.warn('[OpenClawRuntime] fallback reconcile failed:', error);
+      console.warn('[OpenClawRuntime] fallback final sync failed:', error);
     }
 
+    // Re-check after async final sync — handleChatFinal may have run in the meantime
     if (!this.activeTurns.has(sessionId)) return;
 
     this.store.updateSession(sessionId, { status: 'completed' });
