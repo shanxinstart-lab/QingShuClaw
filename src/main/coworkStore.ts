@@ -355,6 +355,7 @@ export interface CoworkMessageMetadata {
   };
   contextPercent?: number;
   model?: string;
+  agentName?: string;
   [key: string]: unknown;
 }
 

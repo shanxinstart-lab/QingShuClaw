@@ -1323,12 +1323,18 @@ const AssistantMessageItem: React.FC<{
             content={displayContent}
             visible={true}
           />
+          {turnMetadata?.agentName && (
+            <span>{turnMetadata.agentName}</span>
+          )}
           <span>{formatMessageTime(message.timestamp)}</span>
           {turnMetadata?.usage?.inputTokens != null && (
             <span>{`↑${formatTokenCount(turnMetadata.usage.inputTokens)}`}</span>
           )}
           {turnMetadata?.usage?.outputTokens != null && (
             <span>{`↓${formatTokenCount(turnMetadata.usage.outputTokens)}`}</span>
+          )}
+          {turnMetadata?.usage?.cacheReadTokens != null && (
+            <span>{`R${formatTokenCount(turnMetadata.usage.cacheReadTokens)}`}</span>
           )}
           {turnMetadata?.contextPercent != null && (
             <span className={turnMetadata.contextPercent >= 90 ? 'text-red-400' : turnMetadata.contextPercent >= 75 ? 'text-amber-400' : ''}>

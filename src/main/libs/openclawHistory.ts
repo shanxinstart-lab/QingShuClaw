@@ -8,7 +8,7 @@ type GatewayHistoryRole = 'user' | 'assistant' | 'system';
 export interface GatewayHistoryEntry {
   role: GatewayHistoryRole;
   text: string;
-  usage?: { input?: number; output?: number };
+  usage?: { input?: number; output?: number; cacheRead?: number; totalTokens?: number };
   model?: string;
 }
 
@@ -144,7 +144,7 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
   }
 
   // Extract usage and model for assistant messages
-  let usage: { input?: number; output?: number } | undefined;
+  let usage: { input?: number; output?: number; cacheRead?: number; totalTokens?: number } | undefined;
   let model: string | undefined;
   if (role === 'assistant') {
     if (isRecord(message.usage)) {
@@ -153,8 +153,16 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
         : typeof u.inputTokens === 'number' ? u.inputTokens : undefined;
       const output = typeof u.output === 'number' ? u.output
         : typeof u.outputTokens === 'number' ? u.outputTokens : undefined;
-      if (input != null || output != null) {
-        usage = { ...(input != null && { input }), ...(output != null && { output }) };
+      const cacheRead = typeof u.cacheRead === 'number' ? u.cacheRead
+        : typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : undefined;
+      const totalTokens = typeof u.totalTokens === 'number' ? u.totalTokens : undefined;
+      if (input != null || output != null || cacheRead != null || totalTokens != null) {
+        usage = {
+          ...(input != null && { input }),
+          ...(output != null && { output }),
+          ...(cacheRead != null && { cacheRead }),
+          ...(totalTokens != null && { totalTokens }),
+        };
       }
     }
     if (typeof message.model === 'string') {

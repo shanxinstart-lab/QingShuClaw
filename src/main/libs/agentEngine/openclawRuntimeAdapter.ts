@@ -218,6 +218,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 };
 
+const extractAgentNameFromSessionKey = (sessionKey: string | undefined | null): string | undefined => {
+  const parsed = parseManagedSessionKey(sessionKey);
+  if (parsed?.agentId) return parsed.agentId;
+  if (sessionKey && !parsed) return 'main';
+  return undefined;
+};
+
 const isSameChannelHistoryEntry = (
   left: ChannelHistorySyncEntry,
   right: ChannelHistorySyncEntry,
@@ -884,6 +891,42 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    */
   agentTimeoutSeconds = OPENCLAW_AGENT_TIMEOUT_SECONDS;
   private static readonly CLIENT_TIMEOUT_GRACE_MS = 30_000;
+
+  private contextWindowCache: Map<string, number> = new Map();
+  private contextWindowCacheLoaded = false;
+
+  private getContextWindowForModel(modelId: string): number | undefined {
+    if (!this.contextWindowCacheLoaded) {
+      this.contextWindowCacheLoaded = true;
+      try {
+        const stateDir = this.engineManager.getStateDir();
+        for (const agentDir of ['main', 'a']) {
+          const modelsPath = path.join(stateDir, 'agents', agentDir, 'agent', 'models.json');
+          if (!fs.existsSync(modelsPath)) continue;
+          const config = JSON.parse(fs.readFileSync(modelsPath, 'utf-8'));
+          if (config?.providers && typeof config.providers === 'object') {
+            for (const provider of Object.values(config.providers) as any[]) {
+              if (!Array.isArray(provider?.models)) continue;
+              for (const m of provider.models) {
+                if (typeof m?.id === 'string' && typeof m?.contextWindow === 'number') {
+                  this.contextWindowCache.set(m.id, m.contextWindow);
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+    if (this.contextWindowCache.has(modelId)) return this.contextWindowCache.get(modelId);
+    const slashIdx = modelId.indexOf('/');
+    if (slashIdx >= 0) {
+      const bare = modelId.slice(slashIdx + 1);
+      if (this.contextWindowCache.has(bare)) return this.contextWindowCache.get(bare);
+    }
+    return undefined;
+  }
 
   constructor(
     store: CoworkStore,
@@ -3478,11 +3521,19 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
             : typeof finalUsageRecord.outputTokens === 'number' ? finalUsageRecord.outputTokens
             : undefined)
           : undefined;
+        const finalTotalTokens = finalUsageRecord && typeof finalUsageRecord.totalTokens === 'number'
+          ? finalUsageRecord.totalTokens : undefined;
+        const finalCacheReadTokens = finalUsageRecord
+          ? (typeof finalUsageRecord.cacheRead === 'number' ? finalUsageRecord.cacheRead
+            : typeof finalUsageRecord.cacheReadTokens === 'number' ? finalUsageRecord.cacheReadTokens
+            : undefined)
+          : undefined;
 
         if (finalInputTokens != null || finalOutputTokens != null || finalModel) {
           void this.applyUsageMetadataFromFinal(
             sessionId, turn.sessionKey, targetMessageId,
             finalInputTokens, finalOutputTokens, finalModel,
+            finalTotalTokens, finalCacheReadTokens,
           );
         } else {
           // Fallback: fetch from chat.history after a delay to give gateway time
@@ -3564,50 +3615,53 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
       if (!usageMsg) return;
 
-      const usage = usageMsg.usage as Record<string, number>;
-      const inputTokens = usage.input ?? usage.inputTokens ?? undefined;
-      const outputTokens = usage.output ?? usage.outputTokens ?? undefined;
+      const usage = usageMsg.usage as Record<string, unknown>;
+      const inputTokens = (typeof usage.input === 'number' ? usage.input : undefined)
+        ?? (typeof usage.inputTokens === 'number' ? usage.inputTokens : undefined);
+      const outputTokens = (typeof usage.output === 'number' ? usage.output : undefined)
+        ?? (typeof usage.outputTokens === 'number' ? usage.outputTokens : undefined);
+      const totalTokens = typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined;
+      const cacheReadTokens = (typeof usage.cacheRead === 'number' ? usage.cacheRead : undefined)
+        ?? (typeof usage.cacheReadTokens === 'number' ? usage.cacheReadTokens : undefined)
+        ?? (typeof (usage as any).cache_read_input_tokens === 'number' ? (usage as any).cache_read_input_tokens : undefined);
       const model = typeof usageMsg.model === 'string' ? usageMsg.model : undefined;
 
-      // Compute contextPercent from session info if available
+      // Compute contextPercent: promptTokens (input + cacheRead + cacheWrite) / contextWindow
       let contextPercent: number | undefined;
-      try {
-        const previewResult = await client.request<{ sessions?: unknown[] }>('sessions.preview', {
-          keys: [sessionKey],
-        }, { timeoutMs: 5_000 });
-        const sessions = (previewResult as Record<string, unknown>)?.sessions;
-        if (Array.isArray(sessions) && sessions.length > 0) {
-          const sessionRow = sessions[0] as Record<string, unknown>;
-          const contextTokens = typeof sessionRow?.contextTokens === 'number'
-            ? sessionRow.contextTokens : undefined;
-          if (typeof inputTokens === 'number' && contextTokens && contextTokens > 0) {
-            contextPercent = Math.min(Math.round((inputTokens / contextTokens) * 100), 100);
-          }
+      const promptTokens = (typeof inputTokens === 'number' ? inputTokens : 0)
+        + (typeof cacheReadTokens === 'number' ? cacheReadTokens : 0);
+      if (promptTokens > 0) {
+        const contextWindow = this.getContextWindowForModel(model ?? '');
+        if (contextWindow && contextWindow > 0) {
+          contextPercent = Math.min(Math.round((promptTokens / contextWindow) * 100), 100);
         }
-      } catch {
-        // contextPercent unavailable is acceptable
       }
+
+      // Extract agent name from sessionKey
+      const agentName = extractAgentNameFromSessionKey(sessionKey);
 
       if (inputTokens == null && outputTokens == null && !model) return;
 
       const usageMetadata: Record<string, unknown> = {
         isStreaming: false,
         isFinal: true,
-        ...(inputTokens != null || outputTokens != null ? {
+        ...(inputTokens != null || outputTokens != null || cacheReadTokens != null ? {
           usage: {
             ...(inputTokens != null && { inputTokens }),
             ...(outputTokens != null && { outputTokens }),
+            ...(cacheReadTokens != null && { cacheReadTokens }),
           },
         } : {}),
         ...(contextPercent != null && { contextPercent }),
         ...(model && { model }),
+        ...(agentName && { agentName }),
       };
 
       this.store.updateMessage(sessionId, assistantMessageId, {
         metadata: usageMetadata as CoworkMessageMetadata,
       });
 
-      console.debug('[OpenClawRuntime] syncUsageMetadata success:', sessionId, model ?? 'unknown-model', `in=${inputTokens ?? '-'} out=${outputTokens ?? '-'} ctx=${contextPercent ?? '-'}%`);
+      console.debug('[OpenClawRuntime] syncUsageMetadata success:', sessionId, model ?? 'unknown-model', `in=${inputTokens ?? '-'} out=${outputTokens ?? '-'} ctx=${contextPercent ?? '-'}% cacheRead=${cacheReadTokens ?? '-'} agent=${agentName ?? '-'}`);
 
       // Notify renderer to re-render the message with usage data
       const session = this.store.getSession(sessionId);
@@ -3629,46 +3683,41 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     inputTokens: number | undefined,
     outputTokens: number | undefined,
     model: string | undefined,
+    totalTokens?: number | undefined,
+    cacheReadTokens?: number | undefined,
   ): Promise<void> {
     let contextPercent: number | undefined;
-    try {
-      const client = this.gatewayClient;
-      if (client && typeof inputTokens === 'number') {
-        const previewResult = await client.request<{ sessions?: unknown[] }>('sessions.preview', {
-          keys: [sessionKey],
-        }, { timeoutMs: 5_000 });
-        const sessions = (previewResult as Record<string, unknown>)?.sessions;
-        if (Array.isArray(sessions) && sessions.length > 0) {
-          const sessionRow = sessions[0] as Record<string, unknown>;
-          const contextTokens = typeof sessionRow?.contextTokens === 'number'
-            ? sessionRow.contextTokens : undefined;
-          if (contextTokens && contextTokens > 0) {
-            contextPercent = Math.min(Math.round((inputTokens / contextTokens) * 100), 100);
-          }
-        }
+    const promptTokens = (typeof inputTokens === 'number' ? inputTokens : 0)
+      + (typeof cacheReadTokens === 'number' ? cacheReadTokens : 0);
+    if (promptTokens > 0) {
+      const contextWindow = this.getContextWindowForModel(model ?? '');
+      if (contextWindow && contextWindow > 0) {
+        contextPercent = Math.min(Math.round((promptTokens / contextWindow) * 100), 100);
       }
-    } catch {
-      // contextPercent unavailable is acceptable
     }
+
+    const agentName = extractAgentNameFromSessionKey(sessionKey);
 
     const usageMetadata: Record<string, unknown> = {
       isStreaming: false,
       isFinal: true,
-      ...(inputTokens != null || outputTokens != null ? {
+      ...(inputTokens != null || outputTokens != null || cacheReadTokens != null ? {
         usage: {
           ...(inputTokens != null && { inputTokens }),
           ...(outputTokens != null && { outputTokens }),
+          ...(cacheReadTokens != null && { cacheReadTokens }),
         },
       } : {}),
       ...(contextPercent != null && { contextPercent }),
       ...(model && { model }),
+      ...(agentName && { agentName }),
     };
 
     this.store.updateMessage(sessionId, assistantMessageId, {
       metadata: usageMetadata as CoworkMessageMetadata,
     });
 
-    console.debug('[OpenClawRuntime] applyUsageMetadataFromFinal:', sessionId, model ?? 'unknown-model', `in=${inputTokens ?? '-'} out=${outputTokens ?? '-'} ctx=${contextPercent ?? '-'}%`);
+    console.debug('[OpenClawRuntime] applyUsageMetadataFromFinal:', sessionId, model ?? 'unknown-model', `in=${inputTokens ?? '-'} out=${outputTokens ?? '-'} ctx=${contextPercent ?? '-'}% cacheRead=${cacheReadTokens ?? '-'} agent=${agentName ?? '-'}`);
 
     const session = this.store.getSession(sessionId);
     if (session) {
