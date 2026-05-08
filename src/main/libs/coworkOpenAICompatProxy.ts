@@ -134,6 +134,35 @@ let tokenRefresher: (() => Promise<string | null>) | null = null;
 let currentCoworkSessionId: string | null = null;
 const toolCallExtraContentById = new Map<string, unknown>();
 
+const ALLOWED_PROXY_HOSTS = new Set([
+  '127.0.0.1',
+  'localhost',
+  '[::1]',
+  '::1',
+]);
+
+export function isAllowedProxyHost(req: http.IncomingMessage): boolean {
+  const hostHeader = req.headers.host;
+  if (!hostHeader) {
+    return true;
+  }
+
+  let hostName: string;
+  if (hostHeader.startsWith('[')) {
+    const bracketEnd = hostHeader.indexOf(']');
+    hostName = bracketEnd >= 0
+      ? hostHeader.slice(0, bracketEnd + 1)
+      : hostHeader;
+  } else {
+    const colonIndex = hostHeader.lastIndexOf(':');
+    hostName = colonIndex >= 0
+      ? hostHeader.slice(0, colonIndex)
+      : hostHeader;
+  }
+
+  return ALLOWED_PROXY_HOSTS.has(hostName);
+}
+
 export function setCoworkProxySessionId(sessionId: string | null): void {
   currentCoworkSessionId = sessionId;
 }
@@ -2216,6 +2245,13 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
+  if (!isAllowedProxyHost(req)) {
+    console.warn(`[CoworkProxy] Rejected request with disallowed Host header: ${req.headers.host}`);
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
+
   const method = (req.method || 'GET').toUpperCase();
   const url = new URL(req.url || '/', `http://${LOCAL_HOST}`);
 
