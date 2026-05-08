@@ -2503,17 +2503,35 @@ export class CoworkRunner extends EventEmitter {
   }
 
   private normalizeSdkError(value: unknown): string | null {
-    if (typeof value !== 'string') {
-      return null;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed || trimmed.toLowerCase() === 'unknown') {
+        return null;
+      }
+      return trimmed;
     }
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
+
+    if (value && typeof value === 'object') {
+      const errorRecord = value as Record<string, unknown>;
+      const message = errorRecord.message ?? errorRecord.msg;
+      if (typeof message === 'string' && message.trim()) {
+        const parts = [message.trim()];
+        if (typeof errorRecord.type === 'string' && errorRecord.type.trim()) {
+          parts.push(`(type: ${errorRecord.type.trim()})`);
+        }
+        if (errorRecord.code != null && String(errorRecord.code).trim()) {
+          parts.push(`(code: ${String(errorRecord.code).trim()})`);
+        }
+        return parts.join(' ');
+      }
+
+      // 部分 OpenAI 兼容接口会把真实错误包在 error.message 中。
+      if (errorRecord.error && typeof errorRecord.error === 'object') {
+        return this.normalizeSdkError(errorRecord.error);
+      }
     }
-    if (trimmed.toLowerCase() === 'unknown') {
-      return null;
-    }
-    return trimmed;
+
+    return null;
   }
 
   private handleClaudeEvent(sessionId: string, event: unknown): void {
@@ -2586,17 +2604,19 @@ export class CoworkRunner extends EventEmitter {
       if (subtype !== 'success') {
         const errors = Array.isArray(payload.errors)
           ? payload.errors
-            .filter((error) => typeof error === 'string')
-            .map((error) => (error as string).trim())
-            .filter((error) => error && error.toLowerCase() !== 'unknown')
+            .map((error) => (typeof error === 'string' ? error.trim() : this.normalizeSdkError(error)))
+            .filter((error): error is string => !!error && error.toLowerCase() !== 'unknown')
           : [];
         const payloadError = this.normalizeSdkError(payload.error);
+        const resultError = this.normalizeSdkError(payload.result);
         const errorMessage =
           errors.length > 0
             ? errors.join('\n')
             : payloadError
               ? payloadError
-              : 'Claude run failed';
+              : resultError
+                ? resultError
+                : `Agent run failed (subtype: ${subtype})`;
         this.handleError(sessionId, errorMessage);
         return;
       }
