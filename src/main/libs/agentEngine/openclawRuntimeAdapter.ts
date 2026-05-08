@@ -44,7 +44,9 @@ import { AgentLifecyclePhase, type AgentLifecyclePhase as AgentLifecyclePhaseVal
 const OPENCLAW_GATEWAY_TOOL_EVENTS_CAP = 'tool-events';
 const BRIDGE_MAX_MESSAGES = 20;
 const BRIDGE_MAX_MESSAGE_CHARS = 1200;
-const GATEWAY_READY_TIMEOUT_MS = 15_000;
+// OpenClaw may spend extra time loading plugins or fetching bootstrap metadata
+// before the gateway client handshake completes, so avoid false startup timeout.
+const GATEWAY_READY_TIMEOUT_MS = 60_000;
 const FINAL_HISTORY_SYNC_LIMIT = 50;
 const CHANNEL_SESSION_DISCOVERY_LIMIT = 200;
 const INTERNAL_SYSTEM_PROMPT_HEADER = '[LobsterAI system instructions]';
