@@ -3,14 +3,14 @@ import React, { useEffect, useRef,useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
-import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
-import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
+import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { addMessage, clearCurrentSession, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
+import { setSelectedModel } from '../../store/slices/modelSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { CoworkImageAttachment, CoworkSession, OpenClawEngineStatus } from '../../types/cowork';
@@ -63,12 +63,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const quickActions = useSelector((state: RootState) => state.quickAction.actions);
   const selectedActionId = useSelector((state: RootState) => state.quickAction.selectedActionId);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
-  const agents = useSelector((state: RootState) => state.agent.agents);
-  const availableModels = useSelector((state: RootState) => state.model.availableModels);
-  const currentAgent = agents.find((agent) => agent.id === currentAgentId);
-  const explicitHeaderModel = currentAgent?.model?.trim()
-    ? resolveOpenClawModelRef(currentAgent.model, availableModels) ?? null
-    : null;
+  const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
 
   const buildApiConfigNotice = (error?: string) => {
     const baseNotice = i18nService.t('coworkModelSettingsRequired');
@@ -214,7 +209,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
       // Capture active skill IDs before clearing them
       const sessionSkillIds = [...activeSkillIds];
-      const sessionModelOverride = explicitHeaderModel ? toOpenClawModelRef(explicitHeaderModel) : '';
+      const sessionModelOverride = globalSelectedModel ? toOpenClawModelRef(globalSelectedModel) : '';
 
       const tempSession: CoworkSession = {
         id: tempSessionId,
@@ -485,13 +480,11 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           </div>
         )}
         <ModelSelector
-          value={isOpenClawEngine ? explicitHeaderModel : undefined}
+          value={isOpenClawEngine ? globalSelectedModel : undefined}
           onChange={isOpenClawEngine
             ? async (nextModel) => {
-                if (!currentAgent) return;
-                await agentService.updateAgent(currentAgent.id, {
-                  model: nextModel ? toOpenClawModelRef(nextModel) : '',
-                });
+                if (!nextModel) return;
+                dispatch(setSelectedModel(nextModel));
               }
             : undefined}
           defaultLabel={isOpenClawEngine ? i18nService.t('scheduledTasksFormModelDefault') : undefined}
