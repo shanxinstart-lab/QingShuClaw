@@ -75,25 +75,27 @@ interface CoworkConfig {
   openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
-type CoworkConfigUpdate = Partial<Pick<
-  CoworkConfig,
-  | 'workingDirectory'
-  | 'executionMode'
-  | 'agentEngine'
-  | 'memoryEnabled'
-  | 'memoryImplicitUpdateEnabled'
-  | 'memoryLlmJudgeEnabled'
-  | 'memoryGuardLevel'
-  | 'memoryUserMemoriesMaxItems'
-  | 'skipMissedJobs'
-  | 'embeddingEnabled'
-  | 'embeddingProvider'
-  | 'embeddingModel'
-  | 'embeddingLocalModelPath'
-  | 'embeddingVectorWeight'
-  | 'embeddingRemoteBaseUrl'
-  | 'embeddingRemoteApiKey'
->>;
+type CoworkConfigUpdate = Partial<
+  Pick<
+    CoworkConfig,
+    | 'workingDirectory'
+    | 'executionMode'
+    | 'agentEngine'
+    | 'memoryEnabled'
+    | 'memoryImplicitUpdateEnabled'
+    | 'memoryLlmJudgeEnabled'
+    | 'memoryGuardLevel'
+    | 'memoryUserMemoriesMaxItems'
+    | 'skipMissedJobs'
+    | 'embeddingEnabled'
+    | 'embeddingProvider'
+    | 'embeddingModel'
+    | 'embeddingLocalModelPath'
+    | 'embeddingVectorWeight'
+    | 'embeddingRemoteBaseUrl'
+    | 'embeddingRemoteApiKey'
+  >
+>;
 
 interface CoworkUserMemoryEntry {
   id: string;
@@ -598,13 +600,39 @@ interface IElectronAPI {
     ) => Promise<{ success: boolean; result?: IMConnectivityTestResult; error?: string }>;
     getStatus: () => Promise<{ success: boolean; status?: IMGatewayStatus; error?: string }>;
     getLocalIp: () => Promise<string>;
-    getOpenClawConfigSchema: () => Promise<{ success: boolean; result?: { schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> }; error?: string }>;
-    weixinQrLoginStart: () => Promise<{ success: boolean; qrDataUrl?: string; message: string; sessionKey?: string }>;
-    weixinQrLoginWait: (accountId?: string) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string }>;
+    getOpenClawConfigSchema: () => Promise<{
+      success: boolean;
+      result?: {
+        schema: Record<string, unknown>;
+        uiHints: Record<string, Record<string, unknown>>;
+      };
+      error?: string;
+    }>;
+    weixinQrLoginStart: () => Promise<{
+      success: boolean;
+      qrDataUrl?: string;
+      message: string;
+      sessionKey?: string;
+    }>;
+    weixinQrLoginWait: (
+      accountId?: string,
+    ) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string }>;
 
     // POPO QR login
-    popoQrLoginStart: () => Promise<{ success: boolean; qrUrl?: string; taskToken?: string; timeoutMs?: number; message?: string }>;
-    popoQrLoginPoll: (taskToken: string) => Promise<{ success: boolean; appKey?: string; appSecret?: string; aesKey?: string; message: string }>;
+    popoQrLoginStart: () => Promise<{
+      success: boolean;
+      qrUrl?: string;
+      taskToken?: string;
+      timeoutMs?: number;
+      message?: string;
+    }>;
+    popoQrLoginPoll: (taskToken: string) => Promise<{
+      success: boolean;
+      appKey?: string;
+      appSecret?: string;
+      aesKey?: string;
+      message: string;
+    }>;
 
     // POPO Multi-Instance
     addPopoInstance: (name: string) => Promise<{ success: boolean; instance?: import('./im').PopoInstanceConfig; error?: string }>;
@@ -623,8 +651,14 @@ interface IElectronAPI {
       allowFrom: string[];
       error?: string;
     }>;
-    approvePairingCode: (platform: string, code: string) => Promise<{ success: boolean; error?: string }>;
-    rejectPairingRequest: (platform: string, code: string) => Promise<{ success: boolean; error?: string }>;
+    approvePairingCode: (
+      platform: string,
+      code: string,
+    ) => Promise<{ success: boolean; error?: string }>;
+    rejectPairingRequest: (
+      platform: string,
+      code: string,
+    ) => Promise<{ success: boolean; error?: string }>;
     nimQrLoginStart: () => Promise<{
       uuid: string;
       qrValue: string;
@@ -643,10 +677,18 @@ interface IElectronAPI {
       errorCode?: string;
       error?: string;
     }>;
-    addNimInstance: (name: string) => Promise<{ success: boolean; instance?: NimInstanceConfig; error?: string }>;
+    addNimInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: NimInstanceConfig; error?: string }>;
     deleteNimInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setNimInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addQQInstance: (name: string) => Promise<{ success: boolean; instance?: QQInstanceConfig; error?: string }>;
+    setNimInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addQQInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: QQInstanceConfig; error?: string }>;
     deleteQQInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
     setQQInstanceConfig: (
       instanceId: string,
@@ -666,19 +708,47 @@ interface IElectronAPI {
       name: string,
     ) => Promise<{ success: boolean; instance?: DingTalkInstanceConfig; error?: string }>;
     deleteDingTalkInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setDingTalkInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addEmailInstance: (name: string) => Promise<{ success: boolean; instance?: EmailInstanceConfig; error?: string }>;
+    setDingTalkInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addEmailInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: EmailInstanceConfig; error?: string }>;
     deleteEmailInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setEmailInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addWecomInstance: (name: string) => Promise<{ success: boolean; instance?: WecomInstanceConfig; error?: string }>;
+    setEmailInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addWecomInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: WecomInstanceConfig; error?: string }>;
     deleteWecomInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addTelegramInstance: (name: string) => Promise<{ success: boolean; instance?: TelegramInstanceConfig; error?: string }>;
+    setWecomInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addTelegramInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: TelegramInstanceConfig; error?: string }>;
     deleteTelegramInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setTelegramInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
-    addDiscordInstance: (name: string) => Promise<{ success: boolean; instance?: DiscordInstanceConfig; error?: string }>;
+    setTelegramInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
+    addDiscordInstance: (
+      name: string,
+    ) => Promise<{ success: boolean; instance?: DiscordInstanceConfig; error?: string }>;
     deleteDiscordInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
-    setDiscordInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    setDiscordInstanceConfig: (
+      instanceId: string,
+      config: any,
+      options?: { syncGateway?: boolean },
+    ) => Promise<{ success: boolean; error?: string }>;
     onStatusChange: (callback: (status: IMGatewayStatus) => void) => () => void;
     onMessageReceived: (callback: (message: IMMessage) => void) => () => void;
   };
@@ -722,6 +792,7 @@ interface IElectronAPI {
       taskId: string,
       limit?: number,
       offset?: number,
+      filter?: import('../../scheduledTask/types').RunFilter,
     ) => Promise<{
       success: boolean;
       runs?: import('../../scheduledTask/types').ScheduledTaskRun[];
@@ -731,6 +802,7 @@ interface IElectronAPI {
     listAllRuns: (
       limit?: number,
       offset?: number,
+      filter?: import('../../scheduledTask/types').RunFilter,
     ) => Promise<{
       success: boolean;
       runs?: import('../../scheduledTask/types').ScheduledTaskRunWithName[];
@@ -746,7 +818,11 @@ interface IElectronAPI {
       channels?: import('../../scheduledTask/types').ScheduledTaskChannelOption[];
       error?: string;
     }>;
-    listChannelConversations?: (channel: string, accountId?: string, filterAccountId?: string) => Promise<{
+    listChannelConversations?: (
+      channel: string,
+      accountId?: string,
+      filterAccountId?: string,
+    ) => Promise<{
       success: boolean;
       conversations?: import('../../scheduledTask/types').ScheduledTaskConversationOption[];
       error?: string;
@@ -804,9 +880,41 @@ interface IElectronAPI {
   };
   auth: {
     login: (loginUrl?: string) => Promise<{ success: boolean; error?: string }>;
-    exchange: (code: string) => Promise<{ success: boolean; user?: import('../store/slices/authSlice').UserProfile; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number }; error?: string }>;
-    getUser: () => Promise<{ success: boolean; user?: import('../store/slices/authSlice').UserProfile; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number } }>;
-    getQuota: () => Promise<{ success: boolean; quota?: { planName: string; subscriptionStatus: string; creditsLimit: number; creditsUsed: number; creditsRemaining: number } }>;
+    exchange: (
+      code: string,
+    ) => Promise<{
+      success: boolean;
+      user?: import('../store/slices/authSlice').UserProfile;
+      quota?: {
+        planName: string;
+        subscriptionStatus: string;
+        creditsLimit: number;
+        creditsUsed: number;
+        creditsRemaining: number;
+      };
+      error?: string;
+    }>;
+    getUser: () => Promise<{
+      success: boolean;
+      user?: import('../store/slices/authSlice').UserProfile;
+      quota?: {
+        planName: string;
+        subscriptionStatus: string;
+        creditsLimit: number;
+        creditsUsed: number;
+        creditsRemaining: number;
+      };
+    }>;
+    getQuota: () => Promise<{
+      success: boolean;
+      quota?: {
+        planName: string;
+        subscriptionStatus: string;
+        creditsLimit: number;
+        creditsUsed: number;
+        creditsRemaining: number;
+      };
+    }>;
     logout: () => Promise<{ success: boolean }>;
     refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
     getAccessToken: () => Promise<string | null>;
