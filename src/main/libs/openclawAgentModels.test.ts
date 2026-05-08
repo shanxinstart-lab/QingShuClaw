@@ -59,6 +59,35 @@ describe('buildAgentEntry', () => {
       model: { primary: 'anthropic/claude-sonnet-4' },
     });
   });
+
+  test('当旧 provider-qualified model 已迁移到新 provider 时自动改写', () => {
+    const result = buildAgentEntry({
+      id: 'main',
+      name: 'main',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: 'openai/gpt-5.3-codex',
+      icon: '',
+      skillIds: [],
+      toolBundleIds: [],
+      enabled: true,
+      isDefault: true,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'deepseek/deepseek-v4-flash', {
+      availableProviders: {
+        'openai-codex': { models: [{ id: 'gpt-5.3-codex' }] },
+      },
+    });
+
+    expect(result).toMatchObject({
+      id: 'main',
+      model: { primary: 'openai-codex/gpt-5.3-codex' },
+    });
+  });
 });
 
 describe('buildManagedAgentEntries', () => {
@@ -250,6 +279,18 @@ describe('resolveQualifiedAgentModelRef', () => {
       status: 'ambiguous',
       modelId: 'deepseek-v3.2',
       providerIds: ['anthropic', 'lobsterai-server'],
+    });
+  });
+
+  test('旧 provider-qualified ref 的 model 仅在新 provider 命中时自动改写', () => {
+    expect(resolveQualifiedAgentModelRef({
+      agentModel: 'openai/gpt-5.3-codex',
+      availableProviders: {
+        'openai-codex': { models: [{ id: 'gpt-5.3-codex' }] },
+      },
+    })).toEqual({
+      status: 'qualified',
+      primaryModel: 'openai-codex/gpt-5.3-codex',
     });
   });
 });
