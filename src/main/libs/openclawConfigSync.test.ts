@@ -368,3 +368,22 @@ describe('provider registry coverage', () => {
     }
   });
 });
+
+describe('buildProviderSelection compatibility', () => {
+  test('repairs stale image capability for known Qwen models', async () => {
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: 'sk-test',
+      baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      modelId: 'qwen3.6-plus',
+      apiType: 'openai',
+      providerName: ProviderName.Qwen,
+      codingPlanEnabled: true,
+      supportsImage: false,
+      modelName: 'qwen3.6-plus',
+    });
+
+    expect(selection.providerConfig.models[0].input).toEqual(['text', 'image']);
+  });
+});
