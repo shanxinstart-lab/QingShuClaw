@@ -425,6 +425,8 @@ contextBridge.exposeInMainWorld('electron', {
     getPath: () => ipcRenderer.invoke('log:getPath'),
     openFolder: () => ipcRenderer.invoke('log:openFolder'),
     exportZip: () => ipcRenderer.invoke('log:exportZip'),
+    fromRenderer: (level: string, tag: string, message: string) =>
+      ipcRenderer.send('log:fromRenderer', level, tag, message),
   },
   im: {
     // Configuration

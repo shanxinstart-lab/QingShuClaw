@@ -2785,6 +2785,18 @@ if (!gotTheLock) {
     }
   };
 
+  ipcMain.on('log:fromRenderer', (_event, level: string, tag: string, message: string) => {
+    const safeLevel = level === 'error' || level === 'warn' || level === 'info' ? level : 'info';
+    const safeTag = typeof tag === 'string'
+      ? tag.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'Renderer'
+      : 'Renderer';
+    const safeMessage = typeof message === 'string'
+      ? message.slice(0, 1000)
+      : String(message).slice(0, 1000);
+    const log = safeLevel === 'error' ? console.error : safeLevel === 'warn' ? console.warn : console.log;
+    log(`[Renderer][${safeTag}] ${safeMessage}`);
+  });
+
   // Allow renderer to retrieve a buffered auth code on init
   ipcMain.handle('auth:getPendingCallback', () => {
     const callback = pendingAuthCallback;

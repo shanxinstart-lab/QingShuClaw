@@ -215,44 +215,58 @@ const App: React.FC = () => {
       return;
     }
     hasInitialized.current = true;
+    const electronForInit = electronApi;
 
     const initializeApp = async () => {
+      const startedAt = performance.now();
+      const mark = (label: string) => {
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        const message = `initializeApp ${label} (${elapsedMs}ms)`;
+        console.info(`[App] ${message}`);
+        try {
+          electronForInit?.log.fromRenderer('info', 'AppInit', message);
+        } catch {
+          // Logging is best-effort during early startup.
+        }
+      };
       try {
-        console.info('[App] initializeApp: start');
-        if (!electronApi) {
+        mark('start');
+        if (!electronForInit) {
           throw new Error(i18nService.t('initializationElectronUnavailable'));
         }
         // 标记平台，用于 CSS 条件样式（如 Windows 标题栏按钮区域留白）
         document.documentElement.classList.add(`platform-${platform}`);
 
         // 初始化配置
-        console.info('[App] initializeApp: configService.init');
         await waitWithTimeout(configService.init(), 5000, 'configService.init');
+        mark('config ready');
 
         // Load enterprise config if present
-        const entConfig = await electronApi.enterprise.getConfig();
+        const entConfig = await electronForInit.enterprise.getConfig();
         setEnterpriseConfig(entConfig);
+        mark('enterprise config ready');
 
         const cachedBrandConfig = await getCachedBrandRuntimeConfig();
         setBrandRuntimeConfig(cachedBrandConfig);
+        mark('brand config ready');
 
         // 初始化主题
-        console.info('[App] initializeApp: themeService.initialize');
         themeService.initialize();
+        mark('theme ready');
 
         // 初始化语言
-        console.info('[App] initializeApp: i18nService.initialize');
         await waitWithTimeout(i18nService.initialize(), 5000, 'i18nService.initialize');
+        mark('i18n ready');
 
         // 登录态恢复内部已经把重型同步拆到后台，这里尽早并行启动，
         // 让套餐模型和用户资料更快回到工作台，但不阻塞首屏。
-        console.info('[App] initializeApp: authService.init (parallel)');
         void authService.init().catch((error) => {
           console.error('[App] initializeApp: authService.init failed:', error);
         });
+        mark('auth restore started');
 
-        console.info('[App] initializeApp: configService.getConfig');
         const config = await configService.getConfig();
+        mark('app config loaded');
         
         const apiConfig: ApiConfig = {
           apiKey: config.api.key,
@@ -322,7 +336,7 @@ const App: React.FC = () => {
         });
 
         setIsInitialized(true);
-        console.info('[App] initializeApp: shell ready');
+        mark('shell ready');
 
         // 初始化定时任务服务，但不阻塞首屏
         void waitWithTimeout(scheduledTaskService.init(), 5000, 'scheduledTaskService.init').catch((error) => {
@@ -330,6 +344,13 @@ const App: React.FC = () => {
         });
 
       } catch (error) {
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        const message = error instanceof Error ? error.message : String(error);
+        try {
+          electronForInit?.log.fromRenderer('error', 'AppInit', `initializeApp failed after ${elapsedMs}ms: ${message}`);
+        } catch {
+          // Logging is best-effort during early startup.
+        }
         console.error('Failed to initialize app:', error);
         setInitError(error instanceof Error && error.message ? error.message : i18nService.t('initializationError'));
         setIsInitialized(true);
