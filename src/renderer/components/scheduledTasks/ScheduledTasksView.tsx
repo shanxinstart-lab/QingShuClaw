@@ -1,5 +1,5 @@
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
 import { i18nService } from '../../services/i18n';
@@ -38,6 +38,13 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) ?? null : null;
   const [activeTab, setActiveTab] = useState<TabType>('tasks');
   const [deleteTaskInfo, setDeleteTaskInfo] = useState<{ id: string; name: string } | null>(null);
+  const isFormDirtyRef = useRef(false);
+  const pendingLeaveActionRef = useRef<(() => void) | null>(null);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+
+  const handleFormDirtyChange = useCallback((dirty: boolean) => {
+    isFormDirtyRef.current = dirty;
+  }, []);
 
   const handleRequestDelete = useCallback((taskId: string, taskName: string) => {
     setDeleteTaskInfo({ id: taskId, name: taskName });
@@ -64,6 +71,15 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
   }, []);
 
   const handleBackToList = () => {
+    if ((viewMode === 'create' || viewMode === 'edit') && isFormDirtyRef.current) {
+      pendingLeaveActionRef.current = () => {
+        isFormDirtyRef.current = false;
+        dispatch(selectTask(null));
+        dispatch(setViewMode('list'));
+      };
+      setShowLeaveConfirm(true);
+      return;
+    }
     dispatch(selectTask(null));
     dispatch(setViewMode('list'));
   };
@@ -176,6 +192,7 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
                 mode="create"
                 onCancel={handleBackToList}
                 onSaved={handleBackToList}
+                onDirtyChange={handleFormDirtyChange}
               />
             )}
             {viewMode === 'edit' && selectedTask && (
@@ -184,6 +201,7 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
                 task={selectedTask}
                 onCancel={() => dispatch(setViewMode('detail'))}
                 onSaved={() => dispatch(setViewMode('detail'))}
+                onDirtyChange={handleFormDirtyChange}
               />
             )}
             {viewMode === 'detail' && selectedTask && (
@@ -200,6 +218,44 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
         />
+      )}
+
+      {showLeaveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35">
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-sm rounded-2xl bg-background border border-border shadow-modal p-5"
+          >
+            <h4 className="text-sm font-semibold text-foreground mb-2">
+              {i18nService.t('taskFormUnsavedChanges')}
+            </h4>
+            <p className="text-sm text-secondary mb-4">
+              {i18nService.t('taskFormLeaveConfirm')}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLeaveConfirm(false)}
+                className="px-4 py-2 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors border border-border"
+              >
+                {i18nService.t('taskFormStay')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLeaveConfirm(false);
+                  pendingLeaveActionRef.current?.();
+                  pendingLeaveActionRef.current = null;
+                }}
+                className="px-4 py-2 text-sm font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+              >
+                {i18nService.t('taskFormLeave')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

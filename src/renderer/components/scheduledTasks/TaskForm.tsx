@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { scheduledTaskService } from '../../services/scheduledTask';
 import { i18nService } from '../../services/i18n';
 import type {
@@ -15,6 +15,7 @@ interface TaskFormProps {
   task?: ScheduledTask;
   onCancel: () => void;
   onSaved: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 interface FormState {
@@ -132,8 +133,10 @@ function parseChannelOptionValue(value: string): { channel: string; accountId?: 
   return { channel, accountId };
 }
 
-const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) => {
+const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDirtyChange }) => {
   const [form, setForm] = useState<FormState>(() => createFormState(task));
+  const initialFormRef = useRef(JSON.stringify(createFormState(task)));
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [channelOptions, setChannelOptions] = useState<ScheduledTaskChannelOption[]>(() => {
     const base: ScheduledTaskChannelOption[] = [];
     const savedChannel = task?.delivery.channel;
@@ -153,12 +156,27 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const isDirty = JSON.stringify(form) !== initialFormRef.current;
   const isAdvanced = form.planType === 'advanced';
   const showConversationSelector = isIMChannel(form.notifyChannel);
 
   useEffect(() => {
-    setForm(createFormState(task));
+    const nextForm = createFormState(task);
+    initialFormRef.current = JSON.stringify(nextForm);
+    setForm(nextForm);
   }, [task]);
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  const handleRequestCancel = () => {
+    if (isDirty) {
+      setShowLeaveConfirm(true);
+      return;
+    }
+    onCancel();
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -267,6 +285,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
       } else if (task) {
         await scheduledTaskService.updateTaskById(task.id, input);
       }
+      initialFormRef.current = JSON.stringify(form);
+      onDirtyChange?.(false);
       onSaved();
     } catch (err: unknown) {
       setSubmitError(err instanceof Error ? err.message : String(err));
@@ -538,7 +558,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
       <div className="flex items-center justify-end gap-3 pt-2">
         <button
           type="button"
-          onClick={onCancel}
+          onClick={handleRequestCancel}
           className="px-4 py-2 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
         >
           {i18nService.t('cancel')}
@@ -556,6 +576,44 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
               : i18nService.t('scheduledTasksFormUpdate')}
         </button>
       </div>
+
+      {showLeaveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35">
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-sm rounded-2xl bg-background border border-border shadow-modal p-5"
+          >
+            <h4 className="text-sm font-semibold text-foreground mb-2">
+              {i18nService.t('taskFormUnsavedChanges')}
+            </h4>
+            <p className="text-sm text-secondary mb-4">
+              {i18nService.t('taskFormLeaveConfirm')}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLeaveConfirm(false)}
+                className="px-4 py-2 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors border border-border"
+              >
+                {i18nService.t('taskFormStay')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLeaveConfirm(false);
+                  onDirtyChange?.(false);
+                  onCancel();
+                }}
+                className="px-4 py-2 text-sm font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+              >
+                {i18nService.t('taskFormLeave')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
