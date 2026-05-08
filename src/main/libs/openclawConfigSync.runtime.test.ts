@@ -40,7 +40,7 @@ vi.mock('./claudeSettings', () => ({
 }));
 
 vi.mock('./openclawLocalExtensions', () => ({
-  hasBundledOpenClawExtension: (id: string) => id === 'mcp-bridge',
+  hasBundledOpenClawExtension: (id: string) => ['mcp-bridge', 'openclaw-lark'].includes(id),
   resolveOpenClawExtensionConfigId: (id: string) => id,
   resolveOpenClawExtensionLoadPath: () => null,
 }));
@@ -184,5 +184,54 @@ describe('OpenClawConfigSync runtime config output', () => {
       allowFrom: ['user-1', '*'],
     });
     expect(config.channels['openclaw-weixin']).not.toHaveProperty('accountId');
+  });
+
+  test('prefers external lark and bundled qqbot plugin entries', async () => {
+    const sync = await createSync({
+      getFeishuInstances: () => [{
+        enabled: true,
+        appId: 'cli_feishu_app',
+        appSecret: 'secret',
+        instanceId: 'feishu-instance-1',
+        instanceName: 'Feishu Bot 1',
+        domain: 'feishu',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'allowlist',
+        groupAllowFrom: [],
+        groups: { '*': { requireMention: true } },
+        historyLimit: 50,
+        streaming: true,
+        replyMode: 'auto',
+        blockStreaming: false,
+        footer: {},
+        mediaMaxMb: 30,
+        debug: true,
+      }],
+      getQQInstances: () => [{
+        enabled: true,
+        appId: 'qq-app-id',
+        appSecret: 'qq-secret',
+        instanceId: 'qq-instance-1',
+        instanceName: 'QQ Bot 1',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'open',
+        groupAllowFrom: [],
+        historyLimit: 50,
+        markdownSupport: true,
+        imageServerBaseUrl: '',
+        debug: true,
+      }],
+    });
+
+    const result = sync.sync('feishu-lark-qqbot');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.plugins.entries['openclaw-lark']).toEqual({ enabled: true });
+    expect(config.plugins.entries.feishu).toEqual({ enabled: false });
+    expect(config.plugins.entries.qqbot).toEqual({ enabled: true });
+    expect(config.plugins.entries).not.toHaveProperty('openclaw-qqbot');
   });
 });
