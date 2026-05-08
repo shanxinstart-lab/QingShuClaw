@@ -7,15 +7,17 @@ import type { Model } from '../store/slices/modelSlice';
 import { i18nService } from '../services/i18n';
 
 interface ModelSelectorProps {
-  dropdownDirection?: 'up' | 'down';
+  dropdownDirection?: 'up' | 'down' | 'auto';
   value?: Model | null;
   onChange?: (model: Model | null) => void;
   defaultLabel?: string;
   disabled?: boolean;
 }
 
+const DROPDOWN_MAX_HEIGHT = 256;
+
 const ModelSelector: React.FC<ModelSelectorProps> = ({
-  dropdownDirection = 'down',
+  dropdownDirection = 'auto',
   value,
   onChange,
   defaultLabel,
@@ -23,6 +25,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
 }) => {
   const dispatch = useDispatch();
   const [isOpen, setIsOpen] = React.useState(false);
+  const [resolvedDirection, setResolvedDirection] = React.useState<'up' | 'down'>('down');
   const containerRef = React.useRef<HTMLDivElement>(null);
   const controlled = onChange !== undefined;
   const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
@@ -46,6 +49,22 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     };
   }, [isOpen]);
 
+  const resolveDirection = React.useCallback(() => {
+    if (dropdownDirection !== 'auto') return dropdownDirection;
+    if (!containerRef.current) return 'down';
+    const rect = containerRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    return spaceBelow < DROPDOWN_MAX_HEIGHT && rect.top > spaceBelow ? 'up' : 'down';
+  }, [dropdownDirection]);
+
+  const toggleOpen = () => {
+    if (disabled) return;
+    if (!isOpen) {
+      setResolvedDirection(resolveDirection());
+    }
+    setIsOpen(!isOpen);
+  };
+
   const handleModelSelect = (model: Model | null) => {
     if (disabled) return;
     if (controlled) {
@@ -65,7 +84,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     );
   }
 
-  const dropdownPositionClass = dropdownDirection === 'up'
+  const dropdownPositionClass = resolvedDirection === 'up'
     ? 'bottom-full mb-1'
     : 'top-full mt-1';
 
@@ -80,15 +99,16 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   const renderModelItem = (model: Model) => (
     <button
+      type="button"
       key={getModelIdentityKey(model)}
       onClick={() => handleModelSelect(model)}
       className={`w-full px-4 py-2.5 text-left text-foreground hover:bg-surface-raised flex items-center justify-between transition-colors ${
         isSelected(model) ? 'bg-surface-raised/50' : ''
       }`}
     >
-      <div className="flex flex-col">
+      <div className="flex flex-col min-w-0">
         <div className="flex items-center gap-1.5">
-          <span className="text-sm">{model.name}</span>
+          <span className="text-sm truncate">{model.name}</span>
           {model.supportsImage && (
             <span className="text-[10px] leading-none px-1.5 py-0.5 rounded-md bg-primary/10 text-primary whitespace-nowrap">
               {i18nService.t('imageInput')}
@@ -96,11 +116,11 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
           )}
         </div>
         {model.provider && (
-          <span className="text-xs text-secondary">{model.provider}</span>
+          <span className="text-xs text-secondary truncate">{model.provider}</span>
         )}
       </div>
       {isSelected(model) && (
-        <CheckIcon className="h-4 w-4 text-primary" />
+        <CheckIcon className="h-4 w-4 shrink-0 text-primary" />
       )}
     </button>
   );
@@ -116,14 +136,11 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
       <button
         type="button"
         disabled={disabled}
-        onClick={() => {
-          if (disabled) return;
-          setIsOpen(!isOpen);
-        }}
-        className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl hover:bg-surface-raised text-foreground transition-colors disabled:opacity-70 disabled:cursor-wait ${isOpen ? 'bg-surface-raised' : ''}`}
+        onClick={toggleOpen}
+        className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl hover:bg-surface-raised text-foreground transition-colors max-w-[280px] disabled:opacity-70 disabled:cursor-wait ${isOpen ? 'bg-surface-raised' : ''}`}
       >
-        <span className="font-medium text-sm">{selectedModel?.name ?? defaultLabel ?? ''}</span>
-        <ChevronDownIcon className="h-4 w-4 text-secondary" />
+        <span className="font-medium text-sm truncate">{selectedModel?.name ?? defaultLabel ?? ''}</span>
+        <ChevronDownIcon className="h-4 w-4 shrink-0 text-secondary" />
       </button>
 
       {isOpen && (
