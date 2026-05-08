@@ -203,9 +203,6 @@ const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
               <h3 className="mt-4 text-base font-semibold text-foreground">
                 {i18nService.t('updateInstalling')}
               </h3>
-              <p className="mt-1.5 text-xs text-secondary text-center">
-                {i18nService.t('updateInstallingHint')}
-              </p>
             </div>
           </div>
         )}
