@@ -80,6 +80,12 @@ test('parseMemoryMd: normalises internal whitespace in entry text', () => {
   expect(entries[0].text).toBe('text with extra spaces');
 });
 
+test('parseMemoryMd: keeps one-character memory entries', () => {
+  const entries = parseMemoryMd('- C\n');
+  expect(entries).toHaveLength(1);
+  expect(entries[0].text).toBe('C');
+});
+
 // ==================== serializeMemoryMd ====================
 
 test('serializeMemoryMd: produces header + bullet lines', () => {
@@ -285,6 +291,60 @@ test('deleteMemoryEntry: preserves other entries when deleting one', () => {
     expect(entries.length).toBe(2);
     expect(entries.some((e: { text: string }) => e.text === 'keep entry A')).toBeTruthy();
     expect(entries.some((e: { text: string }) => e.text === 'keep entry B')).toBeTruthy();
+  } finally {
+    cleanupDir(dir);
+  }
+});
+
+test('write operations preserve non-bullet structure and existing bullet positions', () => {
+  const dir = makeTmpDir();
+  try {
+    const filePath = memFilePath(dir);
+    fs.writeFileSync(filePath, [
+      '# User Memories',
+      '',
+      'Intro paragraph.',
+      '',
+      '## Work',
+      '',
+      '- I use TypeScript',
+      '',
+      '```',
+      '- example bullet in code',
+      '```',
+      '',
+      '## Life',
+      '',
+      '- I like coffee',
+      '',
+    ].join('\n'), 'utf-8');
+
+    addMemoryEntry(filePath, 'I live in Shanghai');
+
+    const contents = fs.readFileSync(filePath, 'utf-8');
+    expect(contents).toContain('Intro paragraph.');
+    expect(contents).toContain('## Work\n\n- I use TypeScript');
+    expect(contents).toContain('```\n- example bullet in code\n```');
+    expect(contents).toContain('## Life\n\n- I like coffee');
+    expect(contents.trimEnd()).toMatch(/- I live in Shanghai$/u);
+  } finally {
+    cleanupDir(dir);
+  }
+});
+
+test('updateMemoryEntry: removes old bullet and appends updated text without replacing all bullets', () => {
+  const dir = makeTmpDir();
+  try {
+    const filePath = memFilePath(dir);
+    const first = addMemoryEntry(filePath, 'first memory');
+    addMemoryEntry(filePath, 'second memory');
+
+    updateMemoryEntry(filePath, first.id, 'updated first memory');
+
+    const contents = fs.readFileSync(filePath, 'utf-8');
+    expect(contents).not.toContain('- first memory');
+    expect(contents).toContain('- second memory');
+    expect(contents).toContain('- updated first memory');
   } finally {
     cleanupDir(dir);
   }

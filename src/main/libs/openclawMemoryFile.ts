@@ -50,6 +50,9 @@ export function getMainAgentWorkspacePath(stateDir: string): string {
 /**
  * Resolve the MEMORY.md path from an agent workspace directory.
  * Falls back to `~/.openclaw/workspace/MEMORY.md` when unset.
+ *
+ * NOTE: The parameter represents the agent's workspace path (e.g. from
+ * `getMainAgentWorkspacePath()`), not the user-visible working directory.
  */
 export function resolveMemoryFilePath(workingDirectory: string | undefined): string {
   const dir = (workingDirectory || '').trim();
@@ -105,7 +108,7 @@ export function parseMemoryMd(content: string): OpenClawMemoryEntry[] {
     const match = line.trim().match(BULLET_RE);
     if (!match?.[1]) continue;
     const text = match[1].replace(/\s+/g, ' ').trim();
-    if (!text || text.length < 2) continue;
+    if (!text) continue;
 
     const fp = fingerprint(text);
     if (seen.has(fp)) continue;
@@ -126,14 +129,18 @@ export function serializeMemoryMd(entries: OpenClawMemoryEntry[]): string {
 }
 
 /**
- * Build updated MEMORY.md content by surgically replacing bullet lines
- * while preserving all non-bullet content (headings, prose, sections).
+ * Build updated MEMORY.md content by surgically applying a diff between
+ * the original bullet entries and the desired entries, while preserving
+ * all non-bullet content and the overall document structure.
  *
  * Strategy:
- *   1. Walk original lines; collect non-bullet lines verbatim.
- *   2. Replace the first contiguous bullet block with the new entries.
- *   3. Remove all other bullet lines (to avoid duplicates).
- *   4. If no bullet block existed, append entries at the end.
+ *   1. Build a map from desired fingerprint → desired text.
+ *   2. Walk original lines:
+ *      - Non-bullet lines → keep verbatim (headings, prose, blank lines).
+ *      - Bullet lines still present in desired entries → keep in-place.
+ *      - Bullet lines no longer desired → remove.
+ *      - Bullets inside fenced code blocks → keep verbatim.
+ *   3. Append genuinely new entries at the end.
  */
 function rebuildMemoryMd(
   originalContent: string,
@@ -143,14 +150,20 @@ function rebuildMemoryMd(
     return serializeMemoryMd(entries);
   }
 
+  const desiredById = new Map<string, string>();
+  for (const entry of entries) {
+    desiredById.set(entry.id, entry.text);
+  }
+
+  const originalEntries = parseMemoryMd(originalContent);
+  const originalIds = new Set(originalEntries.map((entry) => entry.id));
+  const newEntries = entries.filter((entry) => !originalIds.has(entry.id));
+
   const lines = originalContent.split(/\r?\n/);
   const result: string[] = [];
-  let bulletBlockInserted = false;
-  // Track whether we are inside a fenced code block
   let inCodeBlock = false;
 
   for (const line of lines) {
-    // Toggle code-block state
     if (line.trimStart().startsWith('```')) {
       inCodeBlock = !inCodeBlock;
       result.push(line);
@@ -162,25 +175,39 @@ function rebuildMemoryMd(
     }
 
     if (isBulletLine(line)) {
-      // First bullet block → insert all new entries here
-      if (!bulletBlockInserted) {
-        bulletBlockInserted = true;
-        for (const e of entries) {
-          result.push(`- ${e.text}`);
+      const match = line.trim().match(BULLET_RE);
+      if (match?.[1]) {
+        const text = match[1].replace(/\s+/g, ' ').trim();
+        if (text) {
+          const fp = fingerprint(text);
+          const desiredText = desiredById.get(fp);
+          if (desiredText !== undefined) {
+            const indent = line.match(/^(\s*)/)?.[1] ?? '';
+            result.push(`${indent}- ${desiredText}`);
+            desiredById.delete(fp);
+          }
+          continue;
         }
       }
-      // Skip original bullet line (already replaced by new entries)
+      result.push(line);
       continue;
     }
 
     result.push(line);
   }
 
-  // No bullet block in original → append entries at the end
-  if (!bulletBlockInserted && entries.length > 0) {
-    result.push('');
-    for (const e of entries) {
-      result.push(`- ${e.text}`);
+  const remainingTexts = [
+    ...newEntries.map((entry) => entry.text),
+    ...[...desiredById.values()].filter((text) => !newEntries.some((entry) => entry.text === text)),
+  ];
+
+  if (remainingTexts.length > 0) {
+    const lastLine = result[result.length - 1];
+    if (lastLine !== undefined && lastLine.trim() !== '') {
+      result.push('');
+    }
+    for (const text of remainingTexts) {
+      result.push(`- ${text}`);
     }
   }
 
