@@ -8,7 +8,7 @@ import {
   LockClosedIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
-import { ArrowPathIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import SearchIcon from '../icons/SearchIcon';
 import PlusCircleIcon from '../icons/PlusCircleIcon';
 import UploadIcon from '../icons/UploadIcon';
@@ -262,7 +262,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [selectedSkill, selectedMarketplaceSkill]);
 
   const filteredSkills = useMemo(() => {
-    const query = skillSearchQuery.toLowerCase();
+    const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
     return skills.filter(skill => {
       const matchesSearch = skill.name.toLowerCase().includes(query)
         || skillService.getInstalledSkillDescription(skill).toLowerCase().includes(query);
@@ -301,7 +301,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   }, [filteredSkills, isLoggedIn, managedSkillFilter]);
 
   const filteredMarketplaceSkills = useMemo(() => {
-    const query = skillSearchQuery.toLowerCase();
+    const query = skillSearchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
     let results = marketplaceSkills;
     if (query) {
       results = results.filter(skill => {
@@ -705,8 +705,17 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             placeholder={i18nService.t('searchSkills')}
             value={skillSearchQuery}
             onChange={(e) => setSkillSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-surface text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-full pl-9 pr-8 py-2 text-sm rounded-xl bg-surface text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
           />
+          {skillSearchQuery && (
+            <button
+              type="button"
+              onClick={() => setSkillSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-secondary hover:text-primary transition-colors"
+            >
+              <XCircleIconSolid className="h-4 w-4" />
+            </button>
+          )}
         </div>
         <div className="relative">
           <button
