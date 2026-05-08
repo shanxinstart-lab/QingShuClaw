@@ -264,17 +264,28 @@ const McpManager: React.FC = () => {
   const triggerBridgeRefresh = async () => {
     setBridgeSyncing(true);
     setBridgeSyncResult(null);
+    let syncTimedOut = false;
+    const syncTimeout = setTimeout(() => {
+      syncTimedOut = true;
+      setBridgeSyncing(false);
+      setBridgeSyncResult({ tools: 0, error: i18nService.t('mcpBridgeSyncError') || 'Sync timed out' });
+    }, 40_000);
     try {
       const result = await mcpService.refreshBridge();
+      if (syncTimedOut) return;
       setBridgeSyncResult({ tools: result.tools, error: result.error });
       // Auto-hide success message after 5 seconds
       if (!result.error) {
         setTimeout(() => setBridgeSyncResult(null), 5000);
       }
     } catch {
+      if (syncTimedOut) return;
       setBridgeSyncResult({ tools: 0, error: 'MCP bridge refresh failed' });
     } finally {
-      setBridgeSyncing(false);
+      clearTimeout(syncTimeout);
+      if (!syncTimedOut) {
+        setBridgeSyncing(false);
+      }
     }
   };
 
