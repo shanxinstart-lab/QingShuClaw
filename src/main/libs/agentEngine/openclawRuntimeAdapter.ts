@@ -809,6 +809,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   /** Sessions that were manually stopped by the user. Used to suppress the timeout hint
    *  when the gateway sends back a late 'aborted' event after stopSession() already cleaned up the turn. */
   private readonly manuallyStoppedSessions = new Set<string>();
+  /** Timestamp of recent manual stops, used to suppress late gateway events that can recreate a ghost turn. */
+  private readonly stoppedSessionTimestamps = new Map<string, number>();
   /** runId values that have already terminated with lifecycle phase=error. */
   private readonly terminatedRunIds = new Set<string>();
   /**
@@ -821,6 +823,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private channelPollingTimer: ReturnType<typeof setInterval> | null = null;
 
   private static readonly CHANNEL_POLL_INTERVAL_MS = 10_000;
+  private static readonly STOP_COOLDOWN_MS = 10_000;
   private static readonly FULL_HISTORY_SYNC_LIMIT = 50;
   private browserPrewarmAttempted = false;
 
@@ -1266,10 +1269,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   stopSession(sessionId: string): void {
+    this.manuallyStoppedSessions.add(sessionId);
+    this.stoppedSessionTimestamps.set(sessionId, Date.now());
     const turn = this.activeTurns.get(sessionId);
     if (turn) {
       turn.stopRequested = true;
-      this.manuallyStoppedSessions.add(sessionId);
       const client = this.gatewayClient;
       if (client) {
         void client.request('chat.abort', {
@@ -1499,6 +1503,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       this.pendingTurns.set(sessionId, { resolve, reject });
     });
     this.manuallyStoppedSessions.delete(sessionId);
+    this.stoppedSessionTimestamps.delete(sessionId);
     this.activeTurns.set(sessionId, {
       sessionId,
       sessionKey,
@@ -4377,6 +4382,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.bridgedSessions.delete(sessionId);
     this.confirmationModeBySession.delete(sessionId);
     this.manuallyStoppedSessions.delete(sessionId);
+    this.stoppedSessionTimestamps.delete(sessionId);
     this.lastPatchedModelBySession.delete(sessionId);
     this.sessionModelPatchQueue.delete(sessionId);
 
@@ -4390,10 +4396,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    * Ensure an ActiveTurn exists for a session. Used for channel-originated sessions
    * where new turns arrive after the previous turn was cleaned up.
    */
+  private isSessionInStopCooldown(sessionId: string): boolean {
+    const stoppedAt = this.stoppedSessionTimestamps.get(sessionId);
+    if (stoppedAt === undefined) return false;
+    if (Date.now() - stoppedAt < OpenClawRuntimeAdapter.STOP_COOLDOWN_MS) {
+      return true;
+    }
+    this.stoppedSessionTimestamps.delete(sessionId);
+    return false;
+  }
+
   private ensureActiveTurn(sessionId: string, sessionKey: string, runId: string): void {
     if (this.activeTurns.has(sessionId)) return;
     if (runId && this.isRecentlyClosedRunId(runId)) {
       console.debug('[OpenClawRuntime] suppressed active turn creation for a closed run.');
+      return;
+    }
+    if (this.isSessionInStopCooldown(sessionId)) {
+      console.debug('[OpenClawRuntime] suppressed active turn creation during manual stop cooldown.');
       return;
     }
     if (this.manuallyStoppedSessions.has(sessionId)) {
