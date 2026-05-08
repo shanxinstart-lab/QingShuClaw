@@ -1,6 +1,6 @@
 import { test, expect, describe, vi } from 'vitest';
 import { CronJobService, mapGatewayJob, mapGatewayRun, mapGatewayTaskState } from './cronJobService';
-import { DeliveryMode, GatewayStatus, PayloadKind, ScheduleKind, SessionTarget, TaskStatus, WakeMode } from './constants';
+import { DeliveryChannel, DeliveryMode, GatewayStatus, PayloadKind, ScheduleKind, SessionTarget, TaskStatus, WakeMode } from './constants';
 
 describe('mapGatewayRun', () => {
   const baseEntry = {
@@ -136,6 +136,51 @@ describe('mapGatewayTaskState', () => {
 });
 
 describe('mapGatewayJob', () => {
+  test('keeps native cron fields without legacy wrappers', () => {
+    const job = mapGatewayJob({
+      id: 'job-1',
+      name: 'Morning brief',
+      description: 'Send a summary',
+      enabled: true,
+      schedule: { kind: ScheduleKind.Cron, expr: '0 9 * * *', tz: 'Asia/Shanghai' },
+      sessionTarget: SessionTarget.Isolated,
+      wakeMode: WakeMode.Now,
+      payload: {
+        kind: PayloadKind.AgentTurn,
+        message: 'Summarize updates',
+        timeoutSeconds: 45,
+      },
+      delivery: {
+        mode: DeliveryMode.Announce,
+        channel: DeliveryChannel.Last,
+        to: 'chat-1',
+      },
+      agentId: 'agent-42',
+      sessionKey: 'session-1',
+      state: {
+        nextRunAtMs: 100,
+        lastRunAtMs: 90,
+        lastRunStatus: GatewayStatus.Skipped,
+      },
+      createdAtMs: 1_700_000_000_000,
+      updatedAtMs: 1_700_000_100_000,
+    });
+
+    expect(job.schedule.kind).toBe(ScheduleKind.Cron);
+    expect((job.schedule as { expr: string }).expr).toBe('0 9 * * *');
+    expect((job.schedule as { tz: string }).tz).toBe('Asia/Shanghai');
+    expect(job.payload.kind).toBe(PayloadKind.AgentTurn);
+    expect((job.payload as { timeoutSeconds: number }).timeoutSeconds).toBe(45);
+    expect(job.delivery).toEqual({
+      mode: DeliveryMode.Announce,
+      channel: DeliveryChannel.Last,
+      to: 'chat-1',
+    });
+    expect(job.agentId).toBe('agent-42');
+    expect(job.sessionKey).toBe('session-1');
+    expect(job.state.lastStatus).toBe(TaskStatus.Skipped);
+  });
+
   test('preserves agent turn model from gateway payload', () => {
     const task = mapGatewayJob({
       id: 'job-1',
