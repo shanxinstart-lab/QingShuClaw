@@ -214,6 +214,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
       // Capture active skill IDs before clearing them
       const sessionSkillIds = [...activeSkillIds];
+      const sessionModelOverride = explicitHeaderModel ? toOpenClawModelRef(explicitHeaderModel) : '';
 
       const tempSession: CoworkSession = {
         id: tempSessionId,
@@ -225,6 +226,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         updatedAt: now,
         cwd: config.workingDirectory || '',
         systemPrompt: '',
+        modelOverride: sessionModelOverride,
         executionMode: config.executionMode || 'local',
         activeSkillIds: sessionSkillIds,
         agentId: currentAgentId,
@@ -274,6 +276,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         systemPrompt: combinedSystemPrompt,
         activeSkillIds: sessionSkillIds,
         agentId: currentAgentId,
+        modelOverride: sessionModelOverride,
         imageAttachments,
       });
 

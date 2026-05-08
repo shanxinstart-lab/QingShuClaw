@@ -3747,6 +3747,7 @@ if (!gotTheLock) {
     activeSkillIds?: string[];
     imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>;
     agentId?: string;
+    modelOverride?: string;
   }) => {
     try {
       const denied = resolveCoworkManagedCapabilityDeniedResult({
@@ -3791,7 +3792,8 @@ if (!gotTheLock) {
         systemPrompt,
         config.executionMode || 'local',
         options.activeSkillIds || [],
-        options.agentId || 'main'
+        options.agentId || 'main',
+        options.modelOverride || ''
       );
 
       // Update session status to 'running' before starting async task
