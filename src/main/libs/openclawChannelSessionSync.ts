@@ -179,7 +179,16 @@ export function extractAccountIdFromKey(sessionKey: string): string | null {
   return null;
 }
 
-const MULTI_INSTANCE_PLATFORMS = new Set<Platform>(['dingtalk', 'feishu', 'qq', 'wecom']);
+const MULTI_INSTANCE_PLATFORMS = new Set<Platform>([
+  'dingtalk',
+  'discord',
+  'feishu',
+  'nim',
+  'popo',
+  'qq',
+  'telegram',
+  'wecom',
+]);
 
 export function resolveAgentBinding(
   bindings: Record<string, string> | undefined,

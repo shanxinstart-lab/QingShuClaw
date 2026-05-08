@@ -70,6 +70,32 @@ describe('openclawChannelSessionSync', () => {
     expect(agentId).toBe('sales-agent');
   });
 
+  test('prefers per-instance agent bindings for Telegram sessions', () => {
+    const agentId = resolveAgentBinding(
+      {
+        telegram: 'main',
+        'telegram:bot-123456': 'telegram-agent',
+      },
+      'telegram',
+      'bot-123456',
+    );
+
+    expect(agentId).toBe('telegram-agent');
+  });
+
+  test('prefers per-instance agent bindings for NIM sessions', () => {
+    const agentId = resolveAgentBinding(
+      {
+        nim: 'main',
+        'nim:app-key:user-1': 'nim-agent',
+      },
+      'nim',
+      'app-key',
+    );
+
+    expect(agentId).toBe('nim-agent');
+  });
+
   test('falls back to platform binding when instance binding is missing', () => {
     const agentId = resolveAgentBinding(
       {
