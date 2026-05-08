@@ -571,21 +571,38 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       {homeHeader}
 
       {/* Main Content */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-        <div className="max-w-5xl w-full min-w-[320px] mx-auto px-4 pt-[15vh] pb-8 space-y-10">
-          {/* Welcome Section */}
+      <div className="flex-1 overflow-y-auto min-h-0 relative">
+        {/* Gradient mesh background using theme gradient tokens */}
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              'radial-gradient(ellipse 60% 50% at 25% 20%, var(--lobster-gradient-1), transparent), radial-gradient(ellipse 50% 40% at 75% 70%, var(--lobster-gradient-2), transparent)',
+          }}
+        />
+        <div className="relative max-w-5xl w-full min-w-[320px] mx-auto px-4 pt-[15vh] pb-8 space-y-10">
+          {/* Welcome Section - staggered entrance animation */}
           <div className="text-center space-y-5">
-            <img src="logo.png" alt="logo" className="w-16 h-16 mx-auto" />
-            <h2 className="text-3xl font-bold tracking-tight text-foreground">
+            <img src="logo.png" alt="logo" className="w-16 h-16 mx-auto animate-fade-in-up" />
+            <h2
+              className="text-3xl font-bold tracking-tight text-foreground animate-fade-in-up"
+              style={{ animationDelay: '60ms', animationFillMode: 'both' }}
+            >
               {i18nService.t('coworkWelcome')}
             </h2>
-            <p className="text-sm text-secondary max-w-md mx-auto">
+            <p
+              className="text-sm text-secondary max-w-md mx-auto animate-fade-in-up"
+              style={{ animationDelay: '120ms', animationFillMode: 'both' }}
+            >
               {i18nService.t('coworkDescription')}
             </p>
           </div>
 
           {/* Prompt Input Area - Large version with folder selector */}
-          <div className="max-w-3xl mx-auto w-full space-y-3">
+          <div
+            className="max-w-3xl mx-auto w-full space-y-3 animate-fade-in-up"
+            style={{ animationDelay: '200ms', animationFillMode: 'both' }}
+          >
             <div className="shadow-glow-accent rounded-2xl">
               <CoworkPromptInput
                 ref={promptInputRef}
@@ -606,7 +623,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           </div>
 
           {/* Quick Actions */}
-          <div className="max-w-3xl mx-auto w-full space-y-4">
+          <div
+            className="max-w-3xl mx-auto w-full space-y-4 animate-fade-in-up"
+            style={{ animationDelay: '300ms', animationFillMode: 'both' }}
+          >
             {selectedAction ? (
               <PromptPanel
                 action={selectedAction}

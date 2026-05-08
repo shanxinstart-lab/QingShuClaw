@@ -220,7 +220,7 @@ select::-ms-expand {
   height: 2px;
   overflow: hidden;
   border-radius: 1px;
-  background: rgba(59,130,246,0.1);
+  background: var(--lobster-primary-muted);
 }
 .streaming-bar::before {
   content: '';
@@ -230,7 +230,8 @@ select::-ms-expand {
   height: 100%;
   width: 40%;
   border-radius: 1px;
-  background: linear-gradient(90deg, rgba(59,130,246,0.3) 0%, rgba(59,130,246,0.8) 50%, rgba(59,130,246,0.3) 100%);
+  background: linear-gradient(90deg, transparent 0%, var(--lobster-primary) 50%, transparent 100%);
+  opacity: 0.7;
   animation: streaming-slide 1.5s ease-in-out infinite;
 }
 /* Streaming bar glow uses primary color */
@@ -240,4 +241,15 @@ select::-ms-expand {
 @keyframes streaming-slide {
   0% { left: -40%; }
   100% { left: 100%; }
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
