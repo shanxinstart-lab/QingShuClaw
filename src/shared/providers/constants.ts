@@ -120,8 +120,8 @@ interface ProviderDefInput {
    * anthropic: Anthropic-compatible format endpoint
    */
   readonly codingPlanUrls?: {
-    readonly openai: string;
-    readonly anthropic: string;
+    readonly openai?: string;
+    readonly anthropic?: string;
   };
   /**
    * When set, resolveCodingPlanBaseUrl will use this format (and its URL) regardless
@@ -218,6 +218,7 @@ const PROVIDER_DEFINITIONS = [
       openai: 'https://coding.dashscope.aliyuncs.com/v1',
       anthropic: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
     },
+    preferredCodingPlanFormat: 'openai',
     switchableBaseUrls: {
       anthropic: 'https://dashscope.aliyuncs.com/apps/anthropic',
       openai: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -326,7 +327,11 @@ const PROVIDER_DEFINITIONS = [
     openClawProviderId: OpenClawProviderId.Qianfan,
     defaultBaseUrl: 'https://qianfan.baidubce.com/v2',
     defaultApiFormat: ApiFormat.OpenAI,
-    codingPlanSupported: false,
+    codingPlanSupported: true,
+    codingPlanUrls: {
+      openai: 'https://qianfan.baidubce.com/v2/coding/chat/completions',
+    },
+    preferredCodingPlanFormat: 'openai',
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -359,7 +364,11 @@ const PROVIDER_DEFINITIONS = [
     openClawProviderId: OpenClawProviderId.Xiaomi,
     defaultBaseUrl: 'https://api.xiaomimimo.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
-    codingPlanSupported: false,
+    codingPlanSupported: true,
+    codingPlanUrls: {
+      openai: 'https://token-plan-cn.xiaomimimo.com/v1',
+      anthropic: 'https://token-plan-cn.xiaomimimo.com/anthropic',
+    },
     switchableBaseUrls: {
       anthropic: 'https://api.xiaomimimo.com/anthropic',
       openai: 'https://api.xiaomimimo.com/v1/chat/completions',
@@ -503,8 +512,8 @@ export interface ProviderDef {
   readonly codingPlanSupported: boolean;
   /** Coding Plan dedicated endpoints */
   readonly codingPlanUrls?: {
-    readonly openai: string;
-    readonly anthropic: string;
+    readonly openai?: string;
+    readonly anthropic?: string;
   };
   /** When set, overrides caller's apiFormat for coding plan URL resolution. */
   readonly preferredCodingPlanFormat?: 'openai' | 'anthropic';

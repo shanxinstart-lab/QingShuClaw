@@ -20,14 +20,14 @@ describe('resolveCodingPlanBaseUrl', () => {
     if (!def?.codingPlanUrls) {
       throw new Error('Qwen coding plan fixture is missing');
     }
-    const originalAnthropicUrl = def.codingPlanUrls.anthropic;
-    (def.codingPlanUrls as { anthropic: string }).anthropic = '';
+    const originalOpenAIUrl = def.codingPlanUrls.openai;
+    (def.codingPlanUrls as { openai: string }).openai = '';
     try {
       const result = resolveCodingPlanBaseUrl(ProviderName.Qwen, true, 'anthropic', 'https://custom.qwen.example');
       expect(result.baseUrl).toBe('https://custom.qwen.example');
       expect(result.effectiveFormat).toBe('anthropic');
     } finally {
-      (def.codingPlanUrls as { anthropic: string }).anthropic = originalAnthropicUrl;
+      (def.codingPlanUrls as { openai: string }).openai = originalOpenAIUrl;
     }
   });
 
@@ -73,16 +73,38 @@ describe('resolveCodingPlanBaseUrl', () => {
     });
   });
 
-  describe('Qwen — no preferredCodingPlanFormat', () => {
-    test('returns anthropic coding plan URL', () => {
+  describe('Qwen — preferredCodingPlanFormat=openai', () => {
+    test('overrides anthropic to openai coding plan URL', () => {
       const result = resolveCodingPlanBaseUrl(ProviderName.Qwen, true, 'anthropic', '');
-      expect(result.baseUrl).toBe('https://coding.dashscope.aliyuncs.com/apps/anthropic');
-      expect(result.effectiveFormat).toBe('anthropic');
+      expect(result.baseUrl).toBe('https://coding.dashscope.aliyuncs.com/v1');
+      expect(result.effectiveFormat).toBe('openai');
     });
 
     test('returns openai coding plan URL', () => {
       const result = resolveCodingPlanBaseUrl(ProviderName.Qwen, true, 'openai', '');
       expect(result.baseUrl).toBe('https://coding.dashscope.aliyuncs.com/v1');
+      expect(result.effectiveFormat).toBe('openai');
+    });
+  });
+
+  describe('Qianfan — preferredCodingPlanFormat=openai', () => {
+    test('returns openai coding plan URL with chat/completions suffix', () => {
+      const result = resolveCodingPlanBaseUrl(ProviderName.Qianfan, true, 'openai', '');
+      expect(result.baseUrl).toBe('https://qianfan.baidubce.com/v2/coding/chat/completions');
+      expect(result.effectiveFormat).toBe('openai');
+    });
+  });
+
+  describe('Xiaomi — no preferredCodingPlanFormat', () => {
+    test('returns anthropic coding plan URL when caller passes anthropic', () => {
+      const result = resolveCodingPlanBaseUrl(ProviderName.Xiaomi, true, 'anthropic', '');
+      expect(result.baseUrl).toBe('https://token-plan-cn.xiaomimimo.com/anthropic');
+      expect(result.effectiveFormat).toBe('anthropic');
+    });
+
+    test('returns openai coding plan URL when caller passes openai', () => {
+      const result = resolveCodingPlanBaseUrl(ProviderName.Xiaomi, true, 'openai', '');
+      expect(result.baseUrl).toBe('https://token-plan-cn.xiaomimimo.com/v1');
       expect(result.effectiveFormat).toBe('openai');
     });
   });
