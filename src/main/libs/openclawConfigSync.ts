@@ -1274,6 +1274,7 @@ export class OpenClawConfigSync {
         mergePluginEntry(pluginEntries, weixinPluginId, { enabled: true });
         mergePluginEntry(pluginEntries, hasMcpBridgePlugin ? 'mcp-bridge' : null, { enabled: true });
         mergePluginEntry(pluginEntries, hasAskUserPlugin ? 'ask-user-question' : null, { enabled: true });
+        mergePluginEntry(pluginEntries, 'acpx', { enabled: false });
 
         return Object.keys(pluginEntries).length > 0
           ? {
