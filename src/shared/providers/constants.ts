@@ -189,6 +189,8 @@ const PROVIDER_DEFINITIONS = [
     region: 'china',
     enPriority: 0,
     defaultModels: [
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', supportsImage: false },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', supportsImage: false },
       { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', supportsImage: false },
     ],
   },
@@ -215,6 +217,7 @@ const PROVIDER_DEFINITIONS = [
     region: 'china',
     enPriority: 0,
     defaultModels: [
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', supportsImage: true },
       { id: 'kimi-k2.5', name: 'Kimi K2.5', supportsImage: true },
     ],
     codingPlanModels: [
@@ -392,6 +395,9 @@ const PROVIDER_DEFINITIONS = [
     region: 'china',
     enPriority: 0,
     defaultModels: [
+      { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro', supportsImage: false },
+      { id: 'mimo-v2.5', name: 'MiMo V2.5', supportsImage: true },
+      { id: 'mimo-v2-pro', name: 'MiMo V2 Pro', supportsImage: false },
       { id: 'mimo-v2-flash', name: 'MiMo V2 Flash', supportsImage: false },
     ],
   },

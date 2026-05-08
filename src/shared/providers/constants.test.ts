@@ -52,6 +52,13 @@ describe('ProviderRegistry', () => {
     expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Moonshot, 'kimi-for-coding', false)).toBe(true);
   });
 
+  test('includes latest public default model metadata', () => {
+    expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.DeepSeek, 'deepseek-v4-flash', true)).toBe(false);
+    expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Moonshot, 'kimi-k2.6', false)).toBe(true);
+    expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Xiaomi, 'mimo-v2.5', false)).toBe(true);
+    expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Xiaomi, 'mimo-v2.5-pro', true)).toBe(false);
+  });
+
   test('resolveModelSupportsImage upgrades custom providers for globally known vision models', () => {
     expect(ProviderRegistry.resolveModelSupportsImage('custom_0', 'qwen3.6-plus', false)).toBe(true);
     expect(ProviderRegistry.resolveModelSupportsImage('custom_0', 'unknown-model', false)).toBe(false);
