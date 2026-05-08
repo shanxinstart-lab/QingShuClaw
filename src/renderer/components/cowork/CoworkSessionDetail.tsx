@@ -28,7 +28,6 @@ import {
   selectArtifact,
   selectIsPanelOpen,
   selectSessionArtifacts,
-  setPanelView,
   togglePanel,
 } from '../../store/slices/artifactSlice';
 import { setActiveSkillIds } from '../../store/slices/skillSlice';
@@ -1787,8 +1786,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const loadedFileIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    dispatch(setPanelView('files'));
-    dispatch(selectArtifact(''));
+    dispatch(selectArtifact(null));
+    dispatch(closePanel());
     loadedFileIdsRef.current = new Set();
   }, [sessionId, dispatch]);
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { i18nService } from '@/services/i18n';
@@ -16,6 +16,7 @@ import {
 } from '@/store/slices/artifactSlice';
 import type { ArtifactType } from '@/types/artifact';
 import type { Artifact } from '@/types/artifact';
+import { PREVIEWABLE_ARTIFACT_TYPES } from '@/types/artifact';
 
 import ArtifactRenderer from './ArtifactRenderer';
 import FileDirectoryView from './FileDirectoryView';
@@ -44,28 +45,6 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-const TYPE_LABELS: Record<ArtifactType, string> = {
-  html: 'Html',
-  svg: 'Svg',
-  image: 'Image',
-  mermaid: 'Mermaid',
-  code: 'Code',
-  markdown: 'Markdown',
-  text: 'Text',
-  document: 'Document',
-};
-
-const TYPE_ICONS: Record<ArtifactType, string> = {
-  html: '<>',
-  svg: '🎨',
-  image: '🖼',
-  mermaid: '📊',
-  code: '<>',
-  markdown: '📝',
-  text: '📄',
-  document: '📑',
-};
-
 interface ArtifactPanelProps {
   artifacts: Artifact[];
 }
@@ -76,6 +55,11 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
   const panelWidth = useSelector(selectPanelWidth);
   const activeTab = useSelector(selectActiveTab);
   const selectedArtifactId = useSelector((state: RootState) => state.artifact.selectedArtifactId);
+  const [showFileList, setShowFileList] = useState(false);
+  const fileListRef = useRef<HTMLDivElement>(null);
+  const toggleBtnRef = useRef<HTMLButtonElement>(null);
+
+  const previewableArtifacts = artifacts.filter(a => PREVIEWABLE_ARTIFACT_TYPES.has(a.type));
 
   const isResizing = useRef(false);
   const startX = useRef(0);
@@ -114,8 +98,25 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!showFileList) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        fileListRef.current && !fileListRef.current.contains(e.target as Node) &&
+        toggleBtnRef.current && !toggleBtnRef.current.contains(e.target as Node)
+      ) {
+        setShowFileList(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showFileList]);
+
   const handleClose = useCallback(() => dispatch(closePanel()), [dispatch]);
-  const handleSelectArtifact = useCallback((id: string) => dispatch(selectArtifact(id)), [dispatch]);
+  const handleSelectArtifact = useCallback((id: string) => {
+    dispatch(selectArtifact(id));
+    setShowFileList(false);
+  }, [dispatch]);
 
   const handleCopy = useCallback(async () => {
     if (selectedArtifact) {
@@ -174,43 +175,41 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
       />
       <aside
         style={{ width: panelWidth, maxWidth: 'calc(100vw - 480px - 4px)' }}
-        className="shrink border-l border-border bg-background flex h-full overflow-hidden"
+        className="shrink border-l border-border bg-background flex flex-col h-full overflow-hidden relative"
       >
-        {/* Left: File list */}
-        <div className={`${selectedArtifact ? 'w-[180px] shrink-0 border-r border-border' : 'flex-1'} flex flex-col h-full overflow-hidden`}>
-          <div className="h-10 flex items-center px-3 border-b border-border shrink-0">
-            <span className="text-xs font-medium text-secondary">{t('artifactFiles')}</span>
-            <span className="flex-1" />
-            <button
-              onClick={handleClose}
-              className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
-            >
-              <CloseIcon />
-            </button>
+        {/* Floating file list overlay */}
+        {showFileList && (
+          <div
+            ref={fileListRef}
+            className="absolute top-10 right-2 z-20 w-[240px] max-h-[60%] bg-background border border-border rounded-lg shadow-lg flex flex-col overflow-hidden"
+          >
+            <div className="h-9 flex items-center px-3 border-b border-border shrink-0">
+              <span className="text-xs font-medium text-secondary">{t('artifactFileList')}</span>
+            </div>
+            <FileDirectoryView
+              artifacts={previewableArtifacts}
+              selectedId={selectedArtifactId}
+              onSelect={handleSelectArtifact}
+              compact
+            />
           </div>
-          <FileDirectoryView
-            artifacts={artifacts}
-            selectedId={selectedArtifactId}
-            onSelect={handleSelectArtifact}
-          />
-        </div>
+        )}
 
-        {/* Right: Preview area (only shown when an artifact is selected) */}
-        {selectedArtifact && (
+        {selectedArtifact ? (
           <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-            {/* Header: filename + type + actions */}
+            {/* Header: file list toggle + filename + type + actions */}
             <div className="h-10 flex items-center gap-2 px-3 border-b border-border shrink-0">
-              <span className="text-xs text-muted">{TYPE_ICONS[selectedArtifact.type] || '<>'}</span>
               <span className="text-sm font-medium truncate">{selectedArtifact.fileName || selectedArtifact.title}</span>
-              <span className="text-xs text-muted">{TYPE_LABELS[selectedArtifact.type] || selectedArtifact.type}</span>
               <span className="flex-1" />
-              <button
-                onClick={handleCopy}
-                className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
-                title={t('artifactCopyCode')}
-              >
-                <CopyIcon />
-              </button>
+              {selectedArtifact.type !== 'document' && (
+                <button
+                  onClick={handleCopy}
+                  className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
+                  title={t('artifactCopyCode')}
+                >
+                  <CopyIcon />
+                </button>
+              )}
               {BROWSER_OPENABLE_TYPES.has(selectedArtifact.type) && (
                 <button
                   onClick={handleOpenInBrowser}
@@ -239,10 +238,16 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
                 </button>
               )}
               <button
-                onClick={() => dispatch(selectArtifact(null))}
-                className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
+                ref={toggleBtnRef}
+                onClick={() => setShowFileList(v => !v)}
+                className={`p-1 rounded transition-colors ${
+                  showFileList
+                    ? 'text-primary bg-primary/10'
+                    : 'text-secondary hover:text-foreground hover:bg-surface'
+                }`}
+                title={t('artifactFileList')}
               >
-                <CloseIcon />
+                <FileListIcon />
               </button>
             </div>
 
@@ -278,6 +283,25 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
                 <CodeRenderer artifact={selectedArtifact} />
               )}
             </div>
+          </div>
+        ) : (
+          /* No artifact selected: show full-width file list */
+          <div className="flex-1 flex flex-col h-full overflow-hidden">
+            <div className="h-10 flex items-center px-3 border-b border-border shrink-0">
+              <span className="text-xs font-medium text-secondary">{t('artifactFiles')}</span>
+              <span className="flex-1" />
+              <button
+                onClick={handleClose}
+                className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <FileDirectoryView
+              artifacts={previewableArtifacts}
+              selectedId={selectedArtifactId}
+              onSelect={handleSelectArtifact}
+            />
           </div>
         )}
       </aside>
@@ -317,6 +341,13 @@ const OpenExternalIcon = () => (
 const CloseIcon = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <path d="M4 4l8 8M12 4l-8 8" />
+  </svg>
+);
+
+const FileListIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 3.167c0-.644.522-1.167 1.167-1.167h2.48c.323 0 .635.117.878.33l.58.507c.243.213.555.33.878.33h3.35C13.07 3.167 13.667 3.764 13.667 4.5v5.945c0 .49-.398.889-.889.889" />
+    <path d="M2 6c0-.736.597-1.333 1.334-1.333h2.313c.323 0 .635.117.878.33l.58.507c.243.213.555.33.877.33h3.351c.737 0 1.334.597 1.334 1.334v4.833c0 .737-.597 1.333-1.334 1.333H3.334C2.597 13.333 2 12.737 2 12V6z" />
   </svg>
 );
 

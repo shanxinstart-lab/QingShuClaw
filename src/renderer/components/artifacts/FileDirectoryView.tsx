@@ -27,9 +27,10 @@ interface FileDirectoryViewProps {
   artifacts: Artifact[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  compact?: boolean;
 }
 
-const FileDirectoryView: React.FC<FileDirectoryViewProps> = ({ artifacts, selectedId, onSelect }) => {
+const FileDirectoryView: React.FC<FileDirectoryViewProps> = ({ artifacts, selectedId, onSelect, compact }) => {
   if (artifacts.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted text-sm p-4">
@@ -47,23 +48,25 @@ const FileDirectoryView: React.FC<FileDirectoryViewProps> = ({ artifacts, select
           className={`flex items-center gap-2 px-3 py-2 cursor-pointer text-sm transition-colors
             ${artifact.id === selectedId ? 'bg-primary/10 text-primary' : 'hover:bg-surface text-foreground'}`}
         >
-          <span className="shrink-0 text-base">{TYPE_ICONS[artifact.type] || '📄'}</span>
+          {!compact && <span className="shrink-0 text-base">{TYPE_ICONS[artifact.type] || '📄'}</span>}
           <div className="flex-1 min-w-0">
             <div className="truncate">
               {artifact.fileName || artifact.title}
             </div>
-            {artifact.filePath && (
+            {!compact && artifact.filePath && (
               <div className="text-[10px] text-muted truncate">
                 {getShortPath(artifact.filePath)}
               </div>
             )}
-            {!artifact.filePath && artifact.source === 'codeblock' && (
+            {!compact && !artifact.filePath && artifact.source === 'codeblock' && (
               <div className="text-[10px] text-muted">code block</div>
             )}
           </div>
-          <span className="shrink-0 text-xs text-muted uppercase">
-            {artifact.type}
-          </span>
+          {!compact && (
+            <span className="shrink-0 text-xs text-muted uppercase">
+              {artifact.type}
+            </span>
+          )}
         </div>
       ))}
     </div>
