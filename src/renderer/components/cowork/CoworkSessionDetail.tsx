@@ -1294,6 +1294,7 @@ const AssistantMessageItem: React.FC<{
   showCopyButton = false,
   turnMetadata,
 }) => {
+  const [isHovered, setIsHovered] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
 
@@ -1307,6 +1308,8 @@ const AssistantMessageItem: React.FC<{
   return (
     <div
       className="relative"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
       <div className="text-foreground">
         <MarkdownContent
@@ -1319,10 +1322,6 @@ const AssistantMessageItem: React.FC<{
       </div>
       {showCopyButton && (
         <div className="flex items-center gap-2 mt-1 text-[11px] text-zinc-400 dark:text-zinc-500 select-none">
-          <CopyButton
-            content={displayContent}
-            visible={true}
-          />
           {turnMetadata?.agentName && (
             <span>{turnMetadata.agentName}</span>
           )}
@@ -1344,6 +1343,10 @@ const AssistantMessageItem: React.FC<{
           {turnMetadata?.model && (
             <span>{turnMetadata.model.includes('/') ? turnMetadata.model.split('/').pop() : turnMetadata.model}</span>
           )}
+          <CopyButton
+            content={displayContent}
+            visible={isHovered}
+          />
         </div>
       )}
       {expandedImage && (

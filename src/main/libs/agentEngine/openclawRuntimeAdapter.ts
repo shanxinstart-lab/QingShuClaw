@@ -954,10 +954,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           }
         }
       }
-    } catch {
-      // non-fatal
+      const resolved = this.sessionContextTokensCache.get(sessionKey);
+      console.debug('[OpenClawRuntime] refreshSessionContextTokens:', sessionKey, resolved ? `contextTokens=${resolved}` : 'not found in sessions.list');
+      return resolved;
+    } catch (error) {
+      console.debug('[OpenClawRuntime] refreshSessionContextTokens failed:', sessionKey, error);
+      return undefined;
     }
-    return this.sessionContextTokensCache.get(sessionKey);
   }
 
   constructor(
