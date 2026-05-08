@@ -5,10 +5,55 @@ import path from 'path';
 const LOCAL_EXTENSIONS_DIR = 'openclaw-extensions';
 const THIRD_PARTY_EXTENSIONS_DIR = 'third-party-extensions';
 
-type OpenClawExtensionInfo = {
-  id: string;
-  dirName: string;
-  rootDir: string;
+export type OpenClawExtensionManifest = {
+  directoryId: string;
+  pluginId: string;
+  directory: string;
+  manifestPath: string;
+  source: 'bundled' | 'local';
+};
+
+const readExtensionManifest = (
+  baseDir: string,
+  directoryId: string,
+  source: OpenClawExtensionManifest['source'],
+): OpenClawExtensionManifest | null => {
+  const directory = path.join(baseDir, directoryId);
+  const manifestPath = path.join(directory, 'openclaw.plugin.json');
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: unknown };
+    const pluginId = typeof manifest.id === 'string' ? manifest.id.trim() : '';
+    if (!pluginId) {
+      return null;
+    }
+    return {
+      directoryId,
+      pluginId,
+      directory,
+      manifestPath,
+      source,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const listExtensionManifests = (
+  extensionsDir: string | null,
+  source: OpenClawExtensionManifest['source'],
+): OpenClawExtensionManifest[] => {
+  if (!extensionsDir) {
+    return [];
+  }
+
+  try {
+    return fs.readdirSync(extensionsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readExtensionManifest(extensionsDir, entry.name, source))
+      .filter((entry): entry is OpenClawExtensionManifest => entry !== null);
+  } catch {
+    return [];
+  }
 };
 
 const findLocalExtensionsSourceDir = (): string | null => {
@@ -55,35 +100,6 @@ const findBundledExtensionsDir = (): string | null => {
   return null;
 };
 
-const readExtensionInfos = (baseDir: string | null): OpenClawExtensionInfo[] => {
-  if (!baseDir) {
-    return [];
-  }
-
-  try {
-    return fs.readdirSync(baseDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .flatMap((entry) => {
-        const rootDir = path.join(baseDir, entry.name);
-        const manifestPath = path.join(rootDir, 'openclaw.plugin.json');
-        if (!fs.existsSync(manifestPath)) {
-          return [];
-        }
-        try {
-          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: string };
-          const id = typeof manifest.id === 'string' && manifest.id.trim()
-            ? manifest.id.trim()
-            : entry.name;
-          return [{ id, dirName: entry.name, rootDir }];
-        } catch {
-          return [{ id: entry.name, dirName: entry.name, rootDir }];
-        }
-      });
-  } catch {
-    return [];
-  }
-};
-
 export const syncLocalOpenClawExtensionsIntoRuntime = (
   runtimeRoot: string,
 ): { sourceDir: string | null; copied: string[] } => {
@@ -118,50 +134,93 @@ export const syncLocalOpenClawExtensionsIntoRuntime = (
 };
 
 export const listLocalOpenClawExtensionIds = (): string[] => {
-  return readExtensionInfos(findLocalExtensionsSourceDir()).map((entry) => entry.id);
+  const sourceDir = findLocalExtensionsSourceDir();
+  if (!sourceDir) {
+    return [];
+  }
+
+  try {
+    return fs.readdirSync(sourceDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => fs.existsSync(path.join(sourceDir, entry.name, 'openclaw.plugin.json')))
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
 };
 
+export const listLocalOpenClawExtensionManifests = (): OpenClawExtensionManifest[] => (
+  listExtensionManifests(findLocalExtensionsSourceDir(), 'local')
+);
+
 export const listBundledOpenClawExtensionIds = (): string[] => {
-  return readExtensionInfos(findBundledExtensionsDir()).map((entry) => entry.id);
+  const extensionsDir = findBundledExtensionsDir();
+  if (!extensionsDir) {
+    return [];
+  }
+
+  try {
+    return fs.readdirSync(extensionsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => fs.existsSync(path.join(extensionsDir, entry.name, 'openclaw.plugin.json')))
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+};
+
+export const listBundledOpenClawExtensionManifests = (): OpenClawExtensionManifest[] => (
+  listExtensionManifests(findBundledExtensionsDir(), 'bundled')
+);
+
+export const listAvailableOpenClawExtensionManifests = (): OpenClawExtensionManifest[] => [
+  ...listBundledOpenClawExtensionManifests(),
+  ...listLocalOpenClawExtensionManifests(),
+];
+
+export const resolveOpenClawExtensionPluginId = (extensionId: string): string | null => {
+  const normalized = extensionId.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const manifest = listAvailableOpenClawExtensionManifests()
+    .find((entry) => entry.directoryId === normalized || entry.pluginId === normalized);
+  return manifest?.pluginId ?? null;
 };
 
 export const hasBundledOpenClawExtension = (extensionId: string): boolean => {
-  const matchesExtensionId = (entry: OpenClawExtensionInfo): boolean =>
-    entry.id === extensionId || entry.dirName === extensionId;
-
-  return readExtensionInfos(findBundledExtensionsDir()).some(matchesExtensionId)
-    || readExtensionInfos(findLocalExtensionsSourceDir()).some(matchesExtensionId);
+  return resolveOpenClawExtensionPluginId(extensionId) !== null;
 };
 
 export const resolveOpenClawExtensionLoadPath = (extensionId: string): string | null => {
-  const matchesExtensionId = (entry: OpenClawExtensionInfo): boolean =>
-    entry.id === extensionId || entry.dirName === extensionId;
-
-  const localMatch = readExtensionInfos(findLocalExtensionsSourceDir()).find(matchesExtensionId);
-  if (localMatch) {
-    return localMatch.rootDir;
+  const normalized = extensionId.trim();
+  if (!normalized) {
+    return null;
   }
 
-  const bundledMatch = readExtensionInfos(findBundledExtensionsDir()).find(matchesExtensionId);
-  return bundledMatch?.rootDir ?? null;
+  const manifest = listAvailableOpenClawExtensionManifests()
+    .find((entry) => entry.directoryId === normalized || entry.pluginId === normalized);
+  return manifest?.directory ?? null;
 };
 
 export const resolveOpenClawExtensionConfigId = (extensionId: string): string | null => {
-  const matchesExtensionId = (entry: OpenClawExtensionInfo): boolean =>
-    entry.id === extensionId || entry.dirName === extensionId;
-
-  const localMatch = readExtensionInfos(findLocalExtensionsSourceDir()).find(matchesExtensionId);
-  if (localMatch) {
-    return localMatch.id;
-  }
-
-  const bundledMatch = readExtensionInfos(findBundledExtensionsDir()).find(matchesExtensionId);
-  return bundledMatch?.id ?? null;
+  return resolveOpenClawExtensionPluginId(extensionId);
 };
 
+/**
+ * Returns the absolute path to the third-party plugins directory.
+ *
+ * Third-party plugins (declared in package.json openclaw.plugins) are placed
+ * in a separate `extensions/` directory - NOT in `dist/extensions/` which is
+ * reserved for runtime-bundled plugins that satisfy the bundled-channel-entry
+ * contract. The gateway discovers these via `plugins.load.paths`.
+ */
 export const findThirdPartyExtensionsDir = (): string | null => {
   const dir = findBundledExtensionsDir();
   if (!dir) return null;
+  // Resolve symlinks so the path matches what the gateway sees after resolving
+  // the `current` -> platform runtime symlink.
   try {
     return fs.realpathSync(dir);
   } catch {
@@ -169,6 +228,10 @@ export const findThirdPartyExtensionsDir = (): string | null => {
   }
 };
 
+/**
+ * Remove third-party plugins that may linger in directories scanned by the
+ * gateway's bundled-channel metadata loader.
+ */
 export const cleanupStaleThirdPartyPluginsFromBundledDir = (
   runtimeRoot: string,
   thirdPartyPluginIds: readonly string[],
@@ -194,4 +257,9 @@ export const cleanupStaleThirdPartyPluginsFromBundledDir = (
   }
 
   return removed;
+};
+
+export const __openclawLocalExtensionsTestUtils = {
+  listExtensionManifests,
+  readExtensionManifest,
 };
