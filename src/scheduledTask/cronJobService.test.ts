@@ -1,6 +1,6 @@
 import { test, expect, describe } from 'vitest';
-import { mapGatewayRun, mapGatewayTaskState } from './cronJobService';
-import { DeliveryMode, GatewayStatus, TaskStatus } from './constants';
+import { mapGatewayJob, mapGatewayRun, mapGatewayTaskState } from './cronJobService';
+import { DeliveryMode, GatewayStatus, PayloadKind, ScheduleKind, SessionTarget, TaskStatus, WakeMode } from './constants';
 
 describe('mapGatewayRun', () => {
   const baseEntry = {
@@ -132,5 +132,35 @@ describe('mapGatewayTaskState', () => {
     );
     expect(state.lastStatus).toBe(TaskStatus.Error);
     expect(state.lastError).toBe('agent timeout');
+  });
+});
+
+describe('mapGatewayJob', () => {
+  test('preserves agent turn model from gateway payload', () => {
+    const task = mapGatewayJob({
+      id: 'job-1',
+      name: 'Model specific task',
+      description: '',
+      enabled: true,
+      schedule: { kind: ScheduleKind.Cron, expr: '0 9 * * *' },
+      sessionTarget: SessionTarget.Isolated,
+      wakeMode: WakeMode.NextHeartbeat,
+      payload: {
+        kind: PayloadKind.AgentTurn,
+        message: 'Run with selected model',
+        model: 'lobsterai-server/qwen3.6-plus-YoudaoInner',
+      },
+      delivery: { mode: DeliveryMode.None },
+      agentId: 'main',
+      sessionKey: null,
+      state: {},
+      createdAtMs: 1700000000000,
+      updatedAtMs: 1700000000000,
+    });
+
+    expect(task.payload).toMatchObject({
+      kind: PayloadKind.AgentTurn,
+      model: 'lobsterai-server/qwen3.6-plus-YoudaoInner',
+    });
   });
 });
