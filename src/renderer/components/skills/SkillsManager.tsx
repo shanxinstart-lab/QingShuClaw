@@ -39,6 +39,7 @@ import {
 
 type SkillTab = 'installed' | 'marketplace';
 type ManagedSkillFilter = 'all' | 'available' | 'locked';
+type DirectImportSource = 'zip' | 'folder' | 'remote';
 
 interface SkillsManagerProps {
   readOnly?: boolean;
@@ -100,6 +101,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
   const [isDeletingSkill, setIsDeletingSkill] = useState(false);
   const [securityReport, setSecurityReport] = useState<any>(null);
   const [pendingInstallId, setPendingInstallId] = useState<string | null>(null);
+  const [pendingImportSource, setPendingImportSource] = useState<DirectImportSource | null>(null);
   const [isConfirmingInstall, setIsConfirmingInstall] = useState(false);
   const [governancePreviewSkillId, setGovernancePreviewSkillId] = useState<string | null>(null);
   const [governancePreviewTitle, setGovernancePreviewTitle] = useState<string | null>(null);
@@ -127,6 +129,10 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     isLoggedIn,
     policyNote: skill.policyNote,
   });
+
+  const showToast = (message: string) => {
+    window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+  };
 
   const getManagedSkillLockTag = (skill: Skill) => {
     const tagKey = getManagedSkillAccess(skill).lockTagKey;
@@ -421,7 +427,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     setSkillPendingDelete(null);
   };
 
-  const handleAddSkillFromSource = async (source: string) => {
+  const handleAddSkillFromSource = async (source: string, sourceType: DirectImportSource) => {
     const trimmedSource = source.trim();
     if (!trimmedSource) return;
     setIsDownloadingSkill(true);
@@ -445,11 +451,13 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       setIsRemoteImportOpen(false);
       setSecurityReport(result.auditReport);
       setPendingInstallId(result.pendingInstallId);
+      setPendingImportSource(sourceType);
       return;
     }
     if (result.skills) {
       dispatch(setSkills(result.skills));
     }
+    showToast(i18nService.t('skillImportSuccess'));
     setSkillDownloadSource('');
     setIsAddSkillMenuOpen(false);
     setIsRemoteImportOpen(false);
@@ -462,7 +470,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       filters: [{ name: 'Zip', extensions: ['zip'] }],
     });
     if (result.success && result.path) {
-      await handleAddSkillFromSource(result.path);
+      await handleAddSkillFromSource(result.path, 'zip');
     }
   };
 
@@ -470,7 +478,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     if (isDownloadingSkill) return;
     const result = await window.electron.dialog.selectDirectory();
     if (result.success && result.path) {
-      await handleAddSkillFromSource(result.path);
+      await handleAddSkillFromSource(result.path, 'folder');
     }
   };
 
@@ -514,7 +522,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       setSkillActionError(i18nService.t(validationError));
       return;
     }
-    await handleAddSkillFromSource(skillDownloadSource);
+    await handleAddSkillFromSource(skillDownloadSource, 'remote');
   };
 
   const getSkillInstallStatus = (marketplaceSkill: MarketplaceSkill): 'not_installed' | 'installed' | 'update_available' => {
@@ -653,6 +661,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       const result = await skillService.confirmInstall(pendingInstallId, action);
       if (result.success && result.skills) {
         dispatch(setSkills(result.skills));
+        if (action !== 'cancel' && pendingImportSource) {
+          showToast(i18nService.t('skillImportSuccess'));
+        }
       }
       if (!result.success && result.error) {
         setSkillActionError(result.error);
@@ -662,6 +673,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
     } finally {
       setSecurityReport(null);
       setPendingInstallId(null);
+      setPendingImportSource(null);
       setIsConfirmingInstall(false);
       setInstallingSkillId(null);
       setSkillDownloadSource('');
