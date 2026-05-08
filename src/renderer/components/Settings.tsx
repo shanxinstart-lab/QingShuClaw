@@ -74,6 +74,8 @@ const parsePostProcessKeywordsInput = (value: string): string[] => {
 export type SettingsOpenOptions = {
   initialTab?: TabType;
   notice?: string;
+  noticeI18nKey?: string;
+  noticeExtra?: string;
 };
 
 interface SettingsProps extends SettingsOpenOptions {
@@ -280,6 +282,7 @@ const resolveModelSupportsImageForProvider = (
 const getDefaultProviders = (): ProvidersConfig => {
   const providers = (defaultConfig.providers ?? {}) as ProvidersConfig;
   const entries = Object.entries(providers) as Array<[string, ProviderConfig]>;
+  const secureSuffix = i18nService.t('modelSuffixSecure');
   return Object.fromEntries(
     entries.map(([providerKey, providerConfig]) => [
       providerKey,
@@ -287,6 +290,7 @@ const getDefaultProviders = (): ProvidersConfig => {
         ...providerConfig,
         models: providerConfig.models?.map(model => ({
           ...model,
+          name: model.name.replace('(Secure)', secureSuffix),
           supportsImage: resolveModelSupportsImageForProvider(providerKey, model),
         })),
       },
@@ -379,6 +383,8 @@ const Settings: React.FC<SettingsProps> = ({
   onClose,
   initialTab,
   notice,
+  noticeI18nKey,
+  noticeExtra,
   onManualCheckUpdate,
   updateCheckManaged,
   enterpriseConfig,
@@ -420,7 +426,14 @@ const Settings: React.FC<SettingsProps> = ({
   const [isUpdatingPreventSleep, setIsUpdatingPreventSleep] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [noticeMessage, setNoticeMessage] = useState<string | null>(notice ?? null);
+  const buildNoticeMessage = (): string | null => {
+    if (noticeI18nKey) {
+      const base = i18nService.t(noticeI18nKey);
+      return noticeExtra ? `${base} (${noticeExtra})` : base;
+    }
+    return notice ?? null;
+  };
+  const [noticeMessage, setNoticeMessage] = useState<string | null>(() => buildNoticeMessage());
   const [testResult, setTestResult] = useState<ProviderConnectionTestResult | null>(null);
   const [isTestResultModalOpen, setIsTestResultModalOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -1033,8 +1046,8 @@ const Settings: React.FC<SettingsProps> = ({
   }, [activeTab]);
 
   useEffect(() => {
-    setNoticeMessage(notice ?? null);
-  }, [notice]);
+    setNoticeMessage(buildNoticeMessage());
+  }, [notice, noticeI18nKey, noticeExtra]);
 
   useEffect(() => {
     if (initialTab) {
@@ -1046,9 +1059,13 @@ const Settings: React.FC<SettingsProps> = ({
   useEffect(() => {
     const unsubscribe = i18nService.subscribe(() => {
       setLanguage(i18nService.getLanguage());
+      if (noticeI18nKey) {
+        const base = i18nService.t(noticeI18nKey);
+        setNoticeMessage(noticeExtra ? `${base} (${noticeExtra})` : base);
+      }
     });
     return unsubscribe;
-  }, []);
+  }, [noticeI18nKey, noticeExtra]);
 
   // Compute visible providers based on language, including active custom_N entries
   const visibleProviders = useMemo(() => {
@@ -4130,7 +4147,7 @@ const Settings: React.FC<SettingsProps> = ({
                         Coding Plan
                       </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
-                        订阅套餐
+                        {i18nService.t('codingPlanSubscriptionBadge')}
                       </span>
                     </div>
                     <p className="mt-0.5 text-[11px] text-secondary">

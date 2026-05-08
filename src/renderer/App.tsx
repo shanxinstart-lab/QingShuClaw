@@ -485,6 +485,8 @@ const App: React.FC = () => {
     setSettingsOptions({
       initialTab: options?.initialTab,
       notice: options?.notice,
+      noticeI18nKey: options?.noticeI18nKey,
+      noticeExtra: options?.noticeExtra,
     });
     setShowSettings(true);
   }, []);
