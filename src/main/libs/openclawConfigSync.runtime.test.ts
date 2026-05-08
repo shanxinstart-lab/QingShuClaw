@@ -285,4 +285,56 @@ describe('OpenClawConfigSync runtime config output', () => {
       config: { retained: true },
     });
   });
+
+  test('updates managed session model refs when agent ids contain colons', async () => {
+    const agentId = 'qingshu-managed:qingshu-presales-analysis';
+    const sessionKey = `agent:${agentId}:lobsterai:session-1`;
+    const sessionsDir = path.join(stateDir, 'agents', agentId, 'sessions');
+    const sessionsPath = path.join(sessionsDir, 'sessions.json');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(sessionsPath, JSON.stringify({
+      [sessionKey]: {
+        modelProvider: 'lobster',
+        model: 'gpt-test',
+        systemPromptReport: {
+          provider: 'lobster',
+          model: 'gpt-test',
+        },
+      },
+    }, null, 2));
+
+    const sync = await createSync({
+      getAgents: () => [{
+        id: agentId,
+        name: 'Presales',
+        description: '',
+        systemPrompt: '',
+        identity: '',
+        model: '',
+        icon: '',
+        skillIds: [],
+        toolBundleIds: [],
+        enabled: true,
+        isDefault: false,
+        source: 'custom',
+        presetId: '',
+        createdAt: 0,
+        updatedAt: 0,
+      }],
+    });
+
+    const result = sync.sync('managed-session-colon-agent-id');
+    expect(result.ok).toBe(true);
+    expect(result.changed).toBe(true);
+
+    const sessionStore = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
+    expect(sessionStore[sessionKey]).toMatchObject({
+      modelProvider: 'openai',
+      model: 'gpt-test',
+      systemPromptReport: {
+        provider: 'openai',
+        model: 'gpt-test',
+      },
+    });
+  });
 });

@@ -9,7 +9,7 @@ import { AuthType, ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiC
 import { resolveRawApiConfig, resolveAllProviderApiKeys, resolveAllEnabledProviderConfigs, getAllServerModelMetadata } from './claudeSettings';
 import type { OpenClawEngineManager } from './openclawEngineManager';
 import { getMainAgentWorkspacePath } from './openclawMemoryFile';
-import { parseChannelSessionKey } from './openclawChannelSessionSync';
+import { isManagedSessionKey, parseChannelSessionKey } from './openclawChannelSessionSync';
 import type { McpToolManifestEntry } from './mcpServerManager';
 import { getCoworkOpenAICompatProxyBaseURL } from './coworkOpenAICompatProxy';
 import {
@@ -1976,7 +1976,7 @@ export class OpenClawConfigSync {
           }
         }
 
-        if (!(/^agent:[^:]+:lobsterai:/.test(sessionKey))) {
+        if (!isManagedSessionKey(sessionKey)) {
           continue;
         }
 
