@@ -11,7 +11,7 @@ import type { OpenClawEngineManager } from './openclawEngineManager';
 import { getMainAgentWorkspacePath } from './openclawMemoryFile';
 import { isManagedSessionKey, parseChannelSessionKey } from './openclawChannelSessionSync';
 import type { McpToolManifestEntry } from './mcpServerManager';
-import { getCoworkOpenAICompatProxyBaseURL } from './coworkOpenAICompatProxy';
+import { getCoworkOpenAICompatProxyBaseURL, getCoworkOpenAICompatProxyToken } from './coworkOpenAICompatProxy';
 import {
   hasBundledOpenClawExtension,
   resolveOpenClawExtensionConfigId,
@@ -1767,7 +1767,7 @@ export class OpenClawConfigSync {
     // after that, openclaw.json uses provider-specific placeholders and this var
     // is never resolved. Use a fixed value to avoid secretEnvVarsChanged on switch.
     env.LOBSTER_PROVIDER_API_KEY = 'legacy-unused';
-    env.LOBSTER_PROXY_TOKEN = 'proxy-managed';
+    env.LOBSTER_PROXY_TOKEN = getCoworkOpenAICompatProxyToken() || 'unconfigured';
 
     // MCP Bridge Secret — always set so stale openclaw.json with
     // ${LOBSTER_MCP_BRIDGE_SECRET} placeholder doesn't crash the gateway.

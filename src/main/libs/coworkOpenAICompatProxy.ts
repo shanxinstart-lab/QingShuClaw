@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import http from 'http';
 import { session } from 'electron';
 import {
@@ -128,6 +129,7 @@ function sanitizeToolsForGemini(
 
 let proxyServer: http.Server | null = null;
 let proxyPort: number | null = null;
+let proxyAuthToken: string | null = null;
 let upstreamConfig: OpenAICompatUpstreamConfig | null = null;
 let lastProxyError: string | null = null;
 let tokenRefresher: (() => Promise<string | null>) | null = null;
@@ -2256,13 +2258,22 @@ async function handleRequest(
   const url = new URL(req.url || '/', `http://${LOCAL_HOST}`);
 
   if (method === 'GET' && url.pathname === '/healthz') {
-    writeJSON(res, 200, {
-      ok: true,
-      running: Boolean(proxyServer),
-      hasUpstream: Boolean(upstreamConfig),
-      lastError: lastProxyError,
-    });
+    writeJSON(res, 200, { ok: true, status: 'live' });
     return;
+  }
+
+  if (proxyAuthToken) {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    if (bearerToken !== proxyAuthToken) {
+      writeJSON(res, 401, createAnthropicErrorBody(
+        'Unauthorized: invalid or missing proxy token',
+        'authentication_error',
+      ));
+      return;
+    }
   }
 
   console.log(`[CoworkProxy] ${method} ${url.pathname}`);
@@ -2606,6 +2617,8 @@ export async function startCoworkOpenAICompatProxy(): Promise<void> {
     return;
   }
 
+  proxyAuthToken = crypto.randomBytes(24).toString('hex');
+
   await new Promise<void>((resolve, reject) => {
     const server = http.createServer((req, res) => {
       void handleRequest(req, res).catch((error) => {
@@ -2647,6 +2660,7 @@ export async function stopCoworkOpenAICompatProxy(): Promise<void> {
   const server = proxyServer;
   proxyServer = null;
   proxyPort = null;
+  proxyAuthToken = null;
 
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {
@@ -2682,6 +2696,10 @@ export function getCoworkOpenAICompatProxyBaseURL(target: OpenAICompatProxyTarge
   }
   const host = target === 'sandbox' ? SANDBOX_HOST : LOCAL_HOST;
   return `http://${host}:${proxyPort}`;
+}
+
+export function getCoworkOpenAICompatProxyToken(): string | null {
+  return proxyAuthToken;
 }
 
 export function getCoworkOpenAICompatProxyStatus(): OpenAICompatProxyStatus {
