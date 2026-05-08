@@ -1,5 +1,5 @@
-import { test, expect, describe } from 'vitest';
-import { mapGatewayJob, mapGatewayRun, mapGatewayTaskState } from './cronJobService';
+import { test, expect, describe, vi } from 'vitest';
+import { CronJobService, mapGatewayJob, mapGatewayRun, mapGatewayTaskState } from './cronJobService';
 import { DeliveryMode, GatewayStatus, PayloadKind, ScheduleKind, SessionTarget, TaskStatus, WakeMode } from './constants';
 
 describe('mapGatewayRun', () => {
@@ -162,5 +162,21 @@ describe('mapGatewayJob', () => {
       kind: PayloadKind.AgentTurn,
       model: 'lobsterai-server/qwen3.6-plus-YoudaoInner',
     });
+  });
+});
+
+describe('CronJobService polling', () => {
+  test('does not start the gateway just to poll task state', async () => {
+    const ensureGatewayReady = vi.fn(async () => {});
+    const service = new CronJobService({
+      getGatewayClient: () => null,
+      ensureGatewayReady,
+    });
+
+    service.startPolling();
+    await Promise.resolve();
+    service.stopPolling();
+
+    expect(ensureGatewayReady).not.toHaveBeenCalled();
   });
 });
