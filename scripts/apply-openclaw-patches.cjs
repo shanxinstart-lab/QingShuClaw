@@ -62,6 +62,18 @@ if (patchFiles.length === 0) {
 
 console.log(`[apply-openclaw-patches] Applying patches for openclaw ${openclawVersion} (${patchFiles.length} file(s))`);
 
+// Reset the OpenClaw source before applying patches. This avoids stale patched
+// files from another local branch causing false "already applied" results.
+try {
+  execFileSync('git', ['reset', 'HEAD', '.'], { cwd: openclawSrc, stdio: 'pipe' });
+  execFileSync('git', ['checkout', '.'], { cwd: openclawSrc, stdio: 'pipe' });
+  execFileSync('git', ['clean', '-fd'], { cwd: openclawSrc, stdio: 'pipe' });
+  console.log('[apply-openclaw-patches] Reset openclaw source to a clean state before patching.');
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`[apply-openclaw-patches] Warning: failed to reset openclaw source: ${message}`);
+}
+
 let applied = 0;
 let skipped = 0;
 
