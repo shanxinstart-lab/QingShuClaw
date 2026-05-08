@@ -3678,7 +3678,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         ?? (typeof usage.inputTokens === 'number' ? usage.inputTokens : undefined);
       const outputTokens = (typeof usage.output === 'number' ? usage.output : undefined)
         ?? (typeof usage.outputTokens === 'number' ? usage.outputTokens : undefined);
-      const totalTokens = typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined;
+      const _totalTokens = typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined;
       const cacheReadTokens = (typeof usage.cacheRead === 'number' ? usage.cacheRead : undefined)
         ?? (typeof usage.cacheReadTokens === 'number' ? usage.cacheReadTokens : undefined)
         ?? (typeof (usage as any).cache_read_input_tokens === 'number' ? (usage as any).cache_read_input_tokens : undefined);
