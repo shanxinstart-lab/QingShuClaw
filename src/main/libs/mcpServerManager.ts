@@ -77,6 +77,10 @@ function raceAbortSignal<T>(promise: Promise<T>, signal: AbortSignal, reason: st
   });
 }
 
+export const __mcpServerManagerTestUtils = {
+  raceAbortSignal,
+};
+
 const log = (level: string, msg: string) => {
   const formatted = `[McpBridge:SDK][${level}] ${msg}`;
   if (level === 'ERROR') {
