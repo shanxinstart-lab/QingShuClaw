@@ -2841,7 +2841,7 @@ if (!gotTheLock) {
       refreshEndpointsTestMode(getStore());
       const syncResult = await syncOpenClawConfig({
         reason: 'app-config-change',
-        restartGatewayIfRunning: false,
+        restartGatewayIfRunning: true,
       });
       if (!syncResult.success) {
         console.error('[OpenClaw] Failed to sync config after app_config update:', syncResult.error);
@@ -3136,7 +3136,7 @@ if (!gotTheLock) {
         onServerModelMetadataUpdated: async () => {
           await syncOpenClawConfig({
             reason: 'server-models-updated',
-            restartGatewayIfRunning: false,
+            restartGatewayIfRunning: true,
           });
         },
         resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
@@ -3158,7 +3158,7 @@ if (!gotTheLock) {
       onServerModelMetadataUpdated: async () => {
         await syncOpenClawConfig({
           reason: 'server-models-updated',
-          restartGatewayIfRunning: false,
+          restartGatewayIfRunning: true,
         });
       },
       resolveApiBaseUrl: () => backendConfig.apiBaseUrl,
