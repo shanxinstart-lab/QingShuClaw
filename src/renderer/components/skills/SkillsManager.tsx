@@ -1098,7 +1098,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
         ) : (
           <>
             {marketTags.length > 0 && (
-              <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+              <div className="sticky top-0 z-10 bg-background -mx-4 px-4 py-3 flex items-center gap-1.5 flex-wrap border-b border-border mb-4">
                 <button
                   type="button"
                   onClick={() => setActiveMarketTag('all')}
