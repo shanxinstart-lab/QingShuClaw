@@ -31,6 +31,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
   const [url, setUrl] = useState('');
   const [headerRows, setHeaderRows] = useState<{ key: string; value: string }[]>([]);
   const [error, setError] = useState('');
+  const [envErrors, setEnvErrors] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     if (!isOpen) return;
@@ -41,11 +42,21 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
       setTransportType(server.transportType);
       setCommand(server.command || '');
       setArgsText((server.args || []).join('\n'));
-      setEnvRows(
-        server.env
-          ? Object.entries(server.env).map(([key, value]) => ({ key, value }))
-          : []
-      );
+      const requiredKeys = new Set(registryEntry?.requiredEnvKeys ?? []);
+      const existingEnvRows = server.env
+        ? Object.entries(server.env).map(([key, value]) => ({
+            key,
+            value,
+            required: requiredKeys.has(key) || undefined,
+          }))
+        : [];
+      const existingKeys = new Set(existingEnvRows.map(row => row.key));
+      for (const requiredKey of requiredKeys) {
+        if (!existingKeys.has(requiredKey)) {
+          existingEnvRows.push({ key: requiredKey, value: '', required: true });
+        }
+      }
+      setEnvRows(existingEnvRows);
       setUrl(server.url || '');
       setHeaderRows(
         server.headers
@@ -94,6 +105,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
       setHeaderRows([]);
     }
     setError('');
+    setEnvErrors({});
   }, [isOpen, server, registryEntry]);
 
   const handleSave = () => {
@@ -117,6 +129,17 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
 
     if ((transportType === 'sse' || transportType === 'http') && !url.trim()) {
       setError(i18nService.t('mcpUrlRequired'));
+      return;
+    }
+
+    const missingRequiredEnv: Record<number, boolean> = {};
+    envRows.forEach((row, index) => {
+      if (row.required && !row.value.trim()) {
+        missingRequiredEnv[index] = true;
+      }
+    });
+    if (Object.keys(missingRequiredEnv).length > 0) {
+      setEnvErrors(missingRequiredEnv);
       return;
     }
 
@@ -173,6 +196,13 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
     const updated = [...envRows];
     updated[index] = { ...updated[index], [field]: val };
     setEnvRows(updated);
+    if (field === 'value' && envErrors[index]) {
+      setEnvErrors(prev => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
+    }
   };
 
   const handleAddHeaderRow = () => {
@@ -320,36 +350,47 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
                   </button>
                 </div>
                 {envRows.map((row, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={row.key}
-                      onChange={(e) => handleUpdateEnvRow(index, 'key', e.target.value)}
-                      placeholder={i18nService.t('mcpHeaderKey')}
-                      className={row.required ? kvInputClass + ' opacity-60 cursor-not-allowed' : kvInputClass}
-                      readOnly={!!row.required}
-                    />
-                    <input
-                      type="text"
-                      value={row.value}
-                      onChange={(e) => handleUpdateEnvRow(index, 'value', e.target.value)}
-                      placeholder={row.required ? `${row.key} *` : i18nService.t('mcpHeaderValue')}
-                      className={kvInputClass}
-                      autoFocus={isRegistry && index === 0 && !!row.required}
-                    />
-                    {!row.required && (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveEnvRow(index)}
-                        className="p-1 text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors flex-shrink-0"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                          <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-                        </svg>
-                      </button>
-                    )}
-                    {row.required && (
-                      <span className="text-red-400 text-xs flex-shrink-0 w-4 text-center">*</span>
+                  <div key={index} className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={row.key}
+                        onChange={(e) => handleUpdateEnvRow(index, 'key', e.target.value)}
+                        placeholder={i18nService.t('mcpHeaderKey')}
+                        className={row.required ? kvInputClass + ' opacity-60 cursor-not-allowed' : kvInputClass}
+                        readOnly={!!row.required}
+                      />
+                      <input
+                        type="text"
+                        value={row.value}
+                        onChange={(e) => handleUpdateEnvRow(index, 'value', e.target.value)}
+                        placeholder={row.required ? `${row.key} *` : i18nService.t('mcpHeaderValue')}
+                        className={
+                          envErrors[index]
+                            ? kvInputClass + ' border-red-500 focus:ring-red-500'
+                            : kvInputClass
+                        }
+                        autoFocus={isRegistry && index === 0 && !!row.required}
+                      />
+                      {!row.required && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveEnvRow(index)}
+                          className="p-1 text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors flex-shrink-0"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                          </svg>
+                        </button>
+                      )}
+                      {row.required && (
+                        <span className="text-red-400 text-xs flex-shrink-0 w-4 text-center">*</span>
+                      )}
+                    </div>
+                    {envErrors[index] && row.required && (
+                      <p className="text-xs text-red-500 ml-[calc(50%+8px)]">
+                        {i18nService.t('mcpEnvRequired')}
+                      </p>
                     )}
                   </div>
                 ))}
