@@ -20,7 +20,7 @@ describe('resolveCodingPlanBaseUrl', () => {
     if (!def?.codingPlanUrls) {
       throw new Error('Qwen coding plan fixture is missing');
     }
-    const originalOpenAIUrl = def.codingPlanUrls.openai;
+    const originalOpenAIUrl = def.codingPlanUrls.openai ?? '';
     (def.codingPlanUrls as { openai: string }).openai = '';
     try {
       const result = resolveCodingPlanBaseUrl(ProviderName.Qwen, true, 'anthropic', 'https://custom.qwen.example');

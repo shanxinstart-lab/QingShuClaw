@@ -109,6 +109,7 @@ const providerKeys = [
   'openrouter',
   'github-copilot',
   'ollama',
+  'lm-studio',
   ...CUSTOM_PROVIDER_KEYS,
 ] as const;
 
@@ -165,7 +166,7 @@ interface ProvidersImportPayload {
   providers?: Record<string, ProvidersImportEntry>;
 }
 
-const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'github-copilot';
+const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'lm-studio' && provider !== 'github-copilot';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
 
 const WAKE_INPUT_SEPARATOR_PATTERN = /[\n,，;；、]+/u;
