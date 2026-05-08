@@ -1515,11 +1515,9 @@ export class IMGatewayManager extends EventEmitter {
         accountId: result.accountId,
       }));
       if (result.connected) {
-        // Sync config and restart gateway so the weixin channel starts with
-        // the newly saved account credentials. The gateway's web.login.wait
-        // handler called context.startChannel, but the channel may not fully
-        // initialize without a proper config-driven restart.
-        await this.syncOpenClawConfig?.();
+        // The OpenClaw login handler starts the Weixin channel after scanning.
+        // Avoid a config-driven restart here, otherwise the just-established
+        // login session can be interrupted and active gateway work gets drained.
         await this.ensureOpenClawGatewayConnected?.();
       }
       return result;

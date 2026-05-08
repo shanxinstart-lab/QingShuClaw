@@ -367,7 +367,7 @@ const IMSettings: React.FC = () => {
         const fullConfig = { ...weixinOpenClawConfig, enabled: true, accountId };
         dispatch(setWeixinConfig({ enabled: true, accountId }));
         dispatch(clearError());
-        await imService.updateConfig({ weixin: fullConfig });
+        await imService.persistConfig({ weixin: fullConfig });
         await imService.loadStatus();
       } else {
         setWeixinQrStatus('error');
