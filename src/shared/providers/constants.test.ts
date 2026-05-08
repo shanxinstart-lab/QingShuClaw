@@ -3,6 +3,7 @@ import {
   ProviderName,
   ProviderRegistry,
   ApiFormat,
+  OpenClawApi,
 } from './constants';
 
 describe('ProviderName constants', () => {
@@ -12,6 +13,12 @@ describe('ProviderName constants', () => {
     expect(ProviderName.Custom).toBe('custom');
     expect(ProviderName.LobsteraiServer).toBe('lobsterai-server');
     expect(ProviderName.Copilot).toBe('github-copilot');
+  });
+});
+
+describe('OpenClawApi constants', () => {
+  test('contains OpenAI Codex responses protocol id', () => {
+    expect(OpenClawApi.OpenAICodexResponses).toBe('openai-codex-responses');
   });
 });
 
