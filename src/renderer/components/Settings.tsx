@@ -3410,7 +3410,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                     <div className="min-h-[68px]">
                       <div className="flex items-center justify-between mb-1">
                         <label htmlFor="minimax-apiKey" className="block text-xs font-medium dark:text-claude-darkText text-claude-text">
-                          {i18nService.t('apiKey')}
+                          {i18nService.t('apiKey')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
                         </label>
                         {ProviderRegistry.get('minimax')?.apiKeyUrl && (
                           <button
@@ -3769,7 +3769,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label htmlFor={`${activeProvider}-apiKey`} className="block text-xs font-medium dark:text-claude-darkText text-claude-text">
-                          {i18nService.t('apiKey')}
+                          {i18nService.t('apiKey')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
                         </label>
                         {ProviderRegistry.get(activeProvider)?.apiKeyUrl && (
                           <button
@@ -3819,7 +3819,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label htmlFor="qwen-apiKey" className="block text-xs font-medium dark:text-claude-darkText text-claude-text">
-                          API Key
+                          API Key<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
                         </label>
                         {ProviderRegistry.get('qwen')?.apiKeyUrl && (
                           <button
@@ -4836,7 +4836,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                     <>
                       <div>
                         <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t(activeProvider === 'lm-studio' ? 'lmStudioModelName' : 'ollamaModelName')}
+                          {i18nService.t(activeProvider === 'lm-studio' ? 'lmStudioModelName' : 'ollamaModelName')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
                         </label>
                         <input
                           autoFocus
@@ -4883,7 +4883,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                     <>
                       <div>
                         <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t('modelName')}
+                          {i18nService.t('modelName')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
                         </label>
                         <input
                           autoFocus
@@ -4901,7 +4901,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-secondary mb-1">
-                          {i18nService.t('modelId')}
+                          {i18nService.t('modelId')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
                         </label>
                         <input
                           type="text"
@@ -4977,6 +4977,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
                       {i18nService.t('coworkMemoryEditingTag')}
                     </div>
                   )}
+                  <label className="block text-xs font-medium text-secondary mb-1">
+                    {i18nService.t('coworkMemoryCrudContentLabel')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
+                  </label>
                   <textarea
                     value={coworkMemoryDraftText}
                     onChange={(event) => setCoworkMemoryDraftText(event.target.value)}

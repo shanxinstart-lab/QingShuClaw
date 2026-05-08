@@ -1229,7 +1229,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
 
         {/* Task name */}
         <div>
-          <label className={labelClass}>{i18nService.t('scheduledTasksFormName')}</label>
+          <label className={labelClass}>{i18nService.t('scheduledTasksFormName')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
           <input
             type="text"
             value={form.name}
@@ -1250,7 +1250,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
         <div>
           <div className="flex items-end justify-between mb-1">
             <label className={labelClass} style={{ marginBottom: 0 }}>
-              {i18nService.t('scheduledTasksFormPayloadTextAgent')}
+              {i18nService.t('scheduledTasksFormPayloadTextAgent')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
             </label>
             <span className="text-xs text-secondary tabular-nums">
               {i18nService

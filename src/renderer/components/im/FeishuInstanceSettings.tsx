@@ -384,7 +384,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
       {/* App ID */}
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-secondary">
-          App ID
+          App ID<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
         </label>
         <div className="relative">
           <input
@@ -413,7 +413,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
       {/* App Secret */}
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-secondary">
-          App Secret
+          App Secret<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
         </label>
         <div className="relative">
           <input

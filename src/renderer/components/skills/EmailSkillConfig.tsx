@@ -431,7 +431,7 @@ const EmailSkillConfig: React.FC<EmailSkillConfigProps> = ({ onClose }) => {
 
       {/* Email */}
       <div>
-        <label className={labelClassName}>{i18nService.t('emailAddress')}</label>
+        <label className={labelClassName}>{i18nService.t('emailAddress')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
         <div className="relative">
           <input
             type="email"
@@ -461,7 +461,7 @@ const EmailSkillConfig: React.FC<EmailSkillConfigProps> = ({ onClose }) => {
 
       {/* Password */}
       <div>
-        <label className={labelClassName}>{i18nService.t('emailPassword')}</label>
+        <label className={labelClassName}>{i18nService.t('emailPassword')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
         <div className="relative">
           <input
             type={showPassword ? 'text' : 'password'}
@@ -522,7 +522,7 @@ const EmailSkillConfig: React.FC<EmailSkillConfigProps> = ({ onClose }) => {
         <div className="space-y-3 pl-2 border-l-2 border-border">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={labelClassName}>IMAP Host</label>
+              <label className={labelClassName}>IMAP Host<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
               <div className="relative">
                 <input
                   type="text"
@@ -581,7 +581,7 @@ const EmailSkillConfig: React.FC<EmailSkillConfigProps> = ({ onClose }) => {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={labelClassName}>SMTP Host</label>
+              <label className={labelClassName}>SMTP Host<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
               <div className="relative">
                 <input
                   type="text"
