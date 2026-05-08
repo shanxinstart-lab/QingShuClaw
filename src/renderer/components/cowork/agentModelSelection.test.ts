@@ -33,10 +33,24 @@ describe('resolveAgentModelSelection', () => {
     expect(result.hasInvalidExplicitModel).toBe(false);
   });
 
-  test('falls back when explicit agent model cannot be resolved', () => {
+  test('falls back silently when agent model cannot be resolved', () => {
     const result = resolveAgentModelSelection({
       sessionModel: '',
       agentModel: 'missing/provider-model',
+      availableModels,
+      fallbackModel: availableModels[1],
+      engine: 'openclaw',
+    });
+
+    expect(result.selectedModel).toEqual(availableModels[1]);
+    expect(result.usesFallback).toBe(true);
+    expect(result.hasInvalidExplicitModel).toBe(false);
+  });
+
+  test('marks invalid session model override as explicit model error', () => {
+    const result = resolveAgentModelSelection({
+      sessionModel: 'missing/provider-model',
+      agentModel: 'moonshot/kimi-k2.5',
       availableModels,
       fallbackModel: availableModels[1],
       engine: 'openclaw',
