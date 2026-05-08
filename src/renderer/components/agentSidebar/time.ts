@@ -6,6 +6,7 @@ export interface AgentTaskRelativeTime {
 }
 
 const Milliseconds = {
+  Minute: 60000,
   Hour: 3600000,
   Day: 86400000,
 } as const;
@@ -29,10 +30,15 @@ const formatDuration = (value: number, unitKey: string): AgentTaskRelativeTime =
 export const formatAgentTaskRelativeTime = (timestamp: number): AgentTaskRelativeTime => {
   const safeTimestamp = Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
   const diff = Math.max(0, Date.now() - safeTimestamp);
+  const minutes = Math.max(1, Math.floor(diff / Milliseconds.Minute));
+  if (minutes <= 60) {
+    return formatDuration(minutes, 'myAgentSidebarMinuteShort');
+  }
+
   const hours = Math.floor(diff / Milliseconds.Hour);
 
   if (hours < CalendarUnit.HoursPerDay) {
-    return formatDuration(Math.max(1, hours), 'myAgentSidebarHourShort');
+    return formatDuration(hours, 'myAgentSidebarHourShort');
   }
 
   const days = Math.floor(diff / Milliseconds.Day);

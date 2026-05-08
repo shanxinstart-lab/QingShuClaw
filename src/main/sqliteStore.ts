@@ -80,6 +80,7 @@ export class SqliteStore {
         claude_session_id TEXT,
         status TEXT NOT NULL DEFAULT 'idle',
         pinned INTEGER NOT NULL DEFAULT 0,
+        pin_order INTEGER,
         cwd TEXT NOT NULL,
         system_prompt TEXT NOT NULL DEFAULT '',
         model_override TEXT NOT NULL DEFAULT '',
@@ -209,6 +210,11 @@ export class SqliteStore {
         this.didRunMigration = true;
       }
 
+      if (!colNames.includes('pin_order')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN pin_order INTEGER;');
+        this.didRunMigration = true;
+      }
+
       if (!colNames.includes('active_skill_ids')) {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN active_skill_ids TEXT;');
         this.didRunMigration = true;
@@ -245,8 +251,16 @@ export class SqliteStore {
     }
 
     try {
-      this.db.exec('UPDATE cowork_sessions SET pinned = 0 WHERE pinned IS NULL;');
-      this.didRunMigration = true;
+      const pinnedResult = this.db.prepare('UPDATE cowork_sessions SET pinned = 0 WHERE pinned IS NULL;').run();
+      const pinOrderResult = this.db
+        .prepare('UPDATE cowork_sessions SET pin_order = updated_at WHERE pinned = 1 AND pin_order IS NULL;')
+        .run();
+      const unpinnedResult = this.db
+        .prepare('UPDATE cowork_sessions SET pin_order = NULL WHERE pinned = 0 AND pin_order IS NOT NULL;')
+        .run();
+      if (pinnedResult.changes > 0 || pinOrderResult.changes > 0 || unpinnedResult.changes > 0) {
+        this.didRunMigration = true;
+      }
     } catch {
       // Column might not exist yet.
     }

@@ -130,12 +130,13 @@ const coworkSlice = createSlice({
       if (action.payload) {
         state.currentSessionId = action.payload.id;
         if (!action.payload.id.startsWith('temp-')) {
-          const { id, title, status, pinned, createdAt, updatedAt } = action.payload;
+          const { id, title, status, pinned, pinOrder, createdAt, updatedAt } = action.payload;
           const summary: CoworkSessionSummary = {
             id,
             title,
             status,
             pinned: pinned ?? false,
+            pinOrder: pinOrder ?? null,
             createdAt,
             updatedAt,
           };
@@ -168,6 +169,7 @@ const coworkSlice = createSlice({
         title: action.payload.title,
         status: action.payload.status,
         pinned: action.payload.pinned ?? false,
+        pinOrder: action.payload.pinOrder ?? null,
         createdAt: action.payload.createdAt,
         updatedAt: action.payload.updatedAt,
       };
@@ -265,14 +267,16 @@ const coworkSlice = createSlice({
       state.remoteManaged = action.payload;
     },
 
-    updateSessionPinned(state, action: PayloadAction<{ sessionId: string; pinned: boolean }>) {
-      const { sessionId, pinned } = action.payload;
+    updateSessionPinned(state, action: PayloadAction<{ sessionId: string; pinned: boolean; pinOrder?: number | null }>) {
+      const { sessionId, pinned, pinOrder } = action.payload;
       const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
       if (sessionIndex !== -1) {
         state.sessions[sessionIndex].pinned = pinned;
+        state.sessions[sessionIndex].pinOrder = pinned ? (pinOrder ?? state.sessions[sessionIndex].pinOrder ?? null) : null;
       }
       if (state.currentSession?.id === sessionId) {
         state.currentSession.pinned = pinned;
+        state.currentSession.pinOrder = pinned ? (pinOrder ?? state.currentSession.pinOrder ?? null) : null;
       }
     },
 

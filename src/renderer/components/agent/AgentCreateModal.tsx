@@ -1,4 +1,5 @@
 import { XMarkIcon } from '@heroicons/react/24/outline';
+import { DefaultAgentAvatarIcon } from '@shared/agent/avatar';
 import type { Platform } from '@shared/platform';
 import { PlatformRegistry } from '@shared/platform';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -14,11 +15,11 @@ import { getAgentDisplayNameById } from '../../utils/agentDisplay';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import Modal from '../common/Modal';
+import AgentAvatarPicker from './AgentAvatarPicker';
 import AgentConfirmDialog from './AgentConfirmDialog';
 import AgentDetailToolbar from './AgentDetailToolbar';
 import AgentSkillSelector from './AgentSkillSelector';
 import { AgentConfirmDialogVariant, AgentDetailTab } from './constants';
-import EmojiPicker from './EmojiPicker';
 
 type MultiInstancePlatform = 'dingtalk' | 'feishu' | 'qq' | 'wecom' | 'discord' | 'popo';
 type MultiInstanceConfig = DingTalkInstanceConfig | FeishuInstanceConfig | QQInstanceConfig | WecomInstanceConfig | DiscordInstanceConfig | PopoInstanceConfig;
@@ -29,16 +30,21 @@ const isMultiInstancePlatform = (platform: Platform): platform is MultiInstanceP
   MULTI_INSTANCE_PLATFORMS.includes(platform as MultiInstancePlatform);
 
 interface AgentCreateModalProps {
-  isOpen: boolean;
+  isOpen?: boolean;
   onClose: () => void;
+  presentation?: 'modal' | 'page';
 }
 
-const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) => {
+const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
+  isOpen = true,
+  onClose,
+  presentation = 'modal',
+}) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
-  const [icon, setIcon] = useState('');
+  const [icon, setIcon] = useState(DefaultAgentAvatarIcon);
   const [model, setModel] = useState<Model | null>(null);
   const [workingDirectory, setWorkingDirectory] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
@@ -63,7 +69,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
       || description
       || systemPrompt
       || identity
-      || icon
+      || icon !== DefaultAgentAvatarIcon
       || (model ? toOpenClawModelRef(model) : '') !== initialModelRef.current
       || workingDirectory !== initialWorkingDirectoryRef.current
       || skillIds.length > 0
@@ -82,7 +88,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setDescription('');
     setSystemPrompt('');
     setIdentity('');
-    setIcon('');
+    setIcon(DefaultAgentAvatarIcon);
     const currentAgent = agents.find((agent) => agent.id === currentAgentId);
     const defaultWorkingDirectory = currentAgent?.workingDirectory?.trim() || coworkConfig.workingDirectory || '';
     initialWorkingDirectoryRef.current = defaultWorkingDirectory;
@@ -113,7 +119,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setDescription('');
     setSystemPrompt('');
     setIdentity('');
-    setIcon('');
+    setIcon(DefaultAgentAvatarIcon);
     setModel(null);
     setWorkingDirectory('');
     setSkillIds([]);
@@ -212,270 +218,282 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     { key: AgentDetailTab.Im, label: i18nService.t('agentTabIM') },
   ];
 
-  return (
+  const content = (
     <>
-      <Modal
-        isOpen={isOpen}
-        onClose={handleClose}
-        overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/10 dark:bg-black/50"
-        className="w-[calc(100vw-56px)] max-w-[854px] h-[82vh] max-h-[664px] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.16)] bg-surface border border-border/80 flex flex-col overflow-hidden"
-      >
-        <div className="flex shrink-0 items-start justify-between gap-4 px-7 py-5">
-          <div className="flex min-w-0 flex-1 items-start gap-3">
-            <EmojiPicker value={icon} onChange={setIcon} />
-            <div className="min-w-0 flex-1 pt-0.5">
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={i18nService.t('agentNamePlaceholder')}
-                aria-label={i18nService.t('agentName')}
-                className="w-full bg-transparent text-lg font-semibold leading-6 text-foreground placeholder:text-secondary/40 focus:outline-none"
-                autoFocus
-              />
-              <input
-                type="text"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder={i18nService.t('agentDescriptionPlaceholder')}
-                aria-label={i18nService.t('agentDescription')}
-                className="mt-0.5 w-full bg-transparent text-sm leading-5 text-secondary placeholder:text-secondary/50 focus:outline-none"
-              />
-            </div>
+      <div className="flex shrink-0 items-start justify-between gap-4 px-7 py-5">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <AgentAvatarPicker value={icon} onChange={setIcon} />
+          <div className="min-w-0 flex-1 pt-0.5">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={i18nService.t('agentNamePlaceholder')}
+              aria-label={i18nService.t('agentName')}
+              className="w-full bg-transparent text-lg font-semibold leading-6 text-foreground placeholder:text-secondary/40 focus:outline-none"
+              autoFocus
+            />
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={i18nService.t('agentDescriptionPlaceholder')}
+              aria-label={i18nService.t('agentDescription')}
+              className="mt-0.5 w-full bg-transparent text-sm leading-5 text-secondary placeholder:text-secondary/50 focus:outline-none"
+            />
           </div>
-          <button type="button" onClick={handleClose} className="mt-1 p-2 rounded-lg hover:bg-surface-raised transition-colors">
-            <XMarkIcon className="h-5 w-5 text-secondary" />
+        </div>
+        <button type="button" onClick={handleClose} className="mt-1 p-2 rounded-lg hover:bg-surface-raised transition-colors">
+          <XMarkIcon className="h-5 w-5 text-secondary" />
+        </button>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex shrink-0 border-b border-border px-7">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              activeTab === tab.key
+                ? 'text-foreground'
+                : 'text-secondary hover:text-foreground'
+            }`}
+          >
+            {tab.label}
+            {activeTab === tab.key && (
+              <div className="absolute bottom-[-1px] left-0 right-0 h-0.5 bg-foreground rounded-full" />
+            )}
           </button>
-        </div>
+        ))}
+      </div>
 
-        {/* Tab bar */}
-        <div className="flex shrink-0 border-b border-border px-7">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-                activeTab === tab.key
-                  ? 'text-foreground'
-                  : 'text-secondary hover:text-foreground'
-              }`}
-            >
-              {tab.label}
-              {activeTab === tab.key && (
-                <div className="absolute bottom-[-1px] left-0 right-0 h-0.5 bg-foreground rounded-full" />
-              )}
-            </button>
-          ))}
-        </div>
+      {/* Tab content */}
+      <div className="px-7 py-7 overflow-hidden flex-1 min-h-0">
+        {activeTab === AgentDetailTab.Prompt && (
+          <textarea
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder={i18nService.t('agentSystemPromptPlaceholder')}
+            aria-label={i18nService.t('systemPrompt')}
+            className="h-full min-h-0 w-full resize-none border border-transparent bg-transparent text-sm leading-6 text-foreground placeholder:text-secondary/45 focus:outline-none"
+          />
+        )}
 
-        {/* Tab content */}
-        <div className="px-7 py-7 overflow-hidden flex-1 min-h-0">
-          {activeTab === AgentDetailTab.Prompt && (
-            <textarea
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder={i18nService.t('agentSystemPromptPlaceholder')}
-              aria-label={i18nService.t('systemPrompt')}
-              className="h-full min-h-0 w-full resize-none border border-transparent bg-transparent text-sm leading-6 text-foreground placeholder:text-secondary/45 focus:outline-none"
-            />
-          )}
+        {activeTab === AgentDetailTab.Identity && (
+          <textarea
+            value={identity}
+            onChange={(e) => setIdentity(e.target.value)}
+            placeholder={i18nService.t('agentIdentityPlaceholder')}
+            aria-label={i18nService.t('agentIdentity')}
+            className="h-full min-h-0 w-full resize-none border border-transparent bg-transparent text-sm leading-6 text-foreground placeholder:text-secondary/45 focus:outline-none"
+          />
+        )}
 
-          {activeTab === AgentDetailTab.Identity && (
-            <textarea
-              value={identity}
-              onChange={(e) => setIdentity(e.target.value)}
-              placeholder={i18nService.t('agentIdentityPlaceholder')}
-              aria-label={i18nService.t('agentIdentity')}
-              className="h-full min-h-0 w-full resize-none border border-transparent bg-transparent text-sm leading-6 text-foreground placeholder:text-secondary/45 focus:outline-none"
-            />
-          )}
+        {activeTab === AgentDetailTab.Skills && (
+          <AgentSkillSelector selectedSkillIds={skillIds} onChange={setSkillIds} />
+        )}
 
-          {activeTab === AgentDetailTab.Skills && (
-            <AgentSkillSelector selectedSkillIds={skillIds} onChange={setSkillIds} />
-          )}
+        {activeTab === AgentDetailTab.Im && (
+          <div className="h-full overflow-y-auto">
+            <div className="space-y-1">
+              {PlatformRegistry.platforms
+                .filter((platform) => (getVisibleIMPlatforms(i18nService.getLanguage()) as readonly string[]).includes(platform))
+                .map((platform) => {
+                  const logo = PlatformRegistry.logo(platform);
 
-          {activeTab === AgentDetailTab.Im && (
-            <div className="h-full overflow-y-auto">
-              <div className="space-y-1">
-                {PlatformRegistry.platforms
-                  .filter((platform) => (getVisibleIMPlatforms(i18nService.getLanguage()) as readonly string[]).includes(platform))
-                  .map((platform) => {
-                    const logo = PlatformRegistry.logo(platform);
+                  if (isMultiInstancePlatform(platform)) {
+                    const enabledInstances = getEnabledInstances(platform);
 
-                    if (isMultiInstancePlatform(platform)) {
-                      const enabledInstances = getEnabledInstances(platform);
-
-                      if (enabledInstances.length === 0) {
-                        return (
-                          <div
-                            key={platform}
-                            className="flex items-center justify-between px-3 py-2.5 rounded-lg opacity-50"
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="flex h-8 w-8 items-center justify-center">
-                                <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
-                              </div>
-                              <div>
-                                <div className="text-sm font-medium text-foreground">
-                                  {i18nService.t(platform)}
-                                </div>
-                                <div className="text-xs text-secondary/50">
-                                  {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
-                                </div>
-                              </div>
-                            </div>
-                            <span className="text-xs text-secondary/50">
-                              {i18nService.t('agentIMNotConfigured') || 'Not configured'}
-                            </span>
-                          </div>
-                        );
-                      }
-
+                    if (enabledInstances.length === 0) {
                       return (
-                        <div key={platform} className="rounded-lg border border-border overflow-hidden">
-                          <div className="flex items-center gap-3 px-3 py-2.5 bg-surface-raised">
+                        <div
+                          key={platform}
+                          className="flex items-center justify-between px-3 py-2.5 rounded-lg opacity-50"
+                        >
+                          <div className="flex items-center gap-3">
                             <div className="flex h-8 w-8 items-center justify-center">
                               <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
                             </div>
-                            <span className="text-sm font-semibold text-foreground">
-                              {i18nService.t(platform)}
-                            </span>
-                          </div>
-                          {enabledInstances.map((inst: MultiInstanceConfig, idx: number) => {
-                            const bindingKey = `${platform}:${inst.instanceId}`;
-                            const isBound = boundKeys.has(bindingKey);
-                            const bindings = imConfig?.settings?.platformAgentBindings || {};
-                            const otherAgentId = bindings[bindingKey];
-                            const boundToOther = !!otherAgentId;
-                            const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
-                            return (
-                              <div
-                                key={inst.instanceId}
-                                className={`flex items-center justify-between px-3 py-2 pl-14 transition-colors cursor-pointer hover:bg-surface-raised ${
-                                  idx < enabledInstances.length - 1 ? 'border-b border-border-subtle' : ''
-                                } ${boundToOther ? 'opacity-55' : ''}`}
-                                onClick={() => !boundToOther && handleToggleIMBinding(bindingKey)}
-                              >
-                                <div className="flex items-center gap-2">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
-                                  <span className="text-sm text-foreground">
-                                    {inst.instanceName}
-                                  </span>
-                                  {boundToOther && otherAgentName && (
-                                    <span className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                                      {(i18nService.t('agentIMBoundToOther') || '→ {agent}').replace('{agent}', otherAgentName)}
-                                    </span>
-                                  )}
-                                </div>
-                                {boundToOther ? (
-                                  <div className="w-9 h-5" />
-                                ) : (
-                                  <div
-                                    className={`relative w-9 h-5 rounded-full transition-colors ${
-                                      isBound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                                    }`}
-                                  >
-                                    <div
-                                      className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                        isBound ? 'translate-x-4' : 'translate-x-0.5'
-                                      }`}
-                                    />
-                                  </div>
-                                )}
+                            <div>
+                              <div className="text-sm font-medium text-foreground">
+                                {i18nService.t(platform)}
                               </div>
-                            );
-                          })}
+                              <div className="text-xs text-secondary/50">
+                                {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
+                              </div>
+                            </div>
+                          </div>
+                          <span className="text-xs text-secondary/50">
+                            {i18nService.t('agentIMNotConfigured') || 'Not configured'}
+                          </span>
                         </div>
                       );
                     }
 
-                    // Single-instance platform
-                    const configured = isPlatformConfigured(platform);
-                    const bound = boundKeys.has(platform);
-                    const bindings = imConfig?.settings?.platformAgentBindings || {};
-                    const otherAgentId = bindings[platform];
-                    const boundToOther = configured && !!otherAgentId;
-                    const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
                     return (
-                      <div
-                        key={platform}
-                        className={`flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${
-                          configured && !boundToOther
-                            ? 'hover:bg-surface-raised cursor-pointer'
-                            : boundToOther ? 'opacity-55' : 'opacity-50'
-                        }`}
-                        onClick={() => configured && !boundToOther && handleToggleIMBinding(platform)}
-                      >
-                        <div className="flex items-center gap-3">
+                      <div key={platform} className="rounded-lg border border-border overflow-hidden">
+                        <div className="flex items-center gap-3 px-3 py-2.5 bg-surface-raised">
                           <div className="flex h-8 w-8 items-center justify-center">
                             <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
                           </div>
-                          <div>
-                            <div className="text-sm font-medium text-foreground">
-                              {i18nService.t(platform)}
-                            </div>
-                            {!configured && (
-                              <div className="text-xs text-secondary/50">
-                                {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
-                              </div>
-                            )}
-                          </div>
-                          {boundToOther && otherAgentName && (
-                            <span className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                              {(i18nService.t('agentIMBoundToOther') || '→ {agent}').replace('{agent}', otherAgentName)}
-                            </span>
-                          )}
+                          <span className="text-sm font-semibold text-foreground">
+                            {i18nService.t(platform)}
+                          </span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          {configured ? (
-                            boundToOther ? <div className="w-9 h-5" /> : (
-                              <div
-                                className={`relative w-9 h-5 rounded-full transition-colors ${
-                                  bound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                                }`}
-                              >
+                        {enabledInstances.map((inst: MultiInstanceConfig, idx: number) => {
+                          const bindingKey = `${platform}:${inst.instanceId}`;
+                          const isBound = boundKeys.has(bindingKey);
+                          const bindings = imConfig?.settings?.platformAgentBindings || {};
+                          const otherAgentId = bindings[bindingKey];
+                          const boundToOther = !!otherAgentId;
+                          const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
+                          return (
+                            <div
+                              key={inst.instanceId}
+                              className={`flex items-center justify-between px-3 py-2 pl-14 transition-colors cursor-pointer hover:bg-surface-raised ${
+                                idx < enabledInstances.length - 1 ? 'border-b border-border-subtle' : ''
+                              } ${boundToOther ? 'opacity-55' : ''}`}
+                              onClick={() => !boundToOther && handleToggleIMBinding(bindingKey)}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                                <span className="text-sm text-foreground">
+                                  {inst.instanceName}
+                                </span>
+                                {boundToOther && otherAgentName && (
+                                  <span className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                                    {(i18nService.t('agentIMBoundToOther') || '-> {agent}').replace('{agent}', otherAgentName)}
+                                  </span>
+                                )}
+                              </div>
+                              {boundToOther ? (
+                                <div className="w-9 h-5" />
+                              ) : (
                                 <div
-                                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                    bound ? 'translate-x-4' : 'translate-x-0.5'
+                                  className={`relative w-9 h-5 rounded-full transition-colors ${
+                                    isBound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
                                   }`}
-                                />
-                              </div>
-                            )
-                          ) : (
-                            <span className="text-xs text-secondary/50">
-                              {i18nService.t('agentIMNotConfigured') || 'Not configured'}
-                            </span>
-                          )}
-                        </div>
+                                >
+                                  <div
+                                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                                      isBound ? 'translate-x-4' : 'translate-x-0.5'
+                                    }`}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     );
-                  })}
-              </div>
-            </div>
-          )}
-        </div>
+                  }
 
-        {/* Footer */}
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-t border-border">
-          <AgentDetailToolbar
-            model={model}
-            onModelChange={setModel}
-            workingDirectory={workingDirectory}
-            onWorkingDirectoryChange={setWorkingDirectory}
-          />
-          <div className="flex shrink-0 gap-2">
-            <button
-              type="button"
-              onClick={handleCreate}
-              disabled={!name.trim() || creating}
-              className="h-9 px-5 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {creating ? i18nService.t('creating') : i18nService.t('create')}
-            </button>
+                  // Single-instance platform
+                  const configured = isPlatformConfigured(platform);
+                  const bound = boundKeys.has(platform);
+                  const bindings = imConfig?.settings?.platformAgentBindings || {};
+                  const otherAgentId = bindings[platform];
+                  const boundToOther = configured && !!otherAgentId;
+                  const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
+                  return (
+                    <div
+                      key={platform}
+                      className={`flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${
+                        configured && !boundToOther
+                          ? 'hover:bg-surface-raised cursor-pointer'
+                          : boundToOther ? 'opacity-55' : 'opacity-50'
+                      }`}
+                      onClick={() => configured && !boundToOther && handleToggleIMBinding(platform)}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-8 w-8 items-center justify-center">
+                          <img src={logo} alt={i18nService.t(platform)} className="w-6 h-6 object-contain rounded" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-foreground">
+                            {i18nService.t(platform)}
+                          </div>
+                          {!configured && (
+                            <div className="text-xs text-secondary/50">
+                              {i18nService.t('agentIMNotConfiguredHint') || 'Please configure in Settings > IM Bots first'}
+                            </div>
+                          )}
+                        </div>
+                        {boundToOther && otherAgentName && (
+                          <span className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                            {(i18nService.t('agentIMBoundToOther') || '-> {agent}').replace('{agent}', otherAgentName)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {configured ? (
+                          boundToOther ? <div className="w-9 h-5" /> : (
+                            <div
+                              className={`relative w-9 h-5 rounded-full transition-colors ${
+                                bound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                              }`}
+                            >
+                              <div
+                                className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                                  bound ? 'translate-x-4' : 'translate-x-0.5'
+                                }`}
+                              />
+                            </div>
+                          )
+                        ) : (
+                          <span className="text-xs text-secondary/50">
+                            {i18nService.t('agentIMNotConfigured') || 'Not configured'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
           </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-t border-border">
+        <AgentDetailToolbar
+          model={model}
+          onModelChange={setModel}
+          workingDirectory={workingDirectory}
+          onWorkingDirectoryChange={setWorkingDirectory}
+        />
+        <div className="flex shrink-0 gap-2">
+          <button
+            type="button"
+            onClick={handleCreate}
+            disabled={!name.trim() || creating}
+            className="h-9 px-5 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {creating ? i18nService.t('creating') : i18nService.t('create')}
+          </button>
         </div>
-      </Modal>
+      </div>
+    </>
+  );
+
+  return (
+    <>
+      {presentation === 'page' ? (
+        <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border/80 bg-surface shadow-sm">
+          {content}
+        </div>
+      ) : (
+        <Modal
+          isOpen={isOpen}
+          onClose={handleClose}
+          overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/10 dark:bg-black/50"
+          className="w-[calc(100vw-56px)] max-w-[854px] h-[82vh] max-h-[664px] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.16)] bg-surface border border-border/80 flex flex-col overflow-hidden"
+        >
+          {content}
+        </Modal>
+      )}
 
       {showUnsavedConfirm && (
         <AgentConfirmDialog

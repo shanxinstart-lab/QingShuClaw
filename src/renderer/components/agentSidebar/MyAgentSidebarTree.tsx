@@ -5,18 +5,18 @@ import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { RootState } from '../../store';
+import { isDefaultAgentId } from '../../utils/agentDisplay';
 import AgentCreateModal from '../agent/AgentCreateModal';
+import AgentSettingsPanel from '../agent/AgentSettingsPanel';
 import AgentTreeNode from './AgentTreeNode';
 import MyAgentSidebarHeader from './MyAgentSidebarHeader';
-import type { AgentSidebarTaskNode } from './types';
+import type { AgentSidebarAgentNode, AgentSidebarTaskNode } from './types';
 import { useAgentSidebarState } from './useAgentSidebarState';
 
 interface MyAgentSidebarTreeProps {
   isBatchMode: boolean;
   selectedIds: Set<string>;
   onShowCowork: () => void;
-  onShowAgents: () => void;
-  onNewChat: () => void;
   onToggleSelection: (sessionId: string) => void;
   onEnterBatchMode: (sessionId: string) => void;
 }
@@ -25,13 +25,12 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
   isBatchMode,
   selectedIds,
   onShowCowork,
-  onShowAgents,
-  onNewChat,
   onToggleSelection,
   onEnterBatchMode,
 }) => {
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [settingsAgentId, setSettingsAgentId] = useState<string | null>(null);
   const {
     agentNodes,
     patchTaskPreview,
@@ -55,11 +54,6 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
     await coworkService.loadSession(task.id);
   };
 
-  const handleCreateTask = () => {
-    onShowCowork();
-    onNewChat();
-  };
-
   const handleDeleteTask = async (task: AgentSidebarTaskNode) => {
     const deleted = await coworkService.deleteSession(task.id);
     if (deleted) {
@@ -68,9 +62,9 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
   };
 
   const handleToggleTaskPin = async (task: AgentSidebarTaskNode, pinned: boolean) => {
-    const updated = await coworkService.setSessionPinned(task.id, pinned);
-    if (updated) {
-      patchTaskPreview(task.id, { pinned });
+    const result = await coworkService.setSessionPinned(task.id, pinned);
+    if (result.success) {
+      patchTaskPreview(task.id, { pinned, pinOrder: result.pinOrder }, { preserveUpdatedAt: true });
     }
   };
 
@@ -89,13 +83,35 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
     onEnterBatchMode(task.id);
   };
 
+  const handleCreateTask = async (agent: AgentSidebarAgentNode) => {
+    if (agent.id !== currentAgentId) {
+      agentService.switchAgent(agent.id);
+      await coworkService.loadSessions(agent.id);
+    }
+    coworkService.clearSession();
+    onShowCowork();
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('cowork:focus-input', {
+        detail: { clear: false },
+      }));
+    }, 0);
+  };
+
+  const handleDeleteAgent = async (agent: AgentSidebarAgentNode) => {
+    if (isDefaultAgentId(agent.id)) return;
+    const deleted = await agentService.deleteAgent(agent.id);
+    if (deleted && settingsAgentId === agent.id) {
+      setSettingsAgentId(null);
+    }
+    if (!deleted) {
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('agentDeleteFailed') }));
+    }
+  };
+
   return (
     <div className="pb-3" role="tree" aria-label={i18nService.t('myAgents')}>
       <MyAgentSidebarHeader
-        canCreateTask={Boolean(currentAgentId)}
         onCreateAgent={() => setIsCreateOpen(true)}
-        onCreateFromTemplate={onShowAgents}
-        onCreateTask={handleCreateTask}
       />
 
       {agentNodes.length === 0 ? (
@@ -121,6 +137,9 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
               selectedIds={selectedIds}
               showBatchOption
               onToggleExpanded={toggleAgentExpanded}
+              onEditAgent={(agent) => setSettingsAgentId(agent.id)}
+              onCreateTask={(agent) => void handleCreateTask(agent)}
+              onDeleteAgent={handleDeleteAgent}
               onRetryLoadTasks={(agentId) => void retryLoadTasks(agentId)}
               onLoadMoreTasks={(agentId) => void loadMoreTasks(agentId)}
               onCollapseTasks={collapseTasks}
@@ -136,6 +155,10 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
       )}
 
       <AgentCreateModal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} />
+      <AgentSettingsPanel
+        agentId={settingsAgentId}
+        onClose={() => setSettingsAgentId(null)}
+      />
     </div>
   );
 };

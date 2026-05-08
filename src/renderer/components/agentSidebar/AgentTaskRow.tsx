@@ -6,6 +6,7 @@ import Modal from '../common/Modal';
 import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
 import ListChecksIcon from '../icons/ListChecksIcon';
 import PencilSquareIcon from '../icons/PencilSquareIcon';
+import PushPinIcon from '../icons/PushPinIcon';
 import TrashIcon from '../icons/TrashIcon';
 import { AgentSidebarIndicator } from './constants';
 import { formatAgentTaskRelativeTime } from './time';
@@ -24,27 +25,6 @@ interface AgentTaskRowProps {
   onEnterBatchMode: () => void;
 }
 
-const PushPinIcon: React.FC<React.SVGProps<SVGSVGElement> & { slashed?: boolean }> = ({
-  slashed,
-  ...props
-}) => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    {...props}
-  >
-    <g transform="rotate(45 12 12)">
-      <path d="M9 3h6l-1 5 2 2v2H8v-2l2-2-1-5z" />
-      <path d="M12 12v9" />
-    </g>
-    {slashed && <path d="M5 5L19 19" />}
-  </svg>
-);
-
 const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
   task,
   isBatchMode,
@@ -60,6 +40,7 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
+  const [suppressPinHover, setSuppressPinHover] = useState(false);
   const [renameValue, setRenameValue] = useState(task.title);
   const menuRef = useRef<HTMLDivElement>(null);
   const actionButtonRef = useRef<HTMLButtonElement>(null);
@@ -131,21 +112,49 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
     'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-red-500 transition-colors hover:bg-red-500/10';
   const menuIconClassName = 'h-3.5 w-3.5';
   const relativeTime = formatAgentTaskRelativeTime(task.updatedAt);
+  const showRelativeTime = task.indicator === AgentSidebarIndicator.None;
+  const pinLabel = task.pinned ? i18nService.t('coworkUnpinSession') : i18nService.t('coworkPinSession');
 
   return (
     <div
       className={`group relative -ml-[6px] flex h-[30px] w-[calc(100%+12px)] cursor-pointer items-center gap-2 rounded-md ${
         isBatchMode ? 'pl-4' : 'pl-[38px]'
-      } pr-2.5 text-[13px] transition-colors ${
+      } pr-2.5 text-[14px] font-normal transition-colors ${
         task.isSelected
           ? 'bg-black/[0.06] text-foreground dark:bg-white/[0.07]'
-          : 'text-secondary hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]'
+          : 'text-foreground/80 hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]'
       }`}
       onClick={handleRowClick}
+      onMouseMove={() => setSuppressPinHover(false)}
+      onMouseLeave={() => setSuppressPinHover(false)}
       role="treeitem"
       aria-level={2}
       aria-selected={task.isSelected}
     >
+      {!isBatchMode && !isRenaming && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            const nextPinned = !task.pinned;
+            setSuppressPinHover(true);
+            event.currentTarget.blur();
+            void onTogglePin(nextPinned);
+          }}
+          className={`absolute left-[13px] top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-foreground transition-opacity hover:opacity-[0.46] focus:outline-none ${
+            suppressPinHover
+              ? 'pointer-events-none opacity-0'
+              : task.pinned
+                ? 'opacity-[0.46]'
+                : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-[0.3]'
+          }`}
+          aria-label={pinLabel}
+          title={pinLabel}
+        >
+          <PushPinIcon className="h-3.5 w-3.5" />
+        </button>
+      )}
+
       {isBatchMode && (
         <input
           type="checkbox"
@@ -174,11 +183,11 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
               handleRenameCancel();
             }
           }}
-          className="min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-[13px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-[14px] font-normal text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
         />
       ) : (
         <>
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+          <span className="min-w-0 flex-1 truncate">
             {task.title}
           </span>
           {task.indicator === AgentSidebarIndicator.Running && (
@@ -187,7 +196,7 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
               title={indicatorLabel}
               aria-label={indicatorLabel}
             >
-              <svg className="h-3 w-3 animate-spin text-primary" viewBox="0 0 24 24" fill="none">
+              <svg className="h-3 w-3 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
                 <circle
                   className="opacity-25"
                   cx="12"
@@ -206,19 +215,22 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
           )}
           {task.indicator === AgentSidebarIndicator.CompletedUnread && (
             <span
-              className="h-[7px] w-[7px] shrink-0 rounded-full bg-emerald-500"
+              className="h-[7px] w-[7px] shrink-0 rounded-full bg-blue-500"
               title={indicatorLabel}
               aria-label={indicatorLabel}
             />
           )}
-          <span
-            className={`shrink-0 whitespace-nowrap text-[13px] font-medium text-secondary/70 transition-opacity ${
-              task.pinned ? 'opacity-0' : 'group-hover:opacity-0'
-            }`}
-            title={relativeTime.full}
-          >
-            {relativeTime.compact}
-          </span>
+          {showRelativeTime && (
+            <span
+              className="shrink-0 whitespace-nowrap text-[12px] font-normal text-foreground opacity-[0.28] transition-opacity group-hover:opacity-0"
+              title={relativeTime.full}
+            >
+              {relativeTime.compact}
+            </span>
+          )}
+          {!showRelativeTime && !isBatchMode && (
+            <span className="w-6 shrink-0" aria-hidden="true" />
+          )}
         </>
       )}
 
@@ -230,19 +242,12 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
             event.stopPropagation();
             setIsMenuOpen((value) => !value);
           }}
-          className={`absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-secondary/60 transition-opacity hover:text-foreground ${
-            task.pinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          className={`absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-foreground transition-opacity hover:opacity-[0.46] ${
+            isMenuOpen ? 'opacity-[0.46]' : 'opacity-0 group-hover:opacity-[0.3]'
           }`}
           aria-label={i18nService.t('coworkSessionActions')}
         >
-          {task.pinned ? (
-            <span className="relative block h-4 w-4">
-              <PushPinIcon className="h-4 w-4 transition-opacity group-hover:opacity-0" />
-              <EllipsisHorizontalIcon className="absolute inset-0 h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
-            </span>
-          ) : (
-            <EllipsisHorizontalIcon className="h-4 w-4" />
-          )}
+          <EllipsisHorizontalIcon className="h-4 w-4" />
         </button>
       )}
 

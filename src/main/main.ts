@@ -3120,8 +3120,8 @@ if (!gotTheLock) {
   ipcMain.handle('cowork:session:pin', async (_event, options: { sessionId: string; pinned: boolean }) => {
     try {
       const coworkStoreInstance = getCoworkStore();
-      coworkStoreInstance.setSessionPinned(options.sessionId, options.pinned);
-      return { success: true };
+      const pinOrder = coworkStoreInstance.setSessionPinned(options.sessionId, options.pinned);
+      return { success: true, pinOrder };
     } catch (error) {
       return {
         success: false,

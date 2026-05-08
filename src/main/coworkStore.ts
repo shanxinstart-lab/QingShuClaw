@@ -382,6 +382,7 @@ export interface CoworkSession {
   claudeSessionId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   cwd: string;
   systemPrompt: string;
   modelOverride: string;
@@ -402,6 +403,7 @@ export interface CoworkSessionSummary {
   title: string;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   agentId: string;
   createdAt: number;
   updatedAt: number;
@@ -596,6 +598,7 @@ export class CoworkStore {
       claudeSessionId: null,
       status: 'idle',
       pinned: false,
+      pinOrder: null,
       cwd,
       systemPrompt,
       modelOverride,
@@ -617,6 +620,7 @@ export class CoworkStore {
       claude_session_id: string | null;
       status: string;
       pinned?: number | null;
+      pin_order?: number | null;
       cwd: string;
       system_prompt: string;
       model_override?: string | null;
@@ -629,7 +633,7 @@ export class CoworkStore {
 
     const row = this.getOne<SessionRow>(
       `
-      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT id, title, claude_session_id, status, pinned, pin_order, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `,
@@ -661,6 +665,7 @@ export class CoworkStore {
       claudeSessionId: row.claude_session_id,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
+      pinOrder: row.pin_order ?? null,
       cwd: row.cwd,
       systemPrompt: row.system_prompt,
       modelOverride: row.model_override || '',
@@ -745,8 +750,34 @@ export class CoworkStore {
     this.markOrphanImplicitMemoriesStale();
   }
 
-  setSessionPinned(id: string, pinned: boolean): void {
-    this.db.prepare('UPDATE cowork_sessions SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
+  setSessionPinned(id: string, pinned: boolean): number | null {
+    if (!pinned) {
+      this.db.prepare('UPDATE cowork_sessions SET pinned = 0, pin_order = NULL WHERE id = ?').run(id);
+      return null;
+    }
+
+    const session = this.db
+      .prepare('SELECT agent_id FROM cowork_sessions WHERE id = ?')
+      .get(id) as { agent_id?: string | null } | undefined;
+    if (!session) {
+      return null;
+    }
+
+    const agentId = session.agent_id || 'main';
+    const maxRow = this.db
+      .prepare(
+        `
+        SELECT MAX(pin_order) as max_pin_order
+        FROM cowork_sessions
+        WHERE pinned = 1 AND COALESCE(agent_id, 'main') = ?
+      `,
+      )
+      .get(agentId) as { max_pin_order?: number | null } | undefined;
+    const pinOrder = (maxRow?.max_pin_order ?? 0) + 1;
+    this.db
+      .prepare('UPDATE cowork_sessions SET pinned = 1, pin_order = ? WHERE id = ?')
+      .run(pinOrder, id);
+    return pinOrder;
   }
 
   countSessions(agentId?: string): number {
@@ -768,6 +799,7 @@ export class CoworkStore {
       title: string;
       status: string;
       pinned: number | null;
+      pin_order: number | null;
       agent_id: string | null;
       created_at: number;
       updated_at: number;
@@ -777,10 +809,13 @@ export class CoworkStore {
     if (agentId) {
       rows = this.getAll<SessionSummaryRow>(
         `
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
+        SELECT id, title, status, pinned, pin_order, agent_id, created_at, updated_at
         FROM cowork_sessions
         WHERE agent_id = ?
-        ORDER BY pinned DESC, updated_at DESC
+        ORDER BY pinned DESC,
+          CASE WHEN pinned = 1 THEN COALESCE(pin_order, updated_at, created_at) END ASC,
+          CASE WHEN pinned = 0 THEN updated_at END DESC,
+          updated_at DESC
         LIMIT ? OFFSET ?
       `,
         [agentId, limit, offset],
@@ -788,9 +823,12 @@ export class CoworkStore {
     } else {
       rows = this.getAll<SessionSummaryRow>(
         `
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
+        SELECT id, title, status, pinned, pin_order, agent_id, created_at, updated_at
         FROM cowork_sessions
-        ORDER BY pinned DESC, updated_at DESC
+        ORDER BY pinned DESC,
+          CASE WHEN pinned = 1 THEN COALESCE(pin_order, updated_at, created_at) END ASC,
+          CASE WHEN pinned = 0 THEN updated_at END DESC,
+          updated_at DESC
         LIMIT ? OFFSET ?
       `,
         [limit, offset],
@@ -802,6 +840,7 @@ export class CoworkStore {
       title: row.title,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
+      pinOrder: row.pin_order ?? null,
       agentId: row.agent_id || 'main',
       createdAt: row.created_at,
       updatedAt: row.updated_at,

@@ -31,11 +31,14 @@ function countRows(db: Database, table: string, where = '1=1', params: (string |
 
 /** Mirror of listSessions(limit, offset) */
 function listSessions(db: Database, limit: number, offset: number) {
-  return getAll<{ id: string; title: string; status: string; pinned: number; updated_at: number }>(
+  return getAll<{ id: string; title: string; status: string; pinned: number; pin_order: number | null; updated_at: number }>(
     db,
-    `SELECT id, title, status, pinned, updated_at
+    `SELECT id, title, status, pinned, pin_order, updated_at
      FROM cowork_sessions
-     ORDER BY pinned DESC, updated_at DESC
+     ORDER BY pinned DESC,
+       CASE WHEN pinned = 1 THEN COALESCE(pin_order, updated_at, created_at) END ASC,
+       CASE WHEN pinned = 0 THEN updated_at END DESC,
+       updated_at DESC
      LIMIT ? OFFSET ?`,
     [limit, offset],
   );
@@ -81,6 +84,7 @@ const SESSION_SCHEMA = `
     claude_session_id TEXT,
     status TEXT NOT NULL DEFAULT 'idle',
     pinned INTEGER NOT NULL DEFAULT 0,
+    pin_order INTEGER,
     cwd TEXT NOT NULL,
     system_prompt TEXT NOT NULL DEFAULT '',
     execution_mode TEXT,
@@ -128,9 +132,9 @@ function seedData(database: Database): void {
     const id = `session-${String(i).padStart(4, '0')}`;
     const pinned = i <= 3 ? 1 : 0;
     database.run(
-      `INSERT INTO cowork_sessions (id, title, status, pinned, cwd, created_at, updated_at)
-       VALUES (?, ?, 'idle', ?, '/tmp', ?, ?)`,
-      [id, `Session ${i}`, pinned, now - (120 - i) * 1000, now - (120 - i) * 1000],
+      `INSERT INTO cowork_sessions (id, title, status, pinned, pin_order, cwd, created_at, updated_at)
+       VALUES (?, ?, 'idle', ?, ?, '/tmp', ?, ?)`,
+      [id, `Session ${i}`, pinned, pinned ? i : null, now - (120 - i) * 1000, now - (120 - i) * 1000],
     );
   }
   seedSessionId = 'session-0001';
@@ -207,6 +211,11 @@ test('listSessions: no duplicate IDs across pages', () => {
 test('listSessions: pinned sessions appear at the front', () => {
   const first3 = listSessions(db, 3, 0);
   expect(first3.every(s => s.pinned === 1)).toBe(true);
+});
+
+test('listSessions: pinned sessions keep first-pinned-first order', () => {
+  const first3 = listSessions(db, 3, 0);
+  expect(first3.map(s => s.id)).toEqual(['session-0001', 'session-0002', 'session-0003']);
 });
 
 test('listSessions: all three pages together equal total count', () => {

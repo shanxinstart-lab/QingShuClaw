@@ -1,8 +1,14 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 import { i18nService } from '../../services/i18n';
-import { getAgentDisplayName, shouldUseDefaultAgentIcon } from '../../utils/agentDisplay';
+import { getAgentDisplayName, isDefaultAgentId, shouldUseDefaultAgentIcon } from '../../utils/agentDisplay';
+import AgentAvatarIcon from '../agent/AgentAvatarIcon';
+import AgentConfirmDialog from '../agent/AgentConfirmDialog';
+import { AgentConfirmDialogVariant } from '../agent/constants';
+import ComposeIcon from '../icons/ComposeIcon';
 import DefaultAgentIcon from '../icons/DefaultAgentIcon';
+import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
+import TrashIcon from '../icons/TrashIcon';
 import AgentTaskRow from './AgentTaskRow';
 import ExpandAgentTasksRow from './ExpandAgentTasksRow';
 import type { AgentSidebarAgentNode, AgentSidebarTaskNode } from './types';
@@ -13,6 +19,9 @@ interface AgentTreeNodeProps {
   selectedIds: Set<string>;
   showBatchOption?: boolean;
   onToggleExpanded: (agentId: string) => void;
+  onEditAgent: (agent: AgentSidebarAgentNode) => void;
+  onCreateTask: (agent: AgentSidebarAgentNode) => void;
+  onDeleteAgent: (agent: AgentSidebarAgentNode) => Promise<void>;
   onRetryLoadTasks: (agentId: string) => void;
   onLoadMoreTasks: (agentId: string) => void;
   onCollapseTasks: (agentId: string) => void;
@@ -24,18 +33,20 @@ interface AgentTreeNodeProps {
   onEnterBatchMode: (task: AgentSidebarTaskNode) => void;
 }
 
-const getAgentAvatarText = (agent: AgentSidebarAgentNode) => {
-  if (agent.icon?.trim()) return agent.icon;
-  const first = getAgentDisplayName(agent).trim().slice(0, 1);
-  return first ? first.toUpperCase() : 'A';
-};
-
 const AgentAvatar: React.FC<{ agent: AgentSidebarAgentNode }> = ({ agent }) => {
   if (shouldUseDefaultAgentIcon(agent)) {
-    return <DefaultAgentIcon className="h-5 w-5" />;
+    return <DefaultAgentIcon className="h-4 w-4" />;
   }
 
-  return <>{getAgentAvatarText(agent)}</>;
+  return (
+    <AgentAvatarIcon
+      value={agent.icon}
+      className="h-4 w-4"
+      iconClassName="h-4 w-4"
+      legacyClassName="text-[14px]"
+      fallbackText={getAgentDisplayName(agent).trim().slice(0, 1).toUpperCase() || 'A'}
+    />
+  );
 };
 
 const AgentTreeNode: React.FC<AgentTreeNodeProps> = ({
@@ -44,6 +55,9 @@ const AgentTreeNode: React.FC<AgentTreeNodeProps> = ({
   selectedIds,
   showBatchOption = false,
   onToggleExpanded,
+  onEditAgent,
+  onCreateTask,
+  onDeleteAgent,
   onRetryLoadTasks,
   onLoadMoreTasks,
   onCollapseTasks,
@@ -54,23 +68,165 @@ const AgentTreeNode: React.FC<AgentTreeNodeProps> = ({
   onToggleSelection,
   onEnterBatchMode,
 }) => {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const isMainAgent = isDefaultAgentId(agent.id);
+  const agentName = getAgentDisplayName(agent);
+  const menuItemClassName =
+    'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-foreground transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]';
+  const dangerMenuItemClassName =
+    'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-red-500 transition-colors hover:bg-red-500/10';
+  const disabledMenuItemClassName =
+    'flex w-full cursor-not-allowed items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-secondary/40';
+  const rowActionButtonClassName =
+    'inline-flex h-5 w-5 items-center justify-center rounded text-foreground opacity-[0.3] transition-opacity hover:opacity-[0.46]';
+  const rowEditActionButtonClassName =
+    'inline-flex h-5 w-5 items-center justify-center rounded text-foreground opacity-[0.3] transition-opacity hover:opacity-[0.46]';
+  const menuIconClassName = 'h-3.5 w-3.5';
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!menuRef.current?.contains(target) && !menuButtonRef.current?.contains(target)) {
+        setIsMenuOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isMenuOpen]);
+
+  const handleEditAgent = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    setIsMenuOpen(false);
+    onEditAgent(agent);
+  };
+
+  const handleCreateTask = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    setIsMenuOpen(false);
+    onCreateTask(agent);
+  };
+
+  const handleDeleteMenuClick = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (isMainAgent) return;
+    setIsMenuOpen(false);
+    setShowConfirmDelete(true);
+  };
+
   return (
     <div className="space-y-0.5">
-      <button
-        type="button"
-        onClick={() => onToggleExpanded(agent.id)}
-        className="-ml-[6px] flex h-[34px] w-[calc(100%+12px)] items-center gap-2 rounded-md py-0 pl-1.5 pr-2.5 text-left text-[13px] text-secondary transition-colors hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]"
-        role="treeitem"
-        aria-level={1}
-        aria-expanded={agent.isExpanded}
-      >
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center text-[15px] leading-none text-foreground">
-          <AgentAvatar agent={agent} />
-        </span>
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {getAgentDisplayName(agent)}
-        </span>
-      </button>
+      <div className={`group sticky top-0 ${isMenuOpen ? 'z-50' : 'z-20'} -ml-[6px] h-[34px] w-[calc(100%+12px)] bg-surface-raised`}>
+        <button
+          type="button"
+          onClick={() => onToggleExpanded(agent.id)}
+          className="flex h-full w-full items-center gap-2 rounded-md py-0 pl-3.5 pr-12 text-left text-[14px] font-normal text-foreground/80 transition-colors hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]"
+          role="treeitem"
+          aria-level={1}
+          aria-expanded={agent.isExpanded}
+        >
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center leading-none text-foreground">
+            <AgentAvatar agent={agent} />
+          </span>
+          <span className="min-w-0 flex-1 truncate">
+            {agentName}
+          </span>
+        </button>
+
+        <div
+          className={`absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 transition-opacity ${
+            isMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+          }`}
+        >
+          <button
+            ref={menuButtonRef}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setIsMenuOpen((value) => !value);
+            }}
+            className={rowActionButtonClassName}
+            aria-label={i18nService.t('coworkSessionActions')}
+          >
+            <EllipsisHorizontalIcon className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleCreateTask}
+            className={rowEditActionButtonClassName}
+            aria-label={i18nService.t('myAgentSidebarNewTask')}
+          >
+            <ComposeIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {isMenuOpen && (
+          <div
+            ref={menuRef}
+            className="absolute right-1 top-8 z-40 min-w-[132px] overflow-hidden rounded-lg border border-border bg-surface shadow-lg"
+            role="menu"
+          >
+            <button
+              type="button"
+              onClick={handleEditAgent}
+              className={menuItemClassName}
+              role="menuitem"
+            >
+              <ComposeIcon className={menuIconClassName} />
+              {i18nService.t('edit')}
+            </button>
+            {isMainAgent ? (
+              <button
+                type="button"
+                disabled
+                className={disabledMenuItemClassName}
+                role="menuitem"
+                title={i18nService.t('agentDefaultCannotDelete')}
+              >
+                <TrashIcon className={menuIconClassName} />
+                {i18nService.t('delete')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleDeleteMenuClick}
+                className={dangerMenuItemClassName}
+                role="menuitem"
+              >
+                <TrashIcon className={menuIconClassName} />
+                {i18nService.t('delete')}
+              </button>
+            )}
+          </div>
+        )}
+
+        {showConfirmDelete && (
+          <AgentConfirmDialog
+            variant={AgentConfirmDialogVariant.Delete}
+            title={i18nService.t('agentDeleteConfirmTitle')}
+            message={i18nService.t('agentDeleteConfirmMessage').replace('{name}', agentName)}
+            cancelLabel={i18nService.t('cancel')}
+            confirmLabel={i18nService.t('delete')}
+            onCancel={() => setShowConfirmDelete(false)}
+            onConfirm={() => {
+              setShowConfirmDelete(false);
+              void onDeleteAgent(agent);
+            }}
+          />
+        )}
+      </div>
 
       {agent.isExpanded && (
         <div className="space-y-0.5" role="group">

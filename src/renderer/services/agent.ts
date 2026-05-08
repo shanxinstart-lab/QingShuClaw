@@ -1,3 +1,5 @@
+import { AgentId } from '@shared/agent';
+
 import { store } from '../store';
 import {
   addAgent,
@@ -111,13 +113,16 @@ class AgentService {
   async deleteAgent(id: string): Promise<boolean> {
     try {
       const wasCurrentAgent = store.getState().agent.currentAgentId === id;
-      await window.electron?.agents?.delete(id);
+      const deleted = await window.electron?.agents?.delete(id);
+      if (!deleted) {
+        return false;
+      }
       store.dispatch(removeAgent(id));
       store.dispatch(clearAgentSelectedModel(id));
       if (wasCurrentAgent) {
-        this.switchAgent('main');
+        this.switchAgent(AgentId.Main);
         const { coworkService } = await import('./cowork');
-        coworkService.loadSessions('main');
+        coworkService.loadSessions(AgentId.Main);
       }
       return true;
     } catch (error) {

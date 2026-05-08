@@ -1,12 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { CoworkSessionSummary, CoworkSessionStatus } from '../../types/cowork';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
-import PencilSquareIcon from '../icons/PencilSquareIcon';
-import TrashIcon from '../icons/TrashIcon';
-import ListChecksIcon from '../icons/ListChecksIcon';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+
 import { i18nService } from '../../services/i18n';
+import type { CoworkSessionStatus, CoworkSessionSummary } from '../../types/cowork';
 import Modal from '../common/Modal';
+import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
+import ListChecksIcon from '../icons/ListChecksIcon';
+import PencilSquareIcon from '../icons/PencilSquareIcon';
+import PushPinIcon from '../icons/PushPinIcon';
+import TrashIcon from '../icons/TrashIcon';
 
 interface CoworkSessionItemProps {
   session: CoworkSessionSummary;
@@ -30,41 +32,15 @@ const statusLabels: Record<CoworkSessionStatus, string> = {
   error: 'coworkStatusError',
 };
 
-const PushPinIcon: React.FC<React.SVGProps<SVGSVGElement> & { slashed?: boolean }> = ({
-  slashed,
-  ...props
-}) => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    {...props}
-  >
-    <g transform="rotate(45 12 12)">
-      <path d="M9 3h6l-1 5 2 2v2H8v-2l2-2-1-5z" />
-      <path d="M12 12v9" />
-    </g>
-    {slashed && <path d="M5 5L19 19" />}
-  </svg>
-);
-
 const formatRelativeTime = (timestamp: number): { compact: string; full: string } => {
   const now = Date.now();
-  const diff = now - timestamp;
+  const diff = Math.max(0, now - timestamp);
 
-  const minutes = Math.floor(diff / 60000);
+  const minutes = Math.max(1, Math.floor(diff / 60000));
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
 
-  if (minutes < 1) {
-    return {
-      compact: 'now',
-      full: i18nService.t('justNow'),
-    };
-  } else if (minutes < 60) {
+  if (minutes <= 60) {
     return {
       compact: `${minutes}m`,
       full: `${minutes} ${i18nService.t('minutesAgo')}`,
@@ -263,6 +239,7 @@ const CoworkSessionItem: React.FC<CoworkSessionItemProps> = ({
   const showRunningIndicator = session.status === 'running';
   const showUnreadIndicator = !showRunningIndicator && hasUnread;
   const showStatusIndicator = showRunningIndicator || showUnreadIndicator;
+  const showRelativeTime = !showStatusIndicator;
   const batchLabel = i18nService.t('batchOperations');
   const menuItems = useMemo(() => {
     const items = [
@@ -324,7 +301,7 @@ const CoworkSessionItem: React.FC<CoworkSessionItemProps> = ({
             {/* Status indicator */}
             {showStatusIndicator && (
               <span
-                className={`block w-2 h-2 rounded-full bg-primary flex-shrink-0 ${
+                className={`block w-2 h-2 rounded-full bg-blue-500 flex-shrink-0 ${
                   showRunningIndicator ? 'shadow-[0_0_6px_rgba(59,130,246,0.5)] animate-pulse' : ''
                 }`}
                 title={showRunningIndicator ? i18nService.t(statusLabels[session.status]) : undefined}
@@ -354,9 +331,11 @@ const CoworkSessionItem: React.FC<CoworkSessionItemProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2 text-xs text-secondary">
-            <span className="whitespace-nowrap" title={relativeTime.full}>
-              {relativeTime.compact}
-            </span>
+            {showRelativeTime && (
+              <span className="whitespace-nowrap" title={relativeTime.full}>
+                {relativeTime.compact}
+              </span>
+            )}
             <span className="text-[10px] uppercase tracking-wider whitespace-nowrap">
               {i18nService.t(statusLabels[session.status])}
             </span>

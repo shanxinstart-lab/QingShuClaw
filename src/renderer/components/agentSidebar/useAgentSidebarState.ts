@@ -31,6 +31,7 @@ const hasSessionChanged = (
   return previous.title !== next.title
     || previous.status !== next.status
     || previous.pinned !== next.pinned
+    || previous.pinOrder !== next.pinOrder
     || previous.updatedAt !== next.updatedAt
     || previous.createdAt !== next.createdAt
     || normalizeAgentId(previous.agentId) !== normalizeAgentId(next.agentId);
@@ -66,6 +67,12 @@ export const sortAgentSidebarTasks = (
   tasks: CoworkSessionSummary[],
 ): CoworkSessionSummary[] => {
   return [...tasks].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    if (a.pinned && b.pinned) {
+      const aPinOrder = a.pinOrder ?? a.updatedAt ?? a.createdAt;
+      const bPinOrder = b.pinOrder ?? b.updatedAt ?? b.createdAt;
+      if (aPinOrder !== bPinOrder) return aPinOrder - bPinOrder;
+    }
     if (b.createdAt !== a.createdAt) return b.createdAt - a.createdAt;
     return b.updatedAt - a.updatedAt;
   });
@@ -82,6 +89,7 @@ export const toAgentSidebarTaskNode = (
     title: session.title,
     status: session.status,
     pinned: session.pinned,
+    pinOrder: session.pinOrder ?? null,
     updatedAt: session.updatedAt,
     createdAt: session.createdAt,
     indicator: deriveAgentSidebarIndicator(session, unreadSessionIds),
@@ -362,7 +370,8 @@ export const useAgentSidebarState = () => {
 
   const patchTaskPreview = useCallback((
     sessionId: string,
-    updates: Partial<Pick<CoworkSessionSummary, 'title' | 'pinned' | 'status'>>,
+    updates: Partial<Pick<CoworkSessionSummary, 'title' | 'pinned' | 'pinOrder' | 'status'>>,
+    options: { preserveUpdatedAt?: boolean } = {},
   ) => {
     setTaskPreviewsByAgentId((previous) => {
       let changed = false;
@@ -374,7 +383,7 @@ export const useAgentSidebarState = () => {
         updatedTasks[index] = {
           ...updatedTasks[index],
           ...updates,
-          updatedAt: Date.now(),
+          updatedAt: options.preserveUpdatedAt ? updatedTasks[index].updatedAt : Date.now(),
         };
         next[agentId] = updatedTasks;
         changed = true;

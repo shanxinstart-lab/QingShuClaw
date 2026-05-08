@@ -14,6 +14,7 @@ export interface AgentSidebarTaskNode {
   title: string;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   updatedAt: number;
   createdAt: number;
   indicator: AgentSidebarIndicator;

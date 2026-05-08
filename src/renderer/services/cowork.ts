@@ -240,6 +240,11 @@ class CoworkService {
     return result ?? { success: false, error: 'Cowork IPC is unavailable' };
   }
 
+  async listSessionsForSearch(limit: number, offset: number): Promise<CoworkSessionListResult> {
+    const result = await window.electron?.cowork?.listSessions({ limit, offset });
+    return result ?? { success: false, error: 'Cowork IPC is unavailable' };
+  }
+
   async loadMoreSessions(): Promise<boolean> {
     const state = store.getState().cowork;
     if (!state.hasMoreSessions) return false;
@@ -419,18 +424,19 @@ class CoworkService {
     return false;
   }
 
-  async setSessionPinned(sessionId: string, pinned: boolean): Promise<boolean> {
+  async setSessionPinned(sessionId: string, pinned: boolean): Promise<{ success: boolean; pinOrder: number | null }> {
     const cowork = window.electron?.cowork;
-    if (!cowork?.setSessionPinned) return false;
+    if (!cowork?.setSessionPinned) return { success: false, pinOrder: null };
 
     const result = await cowork.setSessionPinned({ sessionId, pinned });
     if (result.success) {
-      store.dispatch(updateSessionPinned({ sessionId, pinned }));
-      return true;
+      const pinOrder = result.pinOrder ?? null;
+      store.dispatch(updateSessionPinned({ sessionId, pinned, pinOrder }));
+      return { success: true, pinOrder };
     }
 
     console.error('Failed to update session pin:', result.error);
-    return false;
+    return { success: false, pinOrder: null };
   }
 
   async renameSession(sessionId: string, title: string): Promise<boolean> {

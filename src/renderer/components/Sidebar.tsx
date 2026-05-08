@@ -1,7 +1,9 @@
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { AgentId } from '@shared/agent';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
+import { agentService } from '../services/agent';
 import { coworkService } from '../services/cowork';
 import { i18nService } from '../services/i18n';
 import { RootState } from '../store';
@@ -9,6 +11,7 @@ import {
   selectCoworkSessions,
   selectCurrentSessionId,
 } from '../store/selectors/coworkSelectors';
+import type { CoworkSessionSummary } from '../types/cowork';
 import MyAgentSidebarTree from './agentSidebar/MyAgentSidebarTree';
 import Modal from './common/Modal';
 import CoworkSearchModal from './cowork/CoworkSearchModal';
@@ -24,12 +27,11 @@ import LoginButton from './LoginButton';
 interface SidebarProps {
   onShowSettings: () => void;
   onShowLogin?: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'mcp' | 'agents';
+  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'mcp';
   onShowSkills: () => void;
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
   onShowMcp: () => void;
-  onShowAgents: () => void;
   onNewChat: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -40,6 +42,11 @@ interface SidebarProps {
 const DEFAULT_SIDEBAR_WIDTH = 244;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 420;
+const sidebarNavItemClassName =
+  'w-full inline-flex h-[34px] items-center gap-2 rounded-md px-1.5 text-left text-[14px] font-normal text-foreground/80 transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]';
+const activeSidebarNavItemClassName =
+  `${sidebarNavItemClassName} bg-black/[0.06] hover:bg-black/[0.06] dark:bg-white/[0.07] dark:hover:bg-white/[0.07]`;
+const sidebarCreateIconClassName = 'h-4 w-4 shrink-0 text-secondary/40 dark:text-secondary/45';
 
 const Sidebar: React.FC<SidebarProps> = ({
   onShowSettings,
@@ -48,7 +55,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowCowork,
   onShowScheduledTasks,
   onShowMcp,
-  onShowAgents,
   onNewChat,
   isCollapsed,
   onToggleCollapse,
@@ -88,21 +94,14 @@ const Sidebar: React.FC<SidebarProps> = ({
     setShowBatchDeleteConfirm(false);
   }, [isCollapsed]);
 
-  const handleSelectSession = async (sessionId: string) => {
+  const handleSelectSession = async (session: CoworkSessionSummary) => {
+    const agentId = session.agentId?.trim() || AgentId.Main;
+    if (agentId !== currentAgentId) {
+      agentService.switchAgent(agentId);
+      await coworkService.loadSessions(agentId);
+    }
     onShowCowork();
-    await coworkService.loadSession(sessionId);
-  };
-
-  const handleDeleteSession = async (sessionId: string) => {
-    await coworkService.deleteSession(sessionId);
-  };
-
-  const handleTogglePin = async (sessionId: string, pinned: boolean) => {
-    await coworkService.setSessionPinned(sessionId, pinned);
-  };
-
-  const handleRenameSession = async (sessionId: string, title: string) => {
-    await coworkService.renameSession(sessionId, title);
+    await coworkService.loadSession(session.id);
   };
 
   const handleEnterBatchMode = useCallback((sessionId: string) => {
@@ -205,13 +204,13 @@ const Sidebar: React.FC<SidebarProps> = ({
             <SidebarToggleIcon className="h-4 w-4" isCollapsed={isCollapsed} />
           </button>
         </div>
-        <div className="mt-3 space-y-1 px-3">
+        <div className="mt-3 space-y-0.5 px-3">
           <button
             type="button"
             onClick={onNewChat}
-            className="w-full inline-flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors"
+            className={sidebarNavItemClassName}
           >
-            <ComposeIcon className="h-4 w-4" />
+            <ComposeIcon className={sidebarCreateIconClassName} />
             {i18nService.t('newChat')}
           </button>
           <button
@@ -220,9 +219,9 @@ const Sidebar: React.FC<SidebarProps> = ({
               onShowCowork();
               setIsSearchOpen(true);
             }}
-            className="w-full inline-flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-medium text-secondary hover:text-foreground hover:bg-surface-raised transition-colors"
+            className={sidebarNavItemClassName}
           >
-            <SearchIcon className="h-4 w-4" />
+            <SearchIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('search')}
           </button>
           <button
@@ -231,13 +230,10 @@ const Sidebar: React.FC<SidebarProps> = ({
               setIsSearchOpen(false);
               onShowScheduledTasks();
             }}
-            className={`w-full inline-flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-medium transition-colors ${
-              activeView === 'scheduledTasks'
-                ? 'bg-primary/10 text-primary hover:bg-primary/20'
-                : 'text-secondary hover:text-foreground hover:bg-surface-raised'
-            }`}
+            className={activeView === 'scheduledTasks' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'scheduledTasks' ? 'page' : undefined}
           >
-            <ClockIcon className="h-4 w-4" />
+            <ClockIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('scheduledTasks')}
           </button>
           <button
@@ -246,13 +242,10 @@ const Sidebar: React.FC<SidebarProps> = ({
               setIsSearchOpen(false);
               onShowSkills();
             }}
-            className={`w-full inline-flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-medium transition-colors ${
-              activeView === 'skills'
-                ? 'bg-primary/10 text-primary hover:bg-primary/20'
-                : 'text-secondary hover:text-foreground hover:bg-surface-raised'
-            }`}
+            className={activeView === 'skills' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'skills' ? 'page' : undefined}
           >
-            <PuzzleIcon className="h-4 w-4" />
+            <PuzzleIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('skills')}
           </button>
           <button
@@ -261,13 +254,10 @@ const Sidebar: React.FC<SidebarProps> = ({
               setIsSearchOpen(false);
               onShowMcp();
             }}
-            className={`w-full inline-flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-medium transition-colors ${
-              activeView === 'mcp'
-                ? 'bg-primary/10 text-primary hover:bg-primary/20'
-                : 'text-secondary hover:text-foreground hover:bg-surface-raised'
-            }`}
+            className={activeView === 'mcp' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'mcp' ? 'page' : undefined}
           >
-            <ConnectorIcon className="h-4 w-4" />
+            <ConnectorIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('mcpServers')}
           </button>
         </div>
@@ -277,8 +267,6 @@ const Sidebar: React.FC<SidebarProps> = ({
           isBatchMode={isBatchMode}
           selectedIds={selectedIds}
           onShowCowork={onShowCowork}
-          onShowAgents={onShowAgents}
-          onNewChat={onNewChat}
           onToggleSelection={handleToggleSelection}
           onEnterBatchMode={handleEnterBatchMode}
         />
@@ -292,12 +280,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       <CoworkSearchModal
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
-        sessions={filteredSessions}
+        sessions={sessions}
         currentSessionId={currentSessionId}
         onSelectSession={handleSelectSession}
-        onDeleteSession={handleDeleteSession}
-        onTogglePin={handleTogglePin}
-        onRenameSession={handleRenameSession}
       />
       {isBatchMode ? (
         <div className="px-3 pb-3 pt-1 flex items-center justify-between">

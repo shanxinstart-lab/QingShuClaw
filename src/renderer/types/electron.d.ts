@@ -23,6 +23,7 @@ interface CoworkSession {
   claudeSessionId: string | null;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
+  pinOrder?: number | null;
   cwd: string;
   systemPrompt: string;
   modelOverride: string;
@@ -49,6 +50,7 @@ interface CoworkSessionSummary {
   title: string;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
+  pinOrder?: number | null;
   agentId?: string;
   createdAt: number;
   updatedAt: number;
@@ -337,7 +339,7 @@ interface IElectronAPI {
     get: (id: string) => Promise<Agent | null>;
     create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; workingDirectory?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
     update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; workingDirectory?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => Promise<Agent>;
-    delete: (id: string) => Promise<void>;
+    delete: (id: string) => Promise<boolean>;
     presets: () => Promise<PresetAgent[]>;
     addPreset: (presetId: string) => Promise<Agent>;
   };
@@ -442,7 +444,7 @@ interface IElectronAPI {
     setSessionPinned: (options: {
       sessionId: string;
       pinned: boolean;
-    }) => Promise<{ success: boolean; error?: string }>;
+    }) => Promise<{ success: boolean; pinOrder?: number | null; error?: string }>;
     renameSession: (options: {
       sessionId: string;
       title: string;

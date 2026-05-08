@@ -10,20 +10,26 @@ afterEach(() => {
   i18nService.setLanguage('zh', { persist: false });
 });
 
-test('formatAgentTaskRelativeTime uses Chinese compact hour and day units', () => {
+test('formatAgentTaskRelativeTime uses Chinese compact minute hour and day units', () => {
   i18nService.setLanguage('zh', { persist: false });
   vi.spyOn(Date, 'now').mockReturnValue(now);
 
-  expect(formatAgentTaskRelativeTime(now - 4 * 60000).compact).toBe('1 小时');
+  expect(formatAgentTaskRelativeTime(now - 30 * 1000).compact).toBe('1 分钟');
+  expect(formatAgentTaskRelativeTime(now - 4 * 60000).compact).toBe('4 分钟');
+  expect(formatAgentTaskRelativeTime(now - 60 * 60000).compact).toBe('60 分钟');
+  expect(formatAgentTaskRelativeTime(now - 61 * 60000).compact).toBe('1 小时');
   expect(formatAgentTaskRelativeTime(now - 10 * 3600000).compact).toBe('10 小时');
   expect(formatAgentTaskRelativeTime(now - 25 * 3600000).compact).toBe('1 天');
 });
 
-test('formatAgentTaskRelativeTime uses English compact hour and day units', () => {
+test('formatAgentTaskRelativeTime uses English compact minute hour and day units', () => {
   i18nService.setLanguage('en', { persist: false });
   vi.spyOn(Date, 'now').mockReturnValue(now);
 
-  expect(formatAgentTaskRelativeTime(now - 4 * 60000).compact).toBe('1h');
+  expect(formatAgentTaskRelativeTime(now - 30 * 1000).compact).toBe('1m');
+  expect(formatAgentTaskRelativeTime(now - 4 * 60000).compact).toBe('4m');
+  expect(formatAgentTaskRelativeTime(now - 60 * 60000).compact).toBe('60m');
+  expect(formatAgentTaskRelativeTime(now - 61 * 60000).compact).toBe('1h');
   expect(formatAgentTaskRelativeTime(now - 10 * 3600000).compact).toBe('10h');
   expect(formatAgentTaskRelativeTime(now - 25 * 3600000).compact).toBe('1d');
 });
