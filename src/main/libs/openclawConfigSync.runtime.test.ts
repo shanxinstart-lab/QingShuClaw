@@ -137,6 +137,16 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.agents.defaults).not.toHaveProperty('cwd');
   });
 
+  test('disables mcporter so MCP routing uses the built-in bridge', async () => {
+    const sync = await createSync();
+
+    const result = sync.sync('managed-skill-overrides');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.skills.entries.mcporter).toEqual({ enabled: false });
+  });
+
   test('adds missing array items in MCP bridge tool schemas for OpenAI compatibility', async () => {
     const sync = await createSync({
       getMcpBridgeConfig: () => ({
