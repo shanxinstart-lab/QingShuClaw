@@ -20,6 +20,12 @@ export interface GatewayHistoryEntry {
 }
 
 const HEARTBEAT_ACK_RE = /^[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}HEARTBEAT_OK[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}$/i;
+const HEARTBEAT_PROMPT_MARKERS = [
+  'read heartbeat.md if it exists',
+  'when reading heartbeat.md',
+  'reply heartbeat_ok',
+  'do not infer or repeat old tasks from prior chats',
+] as const;
 const TRANSIENT_GATEWAY_STATUS_MAX_CHARS = 600;
 const TRANSIENT_GATEWAY_STATUS_PATTERNS = [
   /^(?:OpenClaw\s*)?(?:网关|AI\s*引擎).{0,16}(?:正在)?(?:重启|启动|连接)(?:中)?[，,。.]/i,
@@ -122,6 +128,14 @@ export const normalizeGatewayHistoryText = (
 
 export const isHeartbeatAckText = (text: string): boolean => HEARTBEAT_ACK_RE.test(text.trim());
 
+export const isHeartbeatPromptText = (text: string): boolean => {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return HEARTBEAT_PROMPT_MARKERS.every((marker) => normalized.includes(marker));
+};
+
 export const isTransientGatewayStatusText = (text: string): boolean => {
   const normalized = text.trim();
   if (!normalized || normalized.length > TRANSIENT_GATEWAY_STATUS_MAX_CHARS) {
@@ -201,6 +215,9 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
     return null;
   }
   if ((role === 'assistant' || role === 'system') && isHeartbeatAckText(text)) {
+    return null;
+  }
+  if (role === 'user' && isHeartbeatPromptText(text)) {
     return null;
   }
   if (role === 'assistant' && isTransientGatewayStatusText(text)) {

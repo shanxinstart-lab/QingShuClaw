@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest';
 import {
   extractGatewayHistoryEntry,
   extractGatewayMessageText,
+  isHeartbeatAckText,
+  isHeartbeatPromptText,
   isTransientGatewayStatusText,
   normalizeGatewayHistoryText,
 } from './openclawHistory';
@@ -124,5 +126,31 @@ describe('openclawHistory', () => {
     ].join('\n');
 
     expect(isTransientGatewayStatusText(text)).toBe(false);
+  });
+
+  test('filters heartbeat prompt user messages from history entries', () => {
+    const entry = extractGatewayHistoryEntry({
+      role: 'user',
+      content: `Read HEARTBEAT.md if it exists (workspace context). Follow it strictly.
+When reading HEARTBEAT.md, use workspace file /tmp/HEARTBEAT.md.
+Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.`,
+    });
+    expect(entry).toBeNull();
+  });
+
+  test('isHeartbeatAckText only matches lightweight HEARTBEAT_OK wrappers', () => {
+    expect(isHeartbeatAckText('HEARTBEAT_OK')).toBe(true);
+    expect(isHeartbeatAckText('`HEARTBEAT_OK`')).toBe(true);
+    expect(isHeartbeatAckText('HEARTBEAT_OK: all clear')).toBe(false);
+  });
+
+  test('isHeartbeatPromptText only matches canonical heartbeat instructions', () => {
+    expect(
+      isHeartbeatPromptText(`Read HEARTBEAT.md if it exists.
+When reading HEARTBEAT.md, use workspace file /tmp/HEARTBEAT.md.
+Do not infer or repeat old tasks from prior chats.
+If nothing needs attention, reply HEARTBEAT_OK.`)
+    ).toBe(true);
+    expect(isHeartbeatPromptText('Please read README.md and reply OK.')).toBe(false);
   });
 });
