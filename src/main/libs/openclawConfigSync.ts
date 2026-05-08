@@ -1259,7 +1259,6 @@ export class OpenClawConfigSync {
       },
       cron: {
         enabled: true,
-        skipMissedJobs: coworkConfig.skipMissedJobs === true,
         maxConcurrentRuns: 3,
         sessionRetention: '7d',
       },
@@ -1619,27 +1618,6 @@ export class OpenClawConfigSync {
         })(),
       };
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'openclaw-weixin': weixinChannel };
-    }
-
-    // Inject _agentBinding into channel configs that have a non-main binding,
-    // forcing those channels to restart when the binding changes.  OpenClaw
-    // channel plugins capture their config at startup and never refresh it,
-    // so bindings-only config changes (kind: "none" in the reload plan) are
-     // invisible to running plugins.  By touching the channel config we trigger
-     // a "channels.*" diff path which forces the plugin to restart.
-     const platformBindingsForSentinel = this.getIMSettings?.()?.platformAgentBindings;
-     if (platformBindingsForSentinel) {
-       // Map openclaw channel key → platform key
-      const channelToPlatform = PlatformRegistry;
-       const channels = (managedConfig.channels ?? {}) as Record<string, Record<string, unknown>>;
-      for (const channelKey of Object.keys(channels)) {
-        if (!channels[channelKey] || typeof channels[channelKey] !== 'object') continue;
-        const platformKey = channelToPlatform.platformOfChannel(channelKey);
-        const boundAgentId = platformKey ? platformBindingsForSentinel[platformKey] : undefined;
-        if (boundAgentId && boundAgentId !== 'main') {
-          channels[channelKey]._agentBinding = boundAgentId;
-        }
-     }
     }
 
     enforceLegacyFeishuPluginDisabled(managedConfig);
