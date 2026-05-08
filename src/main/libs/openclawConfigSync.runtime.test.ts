@@ -160,4 +160,29 @@ describe('OpenClawConfigSync runtime config output', () => {
     const [tool] = config.plugins.entries['mcp-bridge'].config.tools;
     expect(tool.inputSchema.properties.attachments.items).toEqual({});
   });
+
+  test('writes only supported Weixin channel schema fields', async () => {
+    const sync = await createSync({
+      getWeixinConfig: () => ({
+        enabled: true,
+        accountId: 'wx-account-1',
+        dmPolicy: 'open',
+        allowFrom: ['user-1'],
+        groupPolicy: 'open',
+        groupAllowFrom: [],
+        debug: true,
+      }),
+    });
+
+    const result = sync.sync('weixin-channel-schema');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.channels['openclaw-weixin']).toEqual({
+      enabled: true,
+      dmPolicy: 'open',
+      allowFrom: ['user-1', '*'],
+    });
+    expect(config.channels['openclaw-weixin']).not.toHaveProperty('accountId');
+  });
 });

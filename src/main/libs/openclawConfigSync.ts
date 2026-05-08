@@ -1566,7 +1566,12 @@ export class OpenClawConfigSync {
     if (weixinConfig?.enabled) {
       const weixinChannel: Record<string, unknown> = {
         enabled: true,
-        ...(weixinConfig.accountId ? { accountId: weixinConfig.accountId } : {}),
+        dmPolicy: weixinConfig.dmPolicy || 'open',
+        allowFrom: (() => {
+          const ids = weixinConfig.allowFrom?.length ? [...weixinConfig.allowFrom] : [];
+          if ((weixinConfig.dmPolicy || 'open') === 'open' && !ids.includes('*')) ids.push('*');
+          return ids;
+        })(),
       };
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'openclaw-weixin': weixinChannel };
     }
