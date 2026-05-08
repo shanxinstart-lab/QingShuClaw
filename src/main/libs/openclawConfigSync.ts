@@ -816,6 +816,42 @@ const resolveExternalPluginConfigId = (pluginId: string): string | null => {
   return resolveOpenClawExtensionConfigId(pluginId) ?? pluginId;
 };
 
+const STALE_PLUGIN_ENTRY_IDS = [
+  'clawemail-email',
+  'dingtalk',
+  'feishu',
+  'openclaw-nim-channel',
+  'openclaw-qqbot',
+  'qwen-portal-auth',
+] as const;
+
+const cleanExistingPluginEntries = (
+  existingPluginEntries: Record<string, unknown>,
+  enabledPluginIds: string[],
+): Record<string, unknown> => {
+  const enabled = new Set(enabledPluginIds);
+  return Object.fromEntries(
+    Object.entries(existingPluginEntries).filter(([id]) => (
+      enabled.has(id) || !STALE_PLUGIN_ENTRY_IDS.includes(id as typeof STALE_PLUGIN_ENTRY_IDS[number])
+    )),
+  );
+};
+
+const mergePluginEntry = (
+  entries: Record<string, unknown>,
+  pluginId: string | null,
+  entry: Record<string, unknown>,
+): void => {
+  if (!pluginId) return;
+  const existing = entries[pluginId];
+  entries[pluginId] = {
+    ...(existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? existing as Record<string, unknown>
+      : {}),
+    ...entry,
+  };
+};
+
 const mapFeishuReplyMode = (
   replyMode?: FeishuInstanceConfig['replyMode'],
 ): Partial<{ renderMode: 'auto' | 'raw' | 'card'; streaming: boolean }> => {
@@ -1156,6 +1192,7 @@ export class OpenClawConfigSync {
       hasAskUserPlugin ? 'ask-user-question' : null,
     ].filter((id): id is string => Boolean(id));
     const externalPluginLoadPaths = resolveExternalPluginLoadPaths(enabledExternalPluginIds);
+    const existingPluginEntries = this.getExistingPluginEntries(configPath);
 
     const hasAnyChannel = !!dingTalkPluginId;
 
@@ -1221,38 +1258,17 @@ export class OpenClawConfigSync {
         sessionRetention: '7d',
       },
       ...((() => {
-        const pluginEntries: Record<string, unknown> = {
-          ...(dingTalkPluginId
-            ? { [dingTalkPluginId]: { enabled: true } }
-            : {}),
-          ...(feishuPluginId
-            ? { [feishuPluginId]: { enabled: true } }
-            : {}),
-          qqbot: {
-            enabled: enabledQQInstances.length > 0,
-          },
-          ...(wecomPluginId
-            ? { [wecomPluginId]: { enabled: true } }
-            : {}),
-          ...(popoPluginId
-            ? { [popoPluginId]: { enabled: true } }
-            : {}),
-          ...(nimPluginId
-            ? { [nimPluginId]: { enabled: true } }
-            : {}),
-          ...(neteaseBeePluginId
-            ? { [neteaseBeePluginId]: { enabled: true } }
-            : {}),
-          ...(weixinPluginId
-            ? { [weixinPluginId]: { enabled: true } }
-            : {}),
-          ...(hasMcpBridgePlugin
-            ? { 'mcp-bridge': { enabled: true } }
-            : {}),
-          ...(hasAskUserPlugin
-            ? { 'ask-user-question': { enabled: true } }
-            : {}),
-        };
+        const pluginEntries = cleanExistingPluginEntries(existingPluginEntries, enabledExternalPluginIds);
+        mergePluginEntry(pluginEntries, dingTalkPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, feishuPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, 'qqbot', { enabled: enabledQQInstances.length > 0 });
+        mergePluginEntry(pluginEntries, wecomPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, popoPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, nimPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, neteaseBeePluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, weixinPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, hasMcpBridgePlugin ? 'mcp-bridge' : null, { enabled: true });
+        mergePluginEntry(pluginEntries, hasAskUserPlugin ? 'ask-user-question' : null, { enabled: true });
 
         return Object.keys(pluginEntries).length > 0
           ? {
@@ -1708,6 +1724,21 @@ export class OpenClawConfigSync {
       ...(agentsMdWarning ? { agentsMdWarning } : {}),
       ...(mcpBridgeConfigChanged ? { mcpBridgeConfigChanged } : {}),
     };
+  }
+
+  private getExistingPluginEntries(configPath: string): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+        plugins?: { entries?: unknown };
+      };
+      const entries = parsed.plugins?.entries;
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+        return {};
+      }
+      return entries as Record<string, unknown>;
+    } catch {
+      return {};
+    }
   }
 
   /**

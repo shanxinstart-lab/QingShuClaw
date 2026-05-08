@@ -40,8 +40,15 @@ vi.mock('./claudeSettings', () => ({
 }));
 
 vi.mock('./openclawLocalExtensions', () => ({
-  hasBundledOpenClawExtension: (id: string) => ['mcp-bridge', 'openclaw-lark'].includes(id),
-  resolveOpenClawExtensionConfigId: (id: string) => id,
+  hasBundledOpenClawExtension: (id: string) => [
+    'mcp-bridge',
+    'openclaw-lark',
+    'openclaw-nim-channel',
+    'nimsuite-openclaw-nim-channel',
+  ].includes(id),
+  resolveOpenClawExtensionConfigId: (id: string) => ({
+    'openclaw-nim-channel': 'nimsuite-openclaw-nim-channel',
+  }[id] ?? id),
   resolveOpenClawExtensionLoadPath: () => null,
 }));
 
@@ -233,5 +240,39 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries.feishu).toEqual({ enabled: false });
     expect(config.plugins.entries.qqbot).toEqual({ enabled: true });
     expect(config.plugins.entries).not.toHaveProperty('openclaw-qqbot');
+  });
+
+  test('cleans stale plugin package ids and preserves manifest entry config', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      plugins: {
+        entries: {
+          'clawemail-email': { enabled: true },
+          'openclaw-nim-channel': { enabled: true },
+          'nimsuite-openclaw-nim-channel': { enabled: false, config: { retained: true } },
+          'qwen-portal-auth': { enabled: true },
+        },
+      },
+    }, null, 2));
+
+    const sync = await createSync({
+      getNimConfig: () => ({
+        enabled: true,
+        appKey: 'nim-app-key',
+        account: 'nim-account',
+        token: 'nim-token',
+      }),
+    });
+
+    const result = sync.sync('plugin-entry-cleanup');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.plugins.entries).not.toHaveProperty('clawemail-email');
+    expect(config.plugins.entries).not.toHaveProperty('openclaw-nim-channel');
+    expect(config.plugins.entries).not.toHaveProperty('qwen-portal-auth');
+    expect(config.plugins.entries['nimsuite-openclaw-nim-channel']).toEqual({
+      enabled: true,
+      config: { retained: true },
+    });
   });
 });
