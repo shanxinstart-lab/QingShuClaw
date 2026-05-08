@@ -530,6 +530,99 @@ test('F: two interleaved function calls keep arguments isolated', () => {
   expect(result.inputJsonDeltas.filter((item) => item === args2).length).toBe(1);
 });
 
+test('G: convertChatCompletionsRequestToResponsesRequest auto-injects missing function_call_output', () => {
+  const request = testUtils.convertChatCompletionsRequestToResponsesRequest({
+    model: 'gpt-5.2',
+    stream: true,
+    messages: [
+      { role: 'user', content: 'make ppt' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call_missing_output',
+            type: 'function',
+            function: {
+              name: 'Skill',
+              arguments: '{"skill":"pptx"}',
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  const input = Array.isArray(request.input) ? request.input : [];
+  const autoInjected = input.find((item: Record<string, unknown>) => (
+    item?.type === 'function_call_output'
+    && item?.call_id === 'call_missing_output'
+  ));
+
+  expect(autoInjected).toBeTruthy();
+  expect(typeof autoInjected.output).toBe('string');
+});
+
+test('H: filterOpenAIToolsForProvider removes Skill tool and normalizes tool_choice', () => {
+  const openAIRequest = {
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'Skill',
+          parameters: {
+            type: 'object',
+            properties: {
+              skill: { type: 'string' },
+            },
+            required: ['skill'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'Bash',
+          parameters: { type: 'object' },
+        },
+      },
+    ],
+    tool_choice: {
+      type: 'function',
+      function: {
+        name: 'Skill',
+      },
+    },
+  };
+
+  testUtils.filterOpenAIToolsForProvider(openAIRequest, 'openai');
+
+  expect(openAIRequest.tools.length).toBe(1);
+  expect(openAIRequest.tools[0].function.name).toBe('Bash');
+  expect(openAIRequest.tool_choice).toBe('auto');
+});
+
+test('findSSEPacketBoundary detects LF packet separator', () => {
+  const boundary = testUtils.findSSEPacketBoundary('data: 1\n\ndata: 2\n\n');
+  expect(boundary).toBeTruthy();
+  expect(boundary.index).toBe(7);
+  expect(boundary.separatorLength).toBe(2);
+});
+
+test('findSSEPacketBoundary detects CRLF packet separator', () => {
+  const boundary = testUtils.findSSEPacketBoundary('data: 1\r\n\r\ndata: 2\r\n\r\n');
+  expect(boundary).toBeTruthy();
+  expect(boundary.index).toBe(7);
+  expect(boundary.separatorLength).toBe(4);
+});
+
+test('findSSEPacketBoundary returns earliest separator in mixed input', () => {
+  const boundary = testUtils.findSSEPacketBoundary('data: 1\r\n\r\ndata: 2\n\n');
+  expect(boundary).toBeTruthy();
+  expect(boundary.index).toBe(7);
+  expect(boundary.separatorLength).toBe(4);
+});
+
 const fakeReq = (host?: string): http.IncomingMessage =>
   ({ headers: host !== undefined ? { host } : {} }) as http.IncomingMessage;
 
