@@ -386,4 +386,39 @@ describe('buildProviderSelection compatibility', () => {
 
     expect(selection.providerConfig.models[0].input).toEqual(['text', 'image']);
   });
+
+  test('routes DashScope Anthropic URLs through OpenAI-compatible API', async () => {
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: 'sk-test',
+      baseURL: 'https://dashscope.aliyuncs.com/apps/anthropic',
+      modelId: 'qwen3.6-plus',
+      apiType: 'anthropic',
+      providerName: ProviderName.Qwen,
+      supportsImage: true,
+      modelName: 'qwen3.6-plus',
+    });
+
+    expect(selection.providerConfig.api).toBe(OpenClawApi.OpenAICompletions);
+    expect(selection.providerConfig.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
+  });
+
+  test('routes DashScope coding Anthropic URLs through coding OpenAI-compatible API', async () => {
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: 'sk-test',
+      baseURL: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
+      modelId: 'qwen3.6-plus',
+      apiType: 'anthropic',
+      providerName: ProviderName.Qwen,
+      codingPlanEnabled: true,
+      supportsImage: true,
+      modelName: 'qwen3.6-plus',
+    });
+
+    expect(selection.providerConfig.api).toBe(OpenClawApi.OpenAICompletions);
+    expect(selection.providerConfig.baseUrl).toBe('https://coding.dashscope.aliyuncs.com/v1');
+  });
 });

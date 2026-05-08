@@ -77,12 +77,26 @@ const mapApiTypeToOpenClawApi = (
   providerName?: string,
   baseURL?: string,
 ): OpenClawProviderApi => {
+  // DashScope's Anthropic-compatible endpoint injects built-in tools that can
+  // break OpenClaw requests, so route it through the OpenAI-compatible API.
+  if (apiType === 'anthropic' && isDashScopeUrl(baseURL)) {
+    return 'openai-completions';
+  }
   if (apiType === 'openai') {
     return shouldUseOpenAIResponsesApi(providerName, baseURL)
       ? 'openai-responses'
       : 'openai-completions';
   }
   return 'anthropic-messages';
+};
+
+const isDashScopeUrl = (url?: string): boolean => !!url && /dashscope\.aliyuncs\.com/i.test(url);
+
+const rewriteDashScopeAnthropicToOpenAI = (url: string): string => {
+  if (/coding\.dashscope\.aliyuncs\.com/i.test(url)) {
+    return url.replace(/\/apps\/anthropic\b/i, '/v1');
+  }
+  return url.replace(/\/apps\/anthropic\b/i, '/compatible-mode/v1');
 };
 
 const ensureDir = (dirPath: string): void => {
@@ -538,37 +552,37 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
 
   [ProviderName.DeepSeek]: {
     providerId: OpenClawProviderId.DeepSeek,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [ProviderName.Qwen]: {
     providerId: OpenClawProviderId.Qwen,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [ProviderName.Zhipu]: {
     providerId: OpenClawProviderId.Zai,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [ProviderName.Volcengine]: {
     providerId: OpenClawProviderId.Volcengine,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [`${ProviderName.Volcengine}:codingPlan`]: {
     providerId: OpenClawProviderId.VolcenginePlan,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [ProviderName.Minimax]: {
     providerId: OpenClawProviderId.Minimax,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
@@ -586,13 +600,13 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
 
   [ProviderName.Xiaomi]: {
     providerId: OpenClawProviderId.Xiaomi,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [ProviderName.OpenRouter]: {
     providerId: OpenClawProviderId.OpenRouter,
-    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
@@ -612,7 +626,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
 
 const DEFAULT_DESCRIPTOR: ProviderDescriptor = {
   providerId: OpenClawProviderId.Lobster,
-  resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+  resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
   normalizeBaseUrl: stripChatCompletionsSuffix,
 };
 
@@ -648,7 +662,7 @@ export const buildProviderSelection = (options: {
   const providerName = options.providerName ?? '';
   const descriptor = resolveDescriptor(providerName, !!options.codingPlanEnabled);
 
-  const baseUrl = (() => {
+  let baseUrl = (() => {
     if (options.providerName !== ProviderName.Copilot) {
       return descriptor.normalizeBaseUrl(options.baseURL);
     }
@@ -659,6 +673,9 @@ export const buildProviderSelection = (options: {
     apiType: options.apiType,
     baseURL: options.baseURL,
   });
+  if (api === 'openai-completions' && options.apiType === 'anthropic' && isDashScopeUrl(baseUrl)) {
+    baseUrl = rewriteDashScopeAnthropicToOpenAI(baseUrl);
+  }
   const apiKey = descriptor.resolveApiKey
     ? descriptor.resolveApiKey({ apiKey: options.apiKey, providerName })
     : `\${${providerApiKeyEnvVar(providerName)}}`;
