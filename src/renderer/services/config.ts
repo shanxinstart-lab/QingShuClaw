@@ -229,6 +229,9 @@ class ConfigService {
   async init() {
     try {
       const storedConfig = await localStore.getItem<AppConfig>(CONFIG_KEYS.APP_CONFIG);
+      if (!storedConfig) {
+        console.warn('[ConfigService] init: no stored config found, using defaults');
+      }
       if (storedConfig) {
         const mergedProviders = storedConfig.providers
           ? Object.fromEntries(
@@ -312,7 +315,7 @@ class ConfigService {
         });
       }
     } catch (error) {
-      console.error('Failed to load config:', error);
+      console.error('[ConfigService] init failed:', error);
     }
   }
 
@@ -322,35 +325,37 @@ class ConfigService {
 
   async updateConfig(newConfig: Partial<AppConfig>) {
     const normalizedProviders = normalizeProvidersConfig(newConfig.providers as AppConfig['providers'] | undefined);
+    const storedConfig = await localStore.getItem<AppConfig>(CONFIG_KEYS.APP_CONFIG);
+    const baseConfig = storedConfig ?? this.config;
     const mergedSpeechInput = newConfig.speechInput
       ? mergeSpeechInputConfig({
-          ...this.config.speechInput,
+          ...baseConfig.speechInput,
           ...newConfig.speechInput,
         })
-      : this.config.speechInput;
+      : baseConfig.speechInput;
     const mergedWakeInput = newConfig.wakeInput
       ? mergeWakeInputConfig({
-          ...this.config.wakeInput,
+          ...baseConfig.wakeInput,
           ...newConfig.wakeInput,
         })
-      : this.config.wakeInput;
+      : baseConfig.wakeInput;
     const mergedTts = newConfig.tts
       ? mergeTtsConfig({
-          ...this.config.tts,
+          ...baseConfig.tts,
           ...newConfig.tts,
         })
-      : this.config.tts;
+      : baseConfig.tts;
     const mergedVoice = newConfig.voice
       ? {
           postProcess: mergeVoicePostProcessConfig({
-            ...this.config.voice?.postProcess,
+            ...baseConfig.voice?.postProcess,
             ...newConfig.voice.postProcess,
           }),
         }
-      : this.config.voice;
+      : baseConfig.voice;
 
     this.config = {
-      ...this.config,
+      ...baseConfig,
       ...newConfig,
       ...(normalizedProviders ? { providers: normalizedProviders } : {}),
       ...(newConfig.speechInput ? { speechInput: mergedSpeechInput } : {}),
