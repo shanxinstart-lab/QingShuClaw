@@ -32,6 +32,23 @@ test('normalizes model-detected IM reminder requests into direct cron.add inputs
   expect(parsed!.confirmationText).toMatch(new RegExp(`2分钟后（${expectedClock}）会提醒你喝饮料`, 'u'));
 });
 
+test('preserves detector timezone clock in IM reminder confirmation text', () => {
+  const parsed = normalizeDetectedScheduledTaskRequest(
+    {
+      shouldCreateTask: true,
+      scheduleAt: '2026-03-15T09:30:00+01:00',
+      reminderBody: '开会',
+      taskName: '开会提醒',
+    },
+    '提醒我开会',
+    new Date('2026-03-15T16:28:00+08:00'),
+  );
+
+  expect(parsed).toBeTruthy();
+  expect(parsed!.scheduleAt).toBe('2026-03-15T09:30:00+01:00');
+  expect(parsed!.confirmationText).toContain('（09:30）会提醒你开会');
+});
+
 test('only uses heuristic as a cheap reminder candidate prefilter', () => {
   expect(looksLikeIMScheduledTaskCandidate('帮我总结一下今天的会议纪要')).toBe(false);
   expect(looksLikeIMScheduledTaskCandidate('2分钟后提醒我喝饮料')).toBe(true);
