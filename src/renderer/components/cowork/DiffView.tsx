@@ -336,29 +336,28 @@ export function extractDiffFromToolInput(
   if (!toolName || !toolInput) return null;
   const normalized = toolName.toLowerCase().replace(/[\s_]+/g, '');
 
-  if (normalized === 'edit' || normalized === 'editfile') {
-    const filePath = extractString(toolInput, ['file_path', 'path', 'filePath', 'target_file', 'targetFile']);
-    const oldStr = extractString(toolInput, ['old_str', 'old_string', 'old_text', 'oldStr', 'oldText', 'search']);
-    const newStr = extractString(toolInput, ['new_str', 'new_string', 'new_text', 'newStr', 'newText', 'replace']);
+  const EDIT_OLD_KEYS = ['old_str', 'old_string', 'old_text', 'oldStr', 'oldText', 'search'];
+  const EDIT_NEW_KEYS = ['new_str', 'new_string', 'new_text', 'newStr', 'newText', 'replace'];
+  const FILE_PATH_KEYS = ['file_path', 'path', 'filePath', 'target_file', 'targetFile'];
 
+  if (normalized === 'edit' || normalized === 'editfile' || normalized === 'multiedit') {
+    const filePath = extractString(toolInput, FILE_PATH_KEYS);
+    const oldStr = extractString(toolInput, EDIT_OLD_KEYS);
+    const newStr = extractString(toolInput, EDIT_NEW_KEYS);
     if (oldStr !== null && newStr !== null) {
       return [{ filePath: filePath ?? undefined, oldStr, newStr }];
     }
-    return null;
-  }
 
-  if (normalized === 'multiedit') {
-    const filePath = extractString(toolInput, ['file_path', 'path', 'filePath', 'target_file', 'targetFile']);
     const edits = toolInput.edits ?? toolInput.changes ?? toolInput.operations;
     if (Array.isArray(edits)) {
       const diffs: DiffData[] = [];
       for (const edit of edits) {
         if (edit && typeof edit === 'object') {
           const rec = edit as Record<string, unknown>;
-          const oldStr = extractString(rec, ['old_str', 'old_string', 'old_text', 'oldStr', 'search']);
-          const newStr = extractString(rec, ['new_str', 'new_string', 'new_text', 'newStr', 'replace']);
-          if (oldStr !== null && newStr !== null) {
-            diffs.push({ filePath: filePath ?? undefined, oldStr, newStr });
+          const editOldStr = extractString(rec, EDIT_OLD_KEYS);
+          const editNewStr = extractString(rec, EDIT_NEW_KEYS);
+          if (editOldStr !== null && editNewStr !== null) {
+            diffs.push({ filePath: filePath ?? undefined, oldStr: editOldStr, newStr: editNewStr });
           }
         }
       }
