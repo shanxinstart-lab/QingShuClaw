@@ -148,6 +148,15 @@ interface ProviderDefInput {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
+  /**
+   * Coding Plan dedicated model list. When unset, coding plan mode keeps the
+   * same model metadata as defaultModels.
+   */
+  readonly codingPlanModels?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly supportsImage: boolean;
+  }[];
   /** OpenClaw provider ID override when it differs from provider id */
   readonly openClawProviderId?: OpenClawProviderId;
 }
@@ -203,6 +212,9 @@ const PROVIDER_DEFINITIONS = [
     enPriority: 0,
     defaultModels: [
       { id: 'kimi-k2.5', name: 'Kimi K2.5', supportsImage: true },
+    ],
+    codingPlanModels: [
+      { id: 'kimi-for-coding', name: 'Kimi K2.5', supportsImage: true },
     ],
   },
   {
@@ -532,6 +544,12 @@ export interface ProviderDef {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
+  /** Coding Plan dedicated model metadata */
+  readonly codingPlanModels?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly supportsImage: boolean;
+  }[];
   /** OpenClaw provider ID override when it differs from provider id */
   readonly openClawProviderId?: OpenClawProviderId;
 }
@@ -572,7 +590,7 @@ class ProviderRegistryImpl {
     const modelIdx = new Map<string, boolean>();
     for (const def of definitions) {
       idx.set(def.id, def);
-      for (const model of def.defaultModels) {
+      for (const model of [...def.defaultModels, ...(def.codingPlanModels ?? [])]) {
         const existing = modelIdx.get(model.id);
         modelIdx.set(model.id, existing === true || model.supportsImage);
       }
@@ -618,7 +636,8 @@ class ProviderRegistryImpl {
   getProviderModelSupportsImage(providerName: string, modelId: string): boolean | undefined {
     const def = this.idIndex.get(providerName);
     if (!def) return undefined;
-    const model = def.defaultModels.find(candidate => candidate.id === modelId);
+    const model = [...def.defaultModels, ...(def.codingPlanModels ?? [])]
+      .find(candidate => candidate.id === modelId);
     return model?.supportsImage;
   }
 

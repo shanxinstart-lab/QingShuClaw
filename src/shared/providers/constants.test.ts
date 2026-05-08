@@ -41,6 +41,10 @@ describe('ProviderRegistry', () => {
     expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Qwen, 'qwen3-coder-plus', true)).toBe(false);
   });
 
+  test('resolveModelSupportsImage includes coding plan model metadata', () => {
+    expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Moonshot, 'kimi-for-coding', false)).toBe(true);
+  });
+
   test('resolveModelSupportsImage upgrades custom providers for globally known vision models', () => {
     expect(ProviderRegistry.resolveModelSupportsImage('custom_0', 'qwen3.6-plus', false)).toBe(true);
     expect(ProviderRegistry.resolveModelSupportsImage('custom_0', 'unknown-model', false)).toBe(false);
