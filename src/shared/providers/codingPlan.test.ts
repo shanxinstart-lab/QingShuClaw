@@ -1,6 +1,6 @@
 import { test, expect, describe } from 'vitest';
 import { resolveCodingPlanBaseUrl } from './codingPlan';
-import { ProviderName } from './constants';
+import { ProviderName, ProviderRegistry } from './constants';
 
 describe('resolveCodingPlanBaseUrl', () => {
   test('returns currentBaseUrl unchanged when codingPlanEnabled is false', () => {
@@ -13,6 +13,22 @@ describe('resolveCodingPlanBaseUrl', () => {
     const result = resolveCodingPlanBaseUrl(ProviderName.OpenAI, true, 'openai', 'https://api.openai.com/v1');
     expect(result.baseUrl).toBe('https://api.openai.com/v1');
     expect(result.effectiveFormat).toBe('openai');
+  });
+
+  test('falls back to currentBaseUrl when the preferred coding plan URL is missing', () => {
+    const def = ProviderRegistry.get(ProviderName.Qwen);
+    if (!def?.codingPlanUrls) {
+      throw new Error('Qwen coding plan fixture is missing');
+    }
+    const originalAnthropicUrl = def.codingPlanUrls.anthropic;
+    (def.codingPlanUrls as { anthropic: string }).anthropic = '';
+    try {
+      const result = resolveCodingPlanBaseUrl(ProviderName.Qwen, true, 'anthropic', 'https://custom.qwen.example');
+      expect(result.baseUrl).toBe('https://custom.qwen.example');
+      expect(result.effectiveFormat).toBe('anthropic');
+    } finally {
+      (def.codingPlanUrls as { anthropic: string }).anthropic = originalAnthropicUrl;
+    }
   });
 
   describe('Zhipu — preferredCodingPlanFormat=openai', () => {
