@@ -622,6 +622,12 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     resolveApi: () => OpenClawApiConst.OpenAICompletions as OpenClawProviderApi,
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
+
+  [ProviderName.LmStudio]: {
+    providerId: OpenClawProviderId.LmStudio,
+    resolveApi: ({ apiType, baseURL }) => mapApiTypeToOpenClawApi(apiType, undefined, baseURL),
+    normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
 };
 
 const DEFAULT_DESCRIPTOR: ProviderDescriptor = {

@@ -220,6 +220,11 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     resolveApi: () => OpenClawApi.OpenAICompletions as OpenClawProviderApi,
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
+  [ProviderName.LmStudio]: {
+    providerId: OpenClawProviderId.LmStudio,
+    resolveApi: () => OpenClawApi.OpenAICompletions as OpenClawProviderApi,
+    normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
 };
 
 const DEFAULT_DESCRIPTOR: ProviderDescriptor = {
@@ -304,6 +309,12 @@ describe('resolveDescriptor', () => {
     expect(d.resolveApi({ apiType: undefined, baseURL: '' })).toBe(OpenClawApi.OpenAICompletions);
   });
 
+  test('lm-studio always uses openai-completions', () => {
+    const d = resolveDescriptor(ProviderName.LmStudio, false);
+    expect(d.providerId).toBe(OpenClawProviderId.LmStudio);
+    expect(d.resolveApi({ apiType: undefined, baseURL: '' })).toBe(OpenClawApi.OpenAICompletions);
+  });
+
   test('unknown provider falls back to lobster providerId', () => {
     const d = resolveDescriptor('some-unknown', false);
     expect(d.providerId).toBe('some-unknown');
@@ -346,9 +357,10 @@ describe('provider registry coverage', () => {
     ProviderName.Xiaomi,
     ProviderName.OpenRouter,
     ProviderName.Ollama,
+    ProviderName.LmStudio,
   ] as const;
 
-  test('all 14 providers have registry entries', () => {
+  test('all 15 providers have registry entries', () => {
     for (const name of allRegistryProviders) {
       expect(name in PROVIDER_REGISTRY, `${name} missing from registry`).toBe(true);
     }
