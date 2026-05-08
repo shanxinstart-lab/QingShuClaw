@@ -54,6 +54,7 @@ export const OpenClawProviderId = {
   Google: 'google',
   Anthropic: 'anthropic',
   OpenAI: 'openai',
+  OpenAICodex: 'openai-codex',
   DeepSeek: 'deepseek',
   Qwen: 'qwen-portal', // OpenClaw normalizes 'qwen' → 'qwen-portal'; use canonical ID to avoid config diff loop
   Zai: 'zai', // OpenClaw official provider ID for Zhipu/GLM

@@ -7,6 +7,7 @@ export interface Model {
   name: string;
   provider?: string; // 模型所属的提供商
   providerKey?: string; // 模型所属的提供商 key（用于唯一标识）
+  openClawProviderId?: string; // OpenClaw runtime provider id
   supportsImage?: boolean;
   isServerModel?: boolean; // 是否为服务端套餐模型
   serverApiFormat?: string; // 服务端模型的 API 格式 ("openai" | "anthropic")
