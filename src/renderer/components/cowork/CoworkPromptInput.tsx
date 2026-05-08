@@ -14,6 +14,7 @@ import { skillService } from '../../services/skill';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 import { RootState } from '../../store';
 import {
+  addDraftAttachment,
   clearDraftAttachments,
   type DraftAttachment,
   setDraftAttachments,
@@ -946,32 +947,30 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;
-    const current = attachments;
-    if (current.some((attachment) => attachment.path === filePath)) return;
-    dispatch(setDraftAttachments({
+    dispatch(addDraftAttachment({
       draftKey,
-      attachments: [...current, {
+      attachment: {
         path: filePath,
         name: getFileNameFromPath(filePath),
         isImage: imageInfo?.isImage,
         dataUrl: imageInfo?.dataUrl,
-      }],
+      },
     }));
-  }, [attachments, dispatch, draftKey]);
+  }, [dispatch, draftKey]);
 
   const addImageAttachmentFromDataUrl = useCallback((name: string, dataUrl: string) => {
     // Use the dataUrl as the unique key (no file path for inline images)
     const pseudoPath = `inline:${name}:${Date.now()}`;
-    dispatch(setDraftAttachments({
+    dispatch(addDraftAttachment({
       draftKey,
-      attachments: [...attachments, {
+      attachment: {
         path: pseudoPath,
         name,
         isImage: true,
         dataUrl,
-      }],
+      },
     }));
-  }, [attachments, dispatch, draftKey]);
+  }, [dispatch, draftKey]);
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
