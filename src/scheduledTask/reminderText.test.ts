@@ -1,0 +1,164 @@
+import { expect, test } from 'vitest';
+
+import {
+  getScheduledReminderDisplayText,
+  isSimpleScheduledReminderText,
+  parseLegacyScheduledReminderSystemMessage,
+  parseScheduledReminderPrompt,
+  parseSimpleScheduledReminderText,
+} from './reminderText';
+
+const PREFIX = 'A scheduled reminder has been triggered. The reminder content is:';
+const INTERNAL = 'Handle this reminder internally. Do not relay it to the user unless explicitly requested.';
+const RELAY = 'Please relay this reminder to the user in a helpful and friendly way.';
+const TIME_PREFIX = 'Current time:';
+
+test('parseScheduledReminderPrompt returns null when text does not start with prefix', () => {
+  expect(parseScheduledReminderPrompt('Hello world')).toBe(null);
+});
+
+test('parseScheduledReminderPrompt returns null for empty string', () => {
+  expect(parseScheduledReminderPrompt('')).toBe(null);
+});
+
+test('parseScheduledReminderPrompt returns null when prefix only has no reminder text', () => {
+  expect(parseScheduledReminderPrompt(PREFIX)).toBe(null);
+  expect(parseScheduledReminderPrompt(`${PREFIX}   `)).toBe(null);
+});
+
+test('parseScheduledReminderPrompt parses plain reminder text', () => {
+  const result = parseScheduledReminderPrompt(`${PREFIX} Buy groceries`);
+  expect(result).toEqual({ reminderText: 'Buy groceries' });
+});
+
+test('parseScheduledReminderPrompt trims input before matching prefix', () => {
+  const result = parseScheduledReminderPrompt(`  ${PREFIX} Weekly report due  `);
+  expect(result).toEqual({ reminderText: 'Weekly report due' });
+});
+
+test('parseScheduledReminderPrompt strips trailing internal instruction', () => {
+  const result = parseScheduledReminderPrompt(`${PREFIX} Stand up meeting ${INTERNAL}`);
+  expect(result).toEqual({ reminderText: 'Stand up meeting' });
+});
+
+test('parseScheduledReminderPrompt strips trailing relay instruction', () => {
+  const result = parseScheduledReminderPrompt(`${PREFIX} Take a break ${RELAY}`);
+  expect(result).toEqual({ reminderText: 'Take a break' });
+});
+
+test('parseScheduledReminderPrompt extracts currentTime from trailing segment', () => {
+  const result = parseScheduledReminderPrompt(`${PREFIX} Call dentist ${TIME_PREFIX} 14:30`);
+  expect(result).toEqual({
+    reminderText: 'Call dentist',
+    currentTime: '14:30',
+  });
+});
+
+test('parseScheduledReminderPrompt handles multi-word reminder text', () => {
+  const msg = 'Please check the server logs and alert if disk usage is above 90%';
+  const result = parseScheduledReminderPrompt(`${PREFIX} ${msg}`);
+  expect(result).toEqual({ reminderText: msg });
+});
+
+test('parseLegacyScheduledReminderSystemMessage returns null for plain text', () => {
+  expect(parseLegacyScheduledReminderSystemMessage('Hello world')).toBe(null);
+});
+
+test('parseLegacyScheduledReminderSystemMessage returns null for empty string', () => {
+  expect(parseLegacyScheduledReminderSystemMessage('')).toBe(null);
+});
+
+test('parseLegacyScheduledReminderSystemMessage parses System line with time and emoji', () => {
+  const result = parseLegacyScheduledReminderSystemMessage('System: [2026-03-27 14:00] ⏰ Daily standup');
+  expect(result).toEqual({
+    reminderText: '⏰ Daily standup',
+    currentTime: '2026-03-27 14:00',
+  });
+});
+
+test('parseLegacyScheduledReminderSystemMessage parses System line without time', () => {
+  const result = parseLegacyScheduledReminderSystemMessage('System: ⏰ Weekly team sync');
+  expect(result).toEqual({ reminderText: '⏰ Weekly team sync' });
+});
+
+test('parseLegacyScheduledReminderSystemMessage returns null if emoji is missing', () => {
+  expect(parseLegacyScheduledReminderSystemMessage('System: [2026-03-27] Reminder without emoji')).toBe(null);
+});
+
+test('parseLegacyScheduledReminderSystemMessage falls back to wrapped prompt in remainder', () => {
+  const wrapped = `${PREFIX} Check deployments ${INTERNAL}`;
+  const result = parseLegacyScheduledReminderSystemMessage(`System: [2026-03-27] ⏰ Override\n${wrapped}`);
+  expect(result).toEqual({ reminderText: 'Check deployments' });
+});
+
+test('parseLegacyScheduledReminderSystemMessage returns null for text without System prefix', () => {
+  expect(parseLegacyScheduledReminderSystemMessage('⏰ Just a clock')).toBe(null);
+});
+
+test('isSimpleScheduledReminderText returns true for text starting with emoji followed by space', () => {
+  expect(isSimpleScheduledReminderText('⏰ Check email')).toBe(true);
+});
+
+test('isSimpleScheduledReminderText returns true for bare emoji', () => {
+  expect(isSimpleScheduledReminderText('⏰')).toBe(true);
+});
+
+test('isSimpleScheduledReminderText trims leading whitespace before checking', () => {
+  expect(isSimpleScheduledReminderText('  ⏰ Alarm')).toBe(true);
+});
+
+test('isSimpleScheduledReminderText returns false for text without emoji at start', () => {
+  expect(isSimpleScheduledReminderText('Reminder ⏰')).toBe(false);
+});
+
+test('isSimpleScheduledReminderText returns false for empty string', () => {
+  expect(isSimpleScheduledReminderText('')).toBe(false);
+});
+
+test('isSimpleScheduledReminderText returns false for plain text', () => {
+  expect(isSimpleScheduledReminderText('Daily standup at 9am')).toBe(false);
+});
+
+test('parseSimpleScheduledReminderText returns prompt for simple emoji text', () => {
+  const result = parseSimpleScheduledReminderText('⏰ Check mail');
+  expect(result).toEqual({ reminderText: '⏰ Check mail' });
+});
+
+test('parseSimpleScheduledReminderText returns null for non-simple text', () => {
+  expect(parseSimpleScheduledReminderText('No emoji here')).toBe(null);
+});
+
+test('parseSimpleScheduledReminderText preserves the full original trimmed text', () => {
+  const result = parseSimpleScheduledReminderText('  ⏰ Buy milk and eggs  ');
+  expect(result).toEqual({ reminderText: '⏰ Buy milk and eggs' });
+});
+
+test('parseSimpleScheduledReminderText handles bare emoji', () => {
+  const result = parseSimpleScheduledReminderText('⏰');
+  expect(result).toEqual({ reminderText: '⏰' });
+});
+
+test('getScheduledReminderDisplayText returns text for standard format', () => {
+  expect(getScheduledReminderDisplayText(`${PREFIX} Attend weekly planning`)).toBe('Attend weekly planning');
+});
+
+test('getScheduledReminderDisplayText returns text for legacy format', () => {
+  expect(getScheduledReminderDisplayText('System: [09:00] ⏰ Morning standup')).toBe('⏰ Morning standup');
+});
+
+test('getScheduledReminderDisplayText returns text for simple emoji format', () => {
+  expect(getScheduledReminderDisplayText('⏰ Walk the dog')).toBe('⏰ Walk the dog');
+});
+
+test('getScheduledReminderDisplayText returns null for unrecognized text', () => {
+  expect(getScheduledReminderDisplayText('Just a normal message')).toBe(null);
+});
+
+test('getScheduledReminderDisplayText returns null for empty string', () => {
+  expect(getScheduledReminderDisplayText('')).toBe(null);
+});
+
+test('getScheduledReminderDisplayText strips internal instruction suffix for standard format', () => {
+  const result = getScheduledReminderDisplayText(`${PREFIX} Deploy to production ${INTERNAL}`);
+  expect(result).toBe('Deploy to production');
+});
