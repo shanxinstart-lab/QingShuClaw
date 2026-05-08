@@ -681,7 +681,8 @@ export class CoworkStore {
     if (row.active_skill_ids) {
       try {
         activeSkillIds = JSON.parse(row.active_skill_ids);
-      } catch {
+      } catch (error) {
+        console.error(`[CoworkStore] Failed to parse active skill IDs for session ${id}:`, error);
         activeSkillIds = [];
       }
     }
@@ -1078,47 +1079,56 @@ export class CoworkStore {
   // Config operations
   getConfig(): CoworkConfig {
     interface ConfigRow {
+      key: string;
       value: string;
     }
 
-    const workingDirRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['workingDirectory']);
-    const executionModeRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['executionMode']);
-    const agentEngineRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['agentEngine']);
-    const memoryEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryEnabled']);
-    const memoryImplicitUpdateEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryImplicitUpdateEnabled']);
-    const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
-    const memoryGuardLevelRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryGuardLevel']);
-    const memoryUserMemoriesMaxItemsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryUserMemoriesMaxItems']);
-    const skipMissedJobsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['skipMissedJobs']);
-    const openClawSessionPolicyRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['openClawSessionPolicy']);
+    const configKeys = [
+      'workingDirectory',
+      'executionMode',
+      'agentEngine',
+      'memoryEnabled',
+      'memoryImplicitUpdateEnabled',
+      'memoryLlmJudgeEnabled',
+      'memoryGuardLevel',
+      'memoryUserMemoriesMaxItems',
+      'skipMissedJobs',
+      'openClawSessionPolicy',
+    ] as const;
+    const configRows = this.getAll<ConfigRow>(
+      `SELECT key, value FROM cowork_config WHERE key IN (${configKeys.map(() => '?').join(', ')})`,
+      [...configKeys],
+    );
+    const configByKey = new Map(configRows.map((row) => [row.key, row.value]));
 
-    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(agentEngineRow?.value);
+    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(configByKey.get('agentEngine'));
     let openClawSessionPolicy = DEFAULT_OPENCLAW_SESSION_POLICY_CONFIG;
-    if (openClawSessionPolicyRow?.value) {
+    const openClawSessionPolicyValue = configByKey.get('openClawSessionPolicy');
+    if (openClawSessionPolicyValue) {
       try {
-        openClawSessionPolicy = normalizeOpenClawSessionPolicyConfig(JSON.parse(openClawSessionPolicyRow.value));
+        openClawSessionPolicy = normalizeOpenClawSessionPolicyConfig(JSON.parse(openClawSessionPolicyValue));
       } catch {
         openClawSessionPolicy = DEFAULT_OPENCLAW_SESSION_POLICY_CONFIG;
       }
     }
 
     return {
-      workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),
+      workingDirectory: configByKey.get('workingDirectory') || getDefaultWorkingDirectory(),
       systemPrompt: getDefaultSystemPrompt(),
-      executionMode: (executionModeRow?.value as CoworkExecutionMode) || 'local',
+      executionMode: (configByKey.get('executionMode') as CoworkExecutionMode) || 'local',
       agentEngine: normalizedAgentEngine,
-      memoryEnabled: parseBooleanConfig(memoryEnabledRow?.value, DEFAULT_MEMORY_ENABLED),
+      memoryEnabled: parseBooleanConfig(configByKey.get('memoryEnabled'), DEFAULT_MEMORY_ENABLED),
       memoryImplicitUpdateEnabled: parseBooleanConfig(
-        memoryImplicitUpdateEnabledRow?.value,
+        configByKey.get('memoryImplicitUpdateEnabled'),
         DEFAULT_MEMORY_IMPLICIT_UPDATE_ENABLED
       ),
       memoryLlmJudgeEnabled: parseBooleanConfig(
-        memoryLlmJudgeEnabledRow?.value,
+        configByKey.get('memoryLlmJudgeEnabled'),
         DEFAULT_MEMORY_LLM_JUDGE_ENABLED
       ),
-      memoryGuardLevel: normalizeMemoryGuardLevel(memoryGuardLevelRow?.value),
-      memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(memoryUserMemoriesMaxItemsRow?.value)),
-      skipMissedJobs: parseBooleanConfig(skipMissedJobsRow?.value, DEFAULT_SKIP_MISSED_JOBS),
+      memoryGuardLevel: normalizeMemoryGuardLevel(configByKey.get('memoryGuardLevel')),
+      memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(configByKey.get('memoryUserMemoriesMaxItems'))),
+      skipMissedJobs: parseBooleanConfig(configByKey.get('skipMissedJobs'), DEFAULT_SKIP_MISSED_JOBS),
       openClawSessionPolicy,
     };
   }
@@ -1587,6 +1597,8 @@ export class CoworkStore {
     });
     result.totalChanges = extracted.length;
 
+    let deleteCandidates: CoworkUserMemory[] | null = null;
+
     for (const change of extracted) {
       if (change.action === 'add') {
         if (!options.implicitEnabled && !change.isExplicit) {
@@ -1639,7 +1651,10 @@ export class CoworkStore {
         continue;
       }
 
-      const candidates = this.listUserMemories({ status: 'all', includeDeleted: false, limit: 100 });
+      if (!deleteCandidates) {
+        deleteCandidates = this.listUserMemories({ status: 'all', includeDeleted: false, limit: 100 });
+      }
+      const candidates = deleteCandidates;
       let target: CoworkUserMemory | null = null;
       let bestScore = 0;
       for (const entry of candidates) {
