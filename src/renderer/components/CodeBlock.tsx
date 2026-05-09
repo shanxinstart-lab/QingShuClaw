@@ -548,6 +548,7 @@ const baseTheme = EditorView.theme({
     gap: '4px',
     padding: '5px 10px',
     borderBottom: '1px solid var(--lobster-border)',
+    background: 'var(--lobster-surface-raised)',
     fontFamily: "'SF Mono', 'Fira Code', Menlo, Monaco, 'Courier New', monospace",
     fontSize: '12px',
   },

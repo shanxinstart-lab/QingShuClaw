@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { i18nService } from '@/services/i18n';
 import type { RootState } from '@/store';
 import {
+  addArtifact,
   closePanel,
   MAX_PANEL_WIDTH,
   MIN_PANEL_WIDTH,
@@ -166,6 +167,32 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
     }
   }, [selectedArtifact]);
 
+  const handleRefresh = useCallback(async () => {
+    if (!selectedArtifact?.filePath) return;
+    try {
+      const result = await window.electron.dialog.readFileAsDataUrl(selectedArtifact.filePath);
+      if (result?.success && result.dataUrl) {
+        const isTextType = selectedArtifact.type !== 'image' && selectedArtifact.type !== 'document';
+        let content = result.dataUrl;
+        if (isTextType) {
+          try {
+            const base64 = result.dataUrl.split(',')[1] || '';
+            const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+            content = new TextDecoder('utf-8').decode(bytes);
+          } catch {
+            content = result.dataUrl;
+          }
+        }
+        dispatch(addArtifact({
+          sessionId: selectedArtifact.sessionId,
+          artifact: { ...selectedArtifact, content },
+        }));
+      }
+    } catch {
+      // File unreadable or missing
+    }
+  }, [selectedArtifact, dispatch]);
+
   return (
     <>
       {/* Drag handle */}
@@ -201,6 +228,15 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts }) => {
             <div className="h-10 flex items-center gap-2 px-3 border-b border-border shrink-0">
               <span className="text-sm font-medium truncate">{selectedArtifact.fileName || selectedArtifact.title}</span>
               <span className="flex-1" />
+              {selectedArtifact.filePath && (
+                <button
+                  onClick={handleRefresh}
+                  className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
+                  title={t('artifactRefresh')}
+                >
+                  <RefreshIcon />
+                </button>
+              )}
               {selectedArtifact.type !== 'document' && (
                 <button
                   onClick={handleCopy}
@@ -348,6 +384,15 @@ const FileListIcon = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M4.5 2.881c0-.644.522-1.167 1.167-1.167h2.552c.323 0 .635.117.878.33l.58.507c.243.213.555.33.877.33h3.351c.736 0 1.333.597 1.333 1.333v5.945c0 .49-.398.889-.889.889" />
     <path d="M1.143 6.476c0-.736.597-1.333 1.333-1.333h2.314c.323 0 .635.117.878.33l.58.507c.242.213.554.33.877.33h3.351c.736 0 1.333.597 1.333 1.334v4.833c0 .736-.597 1.333-1.333 1.333H2.476c-.736 0-1.333-.597-1.333-1.333V6.476z" />
+  </svg>
+);
+
+const RefreshIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M13.5 8a5.5 5.5 0 01-9.55 3.75" />
+    <path d="M2.5 8a5.5 5.5 0 019.55-3.75" />
+    <path d="M12.05 1.25v3h-3" />
+    <path d="M3.95 14.75v-3h3" />
   </svg>
 );
 

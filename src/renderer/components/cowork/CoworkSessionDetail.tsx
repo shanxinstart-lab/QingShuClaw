@@ -1882,9 +1882,13 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 sessionId,
                 artifact: { ...artifact, content, filePath: absPath },
               }));
+            } else {
+              // File does not exist or is unreadable — mark as loaded to avoid retrying
+              loadedFileIdsRef.current.add(artifact.id);
             }
           } catch {
-            // File unreadable or missing — skip, don't add to UI
+            // File unreadable or missing — mark as loaded to avoid retrying
+            loadedFileIdsRef.current.add(artifact.id);
           }
         }
       };

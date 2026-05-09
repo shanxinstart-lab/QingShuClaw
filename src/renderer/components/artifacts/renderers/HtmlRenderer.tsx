@@ -23,12 +23,6 @@ function hasRelativeResources(html: string): boolean {
   return false;
 }
 
-function pathToFileUrl(filePath: string): string {
-  const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const encoded = normalized.split('/').map(s => encodeURIComponent(s)).join('/');
-  return `file://${encoded}`;
-}
-
 const HtmlRenderer: React.FC<HtmlRendererProps> = ({ artifact }) => {
   const [processedHtml, setProcessedHtml] = useState<string | null>(null);
 
@@ -38,22 +32,37 @@ const HtmlRenderer: React.FC<HtmlRendererProps> = ({ artifact }) => {
       return;
     }
 
-    if (!artifact.content) {
-      setProcessedHtml(null);
-      return;
-    }
-
     let cancelled = false;
 
     const process = async () => {
       try {
         let html = artifact.content;
+
+        // If content is empty but filePath exists, read file directly
+        if (!html && artifact.filePath) {
+          const result = await readLocalFileAsDataUrl(artifact.filePath);
+          if (!result || cancelled) return;
+          try {
+            const base64 = result.split(',')[1] || '';
+            const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+            html = new TextDecoder('utf-8').decode(bytes);
+          } catch {
+            if (!cancelled) setProcessedHtml(null);
+            return;
+          }
+        }
+
+        if (!html) {
+          if (!cancelled) setProcessedHtml(null);
+          return;
+        }
+
         if (artifact.filePath && !hasRelativeResources(html)) {
           html = await inlineLocalResources(html, artifact.filePath);
         }
         if (!cancelled) setProcessedHtml(html);
       } catch {
-        if (!cancelled) setProcessedHtml(artifact.content);
+        if (!cancelled) setProcessedHtml(artifact.content || null);
       }
     };
 
@@ -69,15 +78,28 @@ const HtmlRenderer: React.FC<HtmlRendererProps> = ({ artifact }) => {
     );
   }
 
-  // Build output with relative resources: use file:// src so browser resolves paths
+  // Content with relative resources and a filePath: inline resources not possible,
+  // render via srcDoc with a <base> tag so relative URLs resolve
   if (artifact.filePath && artifact.content && hasRelativeResources(artifact.content)) {
+    const dirPath = artifact.filePath.slice(0, artifact.filePath.lastIndexOf('/') + 1);
+    const baseTag = `<base href="file://${dirPath}">`;
+    const htmlWithBase = artifact.content.replace(/(<head[^>]*>)/i, `$1${baseTag}`);
     return (
       <iframe
-        src={pathToFileUrl(artifact.filePath)}
+        srcDoc={htmlWithBase}
         className="w-full h-full border-0"
         sandbox="allow-scripts allow-same-origin"
         title={artifact.title}
       />
+    );
+  }
+
+  // Loading state: filePath exists but content not yet processed
+  if (!processedHtml && !artifact.content) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted text-sm">
+        Loading...
+      </div>
     );
   }
 
