@@ -144,6 +144,12 @@ test('migrates legacy agent icons to the default svg avatar', async () => {
       enabled, is_default, source, preset_id, created_at, updated_at
     ) VALUES (?, ?, '', '', '', '', ?, '[]', 1, 0, 'custom', '', ?, ?)`,
   ).run('code', 'Code', designedIcon, now, now);
+  db.prepare(
+    `INSERT INTO agents (
+      id, name, description, system_prompt, identity, model, icon, skill_ids,
+      enabled, is_default, source, preset_id, created_at, updated_at
+    ) VALUES (?, ?, '', '', '', '', ?, '[]', 1, 0, 'custom', '', ?, ?)`,
+  ).run('legacy-designed', 'Legacy Designed', 'agent-avatar:blue:code', now, now);
   db.close();
 
   const store = await SqliteStore.create(userDataPath);
@@ -154,6 +160,7 @@ test('migrates legacy agent icons to the default svg avatar', async () => {
   expect(rows).toEqual([
     { id: 'code', icon: designedIcon },
     { id: 'docs', icon: DefaultAgentAvatarIcon },
+    { id: 'legacy-designed', icon: DefaultAgentAvatarIcon },
     { id: 'main', icon: DefaultAgentAvatarIcon },
   ]);
 

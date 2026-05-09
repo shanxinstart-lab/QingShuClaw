@@ -298,10 +298,15 @@ test('agent CRUD normalizes legacy icons to the default svg avatar', () => {
 
   const missingIconAgent = store.createAgent({ name: 'Missing Icon Agent' });
   const legacyIconAgent = store.createAgent({ name: 'Legacy Icon Agent', icon: 'legacy-icon' });
+  const legacyDesignedIconAgent = store.createAgent({
+    name: 'Legacy Designed Icon Agent',
+    icon: 'agent-avatar:blue:code',
+  });
   const designedIconAgent = store.createAgent({ name: 'Designed Icon Agent', icon: designedIcon });
 
   expect(missingIconAgent.icon).toBe(DefaultAgentAvatarIcon);
   expect(legacyIconAgent.icon).toBe(DefaultAgentAvatarIcon);
+  expect(legacyDesignedIconAgent.icon).toBe(DefaultAgentAvatarIcon);
   expect(designedIconAgent.icon).toBe(designedIcon);
 
   const updated = store.updateAgent(designedIconAgent.id, { icon: 'legacy-icon' });

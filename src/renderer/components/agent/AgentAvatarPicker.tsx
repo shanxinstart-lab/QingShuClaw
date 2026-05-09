@@ -31,11 +31,11 @@ const AgentAvatarPicker: React.FC<AgentAvatarPickerProps> = ({ value, onChange }
     };
 
     if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('mousedown', handleClickOutside, true);
     }
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('mousedown', handleClickOutside, true);
     };
   }, [isOpen]);
 
