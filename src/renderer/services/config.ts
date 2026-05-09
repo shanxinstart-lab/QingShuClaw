@@ -72,6 +72,7 @@ const normalizeProviderModels = (
   models: ProviderConfig['models'],
 ): ProviderConfig['models'] => models?.map(model => ({
   ...model,
+  name: model.name || model.id,
   supportsImage: ProviderRegistry.resolveModelSupportsImage(
     providerKey,
     model.id,
@@ -195,6 +196,19 @@ const REMOVED_PROVIDER_MODELS: Record<string, string[]> = {
 // so the models follow normal user-editable behavior (same as other models).
 // position: 'start' inserts at the beginning, 'end' appends at the end.
 const ADDED_PROVIDER_MODELS: Record<string, { models: Array<{ id: string; name: string; supportsImage?: boolean }>; position: 'start' | 'end' }> = {
+  deepseek: {
+    models: [
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', supportsImage: false },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', supportsImage: false },
+    ],
+    position: 'start',
+  },
+  moonshot: {
+    models: [
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', supportsImage: true },
+    ],
+    position: 'start',
+  },
   qwen: {
     models: [
       { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus', supportsImage: true },

@@ -1,16 +1,13 @@
-import { app, session } from 'electron';
 import { exec, spawn } from 'child_process';
+import { app, session } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 
-export interface AppUpdateDownloadProgress {
-  received: number;
-  total: number | undefined;
-  percent: number | undefined;
-  speed: number | undefined;
-}
+import { type AppUpdateDownloadProgress, AppUpdateSource, type AppUpdateSource as AppUpdateSourceType } from '../../shared/appUpdate/constants';
+
+export type AppUpdateDownloadSource = AppUpdateSourceType;
 
 let activeDownloadController: AbortController | null = null;
 
@@ -47,15 +44,39 @@ const PROGRESS_THROTTLE_MS = 200;
 /** Abort download if no data received for this duration (ms). */
 const DOWNLOAD_INACTIVITY_TIMEOUT_MS = 60_000;
 
+function resolveDownloadArgs(
+  sourceOrProgress: AppUpdateDownloadSource | ((progress: AppUpdateDownloadProgress) => void),
+  maybeProgress?: (progress: AppUpdateDownloadProgress) => void,
+): { source: AppUpdateDownloadSource; onProgress: (progress: AppUpdateDownloadProgress) => void } {
+  if (typeof sourceOrProgress === 'function') {
+    return { source: AppUpdateSource.Manual, onProgress: sourceOrProgress };
+  }
+  if (!maybeProgress) {
+    throw new Error('Missing update download progress callback');
+  }
+  return { source: sourceOrProgress, onProgress: maybeProgress };
+}
+
 export async function downloadUpdate(
   url: string,
   onProgress: (progress: AppUpdateDownloadProgress) => void,
+): Promise<string>;
+export async function downloadUpdate(
+  url: string,
+  source: AppUpdateDownloadSource,
+  onProgress: (progress: AppUpdateDownloadProgress) => void,
+): Promise<string>;
+export async function downloadUpdate(
+  url: string,
+  sourceOrProgress: AppUpdateDownloadSource | ((progress: AppUpdateDownloadProgress) => void),
+  maybeProgress?: (progress: AppUpdateDownloadProgress) => void,
 ): Promise<string> {
+  const { source, onProgress } = resolveDownloadArgs(sourceOrProgress, maybeProgress);
   if (activeDownloadController) {
     throw new Error('A download is already in progress');
   }
 
-  console.log(`[AppUpdate] Starting download: ${url}`);
+  console.log(`[AppUpdate] Starting ${source} download: ${url}`);
 
   // Validate URL
   let parsedUrl: URL;
@@ -66,10 +87,10 @@ export async function downloadUpdate(
   }
 
   const ext = path.extname(parsedUrl.pathname) || (process.platform === 'darwin' ? '.dmg' : '.exe');
-  const tempDir = app.getPath('temp');
+  const updateDir = path.join(app.getPath('userData'), 'updates');
   const ts = Date.now();
-  const downloadPath = path.join(tempDir, `lobsterai-update-${ts}${ext}.download`);
-  const finalPath = path.join(tempDir, `lobsterai-update-${ts}${ext}`);
+  const downloadPath = path.join(updateDir, `lobsterai-update-${source}-${ts}${ext}.download`);
+  const finalPath = path.join(updateDir, `lobsterai-update-${source}-${ts}${ext}`);
 
   console.log(`[AppUpdate] Temp path: ${downloadPath}`);
   console.log(`[AppUpdate] Final path: ${finalPath}`);
@@ -132,10 +153,10 @@ export async function downloadUpdate(
     // Emit initial progress
     emitProgress();
 
-    await fs.promises.mkdir(path.dirname(downloadPath), { recursive: true });
+    await fs.promises.mkdir(updateDir, { recursive: true });
     writeStream = fs.createWriteStream(downloadPath);
 
-    const nodeStream = Readable.fromWeb(response.body as any);
+    const nodeStream = Readable.fromWeb(response.body as ReadableStream<Uint8Array>);
 
     // Start inactivity timer
     resetInactivityTimer();

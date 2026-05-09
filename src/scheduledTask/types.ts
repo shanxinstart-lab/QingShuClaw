@@ -118,6 +118,7 @@ export interface ScheduledTaskChannelOption {
   value: string;
   label: string;
   accountId?: string;
+  filterAccountId?: string;
 }
 
 export interface ScheduledTaskConversationOption {

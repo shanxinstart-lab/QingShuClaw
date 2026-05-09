@@ -16,6 +16,15 @@ vi.mock('electron', () => ({
 
 const mockRuntimeState = vi.hoisted(() => ({
   proxyPort: null as number | null,
+  enabledProviders: [] as Array<{
+    providerName: string;
+    baseURL: string;
+    apiKey: string;
+    apiType: 'anthropic' | 'openai';
+    authType?: 'apikey' | 'oauth';
+    codingPlanEnabled: boolean;
+    models: Array<{ id: string; name: string; supportsImage?: boolean }>;
+  }>,
   rawApiConfig: {
     config: {
       baseURL: 'https://api.openai.com/v1',
@@ -34,7 +43,7 @@ const mockRuntimeState = vi.hoisted(() => ({
 
 vi.mock('./claudeSettings', () => ({
   getAllServerModelMetadata: () => [],
-  resolveAllEnabledProviderConfigs: () => [],
+  resolveAllEnabledProviderConfigs: () => mockRuntimeState.enabledProviders,
   resolveAllProviderApiKeys: () => ({}),
   resolveRawApiConfig: () => mockRuntimeState.rawApiConfig,
 }));
@@ -45,6 +54,7 @@ vi.mock('./openclawLocalExtensions', () => ({
     'openclaw-lark',
     'openclaw-nim-channel',
     'nimsuite-openclaw-nim-channel',
+    'qwen-portal-auth',
   ].includes(id),
   resolveOpenClawExtensionConfigId: (id: string) => ({
     'openclaw-nim-channel': 'nimsuite-openclaw-nim-channel',
@@ -63,6 +73,7 @@ describe('OpenClawConfigSync runtime config output', () => {
 
   beforeEach(() => {
     mockRuntimeState.proxyPort = null;
+    mockRuntimeState.enabledProviders = [];
     mockRuntimeState.rawApiConfig = {
       config: {
         baseURL: 'https://api.openai.com/v1',
@@ -85,6 +96,7 @@ describe('OpenClawConfigSync runtime config output', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.resetModules();
   });
 
   const createSync = async (overrides: Record<string, unknown> = {}) => {
@@ -135,6 +147,37 @@ describe('OpenClawConfigSync runtime config output', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(config.agents.defaults.workspace).toBe(path.join(stateDir, 'workspace-main'));
     expect(config.agents.defaults).not.toHaveProperty('cwd');
+  });
+
+  test('stamps openclaw config metadata when writing full config', async () => {
+    const sync = await createSync();
+
+    const result = sync.sync('meta-stamp');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.meta.lastTouchedVersion).toBe('test-version');
+    expect(typeof config.meta.lastTouchedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(config.meta.lastTouchedAt))).toBe(false);
+  });
+
+  test('ignores meta-only differences when detecting config changes', async () => {
+    const sync = await createSync();
+
+    const first = sync.sync('meta-initial');
+    expect(first.ok).toBe(true);
+    expect(first.changed).toBe(true);
+
+    const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    existing.meta = {
+      lastTouchedVersion: 'older-version',
+      lastTouchedAt: '2026-05-01T00:00:00.000Z',
+    };
+    fs.writeFileSync(configPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8');
+
+    const second = sync.sync('meta-only-diff');
+    expect(second.ok).toBe(true);
+    expect(second.changed).toBe(false);
   });
 
   test('disables mcporter so MCP routing uses the built-in bridge', async () => {
@@ -252,6 +295,69 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries).not.toHaveProperty('openclaw-qqbot');
   });
 
+  test('marks multi-instance IM channels enabled at top level', async () => {
+    const sync = await createSync({
+      getFeishuInstances: () => [{
+        enabled: true,
+        appId: 'feishu-app-id',
+        appSecret: 'feishu-secret',
+        instanceId: 'feishu-instance-1',
+        instanceName: 'Feishu Bot 1',
+        domain: 'feishu',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'allowlist',
+        groupAllowFrom: [],
+        groups: {},
+        historyLimit: 50,
+        mediaMaxMb: 30,
+      }],
+      getDingTalkInstances: () => [{
+        enabled: true,
+        clientId: 'dingtalk-client-id',
+        clientSecret: 'dingtalk-secret',
+        instanceId: 'dingtalk-instance-1',
+        instanceName: 'DingTalk Bot 1',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'open',
+      }],
+      getQQInstances: () => [{
+        enabled: true,
+        appId: 'qq-app-id',
+        appSecret: 'qq-secret',
+        instanceId: 'qq-instance-1',
+        instanceName: 'QQ Bot 1',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'open',
+        groupAllowFrom: [],
+        historyLimit: 50,
+        markdownSupport: true,
+      }],
+      getWecomInstances: () => [{
+        enabled: true,
+        botId: 'wecom-bot-id',
+        secret: 'wecom-secret',
+        instanceId: 'wecom-instance-1',
+        instanceName: 'WeCom Bot 1',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'open',
+        groupAllowFrom: [],
+      }],
+    });
+
+    const result = sync.sync('multi-instance-channel-enabled');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.channels.feishu.enabled).toBe(true);
+    expect(config.channels.dingtalk.enabled).toBe(true);
+    expect(config.channels.qqbot.enabled).toBe(true);
+    expect(config.channels.wecom.enabled).toBe(true);
+  });
+
   test('cleans stale plugin package ids and preserves manifest entry config', async () => {
     fs.writeFileSync(configPath, JSON.stringify({
       plugins: {
@@ -284,6 +390,123 @@ describe('OpenClawConfigSync runtime config output', () => {
       enabled: true,
       config: { retained: true },
     });
+  });
+
+  test('declares qwen portal auth plugin for DashScope providers when installed', async () => {
+    const { ProviderName } = await import('../../shared/providers');
+    mockRuntimeState.rawApiConfig = {
+      config: {
+        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        apiKey: 'sk-qwen',
+        model: 'qwen3.6-plus',
+        apiType: 'openai',
+      },
+      providerMetadata: {
+        providerName: ProviderName.Qwen,
+        codingPlanEnabled: false,
+        supportsImage: true,
+        modelName: 'qwen3.6-plus',
+      },
+    };
+
+    const sync = await createSync();
+    const result = sync.sync('qwen-portal-auth-entry');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.plugins.entries['qwen-portal-auth']).toEqual({ enabled: true });
+  });
+
+  test('does not create an agent model allowlist for OpenAI OAuth when system proxy is enabled', async () => {
+    const { ProviderName } = await import('../../shared/providers');
+    const { setSystemProxyEnabled } = await import('./systemProxy');
+    setSystemProxyEnabled(true);
+    mockRuntimeState.rawApiConfig = {
+      config: {
+        baseURL: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-5.4',
+        apiType: 'openai',
+      },
+      providerMetadata: {
+        providerName: ProviderName.OpenAI,
+        authType: 'oauth',
+        codingPlanEnabled: false,
+        supportsImage: true,
+        modelName: 'GPT-5.4',
+      },
+    };
+    mockRuntimeState.enabledProviders = [
+      {
+        providerName: ProviderName.OpenAI,
+        baseURL: 'https://api.openai.com/v1',
+        apiKey: '',
+        apiType: 'openai',
+        authType: 'oauth',
+        codingPlanEnabled: false,
+        models: [{ id: 'gpt-5.4', name: 'GPT-5.4', supportsImage: true }],
+      },
+      {
+        providerName: ProviderName.DeepSeek,
+        baseURL: 'https://api.deepseek.com',
+        apiKey: 'sk-deepseek',
+        apiType: 'openai',
+        codingPlanEnabled: false,
+        models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', supportsImage: false }],
+      },
+    ];
+
+    try {
+      const sync = await createSync();
+      const result = sync.sync('openai-oauth-system-proxy');
+      expect(result.ok).toBe(true);
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      expect(config.models.providers.openai).toBeDefined();
+      expect(config.models.providers.deepseek).toBeDefined();
+      expect(config.agents.defaults.models).toBeUndefined();
+    } finally {
+      setSystemProxyEnabled(false);
+    }
+  });
+
+  test('writes MiniMax OAuth providers with oauth auth metadata', async () => {
+    const { ProviderName } = await import('../../shared/providers');
+    mockRuntimeState.rawApiConfig = {
+      config: {
+        baseURL: 'https://api.minimaxi.com/anthropic',
+        apiKey: 'oauth-access-token',
+        model: 'MiniMax-M2.7',
+        apiType: 'anthropic',
+      },
+      providerMetadata: {
+        providerName: ProviderName.Minimax,
+        authType: 'oauth',
+        codingPlanEnabled: false,
+        supportsImage: false,
+        modelName: 'MiniMax M2.7',
+      },
+    };
+    mockRuntimeState.enabledProviders = [
+      {
+        providerName: ProviderName.Minimax,
+        baseURL: 'https://api.minimaxi.com/anthropic',
+        apiKey: 'oauth-access-token',
+        apiType: 'anthropic',
+        authType: 'oauth',
+        codingPlanEnabled: false,
+        models: [{ id: 'MiniMax-M2.7', name: 'MiniMax M2.7', supportsImage: false }],
+      },
+    ];
+
+    const sync = await createSync();
+    const result = sync.sync('minimax-oauth-provider');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.models.providers.minimax.auth).toBe('oauth');
+    expect(config.models.providers.minimax.baseUrl).toBe('https://api.minimaxi.com/anthropic');
+    expect(config.models.providers.minimax.apiKey).toBe('${LOBSTER_APIKEY_MINIMAX}');
   });
 
   test('updates managed session model refs when agent ids contain colons', async () => {

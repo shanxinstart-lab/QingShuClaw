@@ -1,3 +1,5 @@
+import type { AppUpdateCheckResult, AppUpdateInfo as RuntimeAppUpdateInfo, AppUpdateRuntimeState, AppUpdateSource } from '../../shared/appUpdate/constants';
+
 interface ApiResponse {
   ok: boolean;
   status: number;
@@ -385,6 +387,7 @@ import type {
   AuthPasswordLoginInput,
 } from '../../common/auth';
 import type { Agent, PresetAgent } from './agent';
+import type { UserProfile, UserQuota } from '../store/slices/authSlice';
 
 interface CreditItem {
   type: 'subscription' | 'boost' | 'free';
@@ -624,9 +627,18 @@ interface IElectronAPI {
     getSystemLocale: () => Promise<string>;
   };
   appUpdate: {
+    getState: () => Promise<AppUpdateRuntimeState>;
+    checkNow: (options?: { manual?: boolean; userId?: string | null }) => Promise<AppUpdateCheckResult>;
+    setAvailable: (
+      info: RuntimeAppUpdateInfo,
+      options?: { source?: AppUpdateSource },
+    ) => Promise<{ success: boolean; state: AppUpdateRuntimeState }>;
+    retryDownload: () => Promise<{ success: boolean; state: AppUpdateRuntimeState }>;
+    installReady: () => Promise<{ success: boolean; state: AppUpdateRuntimeState; error?: string }>;
     download: (url: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
-    cancelDownload: () => Promise<{ success: boolean }>;
+    cancelDownload: () => Promise<{ success: boolean; state?: AppUpdateRuntimeState }>;
     install: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    onStateChanged: (callback: (data: AppUpdateRuntimeState) => void) => () => void;
     onDownloadProgress: (callback: (data: AppUpdateDownloadProgress) => void) => () => void;
   };
   log: {
@@ -703,7 +715,7 @@ interface IElectronAPI {
       channels?: import('../../scheduledTask/types').ScheduledTaskChannelOption[];
       error?: string;
     }>;
-    listChannelConversations?: (channel: string, accountId?: string) => Promise<{
+    listChannelConversations?: (channel: string, accountId?: string, filterAccountId?: string) => Promise<{
       success: boolean;
       conversations?: import('../../scheduledTask/types').ScheduledTaskConversationOption[];
       error?: string;
@@ -721,7 +733,7 @@ interface IElectronAPI {
     login: (loginUrl?: string) => Promise<{ success: boolean; error?: string }>;
     loginWithPassword: (
       input: AuthPasswordLoginInput
-    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+    ) => Promise<{ success: boolean; user?: UserProfile; quota?: UserQuota; error?: string }>;
     openFeishuScanWindow: (
       input: { authorizeUrl?: string; scanSessionId?: string }
     ) => Promise<{ success: boolean; error?: string }>;
@@ -738,7 +750,7 @@ interface IElectronAPI {
     exchange: (
       code: string,
       state?: string
-    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
+    ) => Promise<{ success: boolean; user?: UserProfile; quota?: UserQuota; error?: string }>;
     createBridgeTicket: (
       input: import('../../common/auth').CreateBridgeTicketRequest
     ) => Promise<{
@@ -748,9 +760,9 @@ interface IElectronAPI {
     }>;
     exchangeBridgeCode: (
       input: import('../../common/auth').ExchangeBridgeCodeRequest
-    ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
-    getUser: () => Promise<{ success: boolean; user?: any; quota?: any }>;
-    getQuota: () => Promise<{ success: boolean; quota?: any }>;
+    ) => Promise<{ success: boolean; user?: UserProfile; quota?: UserQuota; error?: string }>;
+    getUser: () => Promise<{ success: boolean; user?: UserProfile; quota?: UserQuota }>;
+    getQuota: () => Promise<{ success: boolean; quota?: UserQuota }>;
     logout: () => Promise<{ success: boolean }>;
     refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
     getAccessToken: () => Promise<string | null>;

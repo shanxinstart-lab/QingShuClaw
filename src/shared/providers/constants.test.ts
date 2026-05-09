@@ -1,9 +1,10 @@
-import { test, expect, describe } from 'vitest';
+import { describe,expect, test } from 'vitest';
+
 import {
-  ProviderName,
-  ProviderRegistry,
   ApiFormat,
   OpenClawApi,
+  ProviderName,
+  ProviderRegistry,
 } from './constants';
 
 describe('ProviderName constants', () => {

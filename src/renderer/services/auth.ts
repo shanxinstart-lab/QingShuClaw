@@ -533,7 +533,7 @@ class AuthService {
       if (shouldApply && !shouldApply()) {
         return;
       }
-      if (result.success) {
+      if (result.success && result.quota) {
         store.dispatch(updateQuota(result.quota));
         void this.fetchProfileSummary(shouldApply);
       }

@@ -1,10 +1,13 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 export interface UserProfile {
-  userId: string;
-  phone: string;
+  yid?: string;
   nickname: string;
-  avatarUrl: string;
+  avatarUrl: string | null;
+  phone?: string | null;
+  userId?: string;
+  id?: number;
+  status?: number;
   name?: string;
   displayName?: string;
   email?: string;
@@ -79,7 +82,7 @@ const authSlice = createSlice({
     setProfileSummary(state, action: PayloadAction<ProfileSummary>) {
       state.profileSummary = action.payload;
     },
-    updateUserAvatar(state, action: PayloadAction<string>) {
+    updateUserAvatar(state, action: PayloadAction<string | null>) {
       if (state.user) {
         state.user.avatarUrl = action.payload;
       }

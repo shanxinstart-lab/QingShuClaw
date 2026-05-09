@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 import { OpenClawSessionIpc } from '../common/openclawSession';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
+import { AppUpdateIpc } from '../shared/appUpdate/constants';
 import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
@@ -412,9 +413,19 @@ contextBridge.exposeInMainWorld('electron', {
     getSystemLocale: () => ipcRenderer.invoke('app:getSystemLocale'),
   },
   appUpdate: {
+    getState: () => ipcRenderer.invoke(AppUpdateIpc.GetState),
+    checkNow: (options?: { manual?: boolean; userId?: string | null }) => ipcRenderer.invoke(AppUpdateIpc.CheckNow, options),
+    setAvailable: (info: any, options?: { source?: string }) => ipcRenderer.invoke(AppUpdateIpc.SetAvailable, info, options),
+    retryDownload: () => ipcRenderer.invoke(AppUpdateIpc.RetryDownload),
+    installReady: () => ipcRenderer.invoke(AppUpdateIpc.InstallReady),
     download: (url: string) => ipcRenderer.invoke('appUpdate:download', url),
     cancelDownload: () => ipcRenderer.invoke('appUpdate:cancelDownload'),
     install: (filePath: string) => ipcRenderer.invoke('appUpdate:install', filePath),
+    onStateChanged: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(AppUpdateIpc.StateChanged, handler);
+      return () => ipcRenderer.removeListener(AppUpdateIpc.StateChanged, handler);
+    },
     onDownloadProgress: (callback: (data: any) => void) => {
       const handler = (_event: any, data: any) => callback(data);
       ipcRenderer.on('appUpdate:downloadProgress', handler);
@@ -520,8 +531,8 @@ contextBridge.exposeInMainWorld('electron', {
 
     // Delivery channels
     listChannels: () => ipcRenderer.invoke(ScheduledTaskIpc.ListChannels),
-    listChannelConversations: (channel: string, accountId?: string) =>
-      ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel, accountId),
+    listChannelConversations: (channel: string, accountId?: string, filterAccountId?: string) =>
+      ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel, accountId, filterAccountId),
 
     // Stream event listeners
     onStatusUpdate: (callback: (data: any) => void) => {

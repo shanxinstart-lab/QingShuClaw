@@ -2,6 +2,10 @@ import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import React, { lazy, Suspense, useCallback, useEffect, useMemo,useRef, useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
+import {
+  AppUpdateStatus,
+  type AppUpdateRuntimeState,
+} from '../shared/appUpdate/constants';
 import { CoworkView } from './components/cowork';
 import ConversationHistoryDrawer from './components/cowork/ConversationHistoryDrawer';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
@@ -32,6 +36,7 @@ import { apiService } from './services/api';
 import {
   type AppUpdateDownloadProgress,
   type AppUpdateInfo,
+  applyBrandUpdatePolicy,
   checkForAppUpdate,
   clearStoredAppUpdateInfo,
   getStoredAppUpdateInfo,
@@ -70,6 +75,16 @@ const CoworkSearchModal = lazy(() => import('./components/cowork/CoworkSearchMod
 const ApplicationsView = lazy(() => import('./components/apps/ApplicationsView'));
 const AgentsView = lazy(() => import('./components/agent/AgentsView'));
 
+const createInitialAppUpdateState = (): AppUpdateRuntimeState => ({
+  status: AppUpdateStatus.Idle,
+  source: null,
+  info: null,
+  progress: null,
+  readyFilePath: null,
+  readyFileHash: null,
+  errorMessage: null,
+});
+
 const App: React.FC = () => {
   const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
   const platform = electronApi?.platform ?? 'unknown';
@@ -89,6 +104,7 @@ const App: React.FC = () => {
   const [wakeActivationOverlaySequence, setWakeActivationOverlaySequence] = useState(0);
   const [, forceLanguageRefresh] = useState(0);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateRuntimeState>(createInitialAppUpdateState);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateModalState, setUpdateModalState] = useState<'info' | 'downloading' | 'installing' | 'error'>('info');
   const [downloadProgress, setDownloadProgress] = useState<AppUpdateDownloadProgress | null>(null);
@@ -111,6 +127,7 @@ const App: React.FC = () => {
   const toastTimerRef = useRef<number | null>(null);
   const loginWelcomeTimerRef = useRef<number | null>(null);
   const hasInitialized = useRef(false);
+  const shouldInstallReadyUpdateRef = useRef(false);
   const pendingConfiguredModelRecoveryRef = useRef<{
     fallbackModelKey: string | null;
   } | null>(null);
@@ -236,9 +253,10 @@ const App: React.FC = () => {
         }
         // 标记平台，用于 CSS 条件样式（如 Windows 标题栏按钮区域留白）
         document.documentElement.classList.add(`platform-${platform}`);
+        const initTimeoutMs = platform === 'win32' ? 15_000 : 10_000;
 
         // 初始化配置
-        await waitWithTimeout(configService.init(), 5000, 'configService.init');
+        await waitWithTimeout(configService.init(), initTimeoutMs, 'configService.init');
         mark('config ready');
 
         // Load enterprise config if present
@@ -255,7 +273,7 @@ const App: React.FC = () => {
         mark('theme ready');
 
         // 初始化语言
-        await waitWithTimeout(i18nService.initialize(), 5000, 'i18nService.initialize');
+        await waitWithTimeout(i18nService.initialize(), initTimeoutMs, 'i18nService.initialize');
         mark('i18n ready');
 
         // 登录态恢复内部已经把重型同步拆到后台，这里尽早并行启动，
@@ -811,6 +829,86 @@ const App: React.FC = () => {
     }, 2200);
   }, []);
 
+  const applyAppUpdateRuntimeState = useCallback(
+    async (state: AppUpdateRuntimeState, options?: { autoInstallReady?: boolean }) => {
+      setAppUpdateState(state);
+      setDownloadProgress(state.progress);
+      setUpdateError(state.errorMessage);
+
+      if (state.info) {
+        try {
+          const currentVersion = await electronApi?.appInfo.getVersion();
+          if (currentVersion) {
+            const nextInfo = applyBrandUpdatePolicy(state.info, currentVersion, brandRuntimeConfig.update);
+            setUpdateInfo(nextInfo);
+            await setStoredAppUpdateInfo(nextInfo);
+          }
+        } catch (error) {
+          console.error('[AppUpdate] failed to apply runtime update state:', error);
+        }
+      }
+
+      if (state.status === AppUpdateStatus.Downloading || state.status === AppUpdateStatus.Checking) {
+        setUpdateModalState('downloading');
+        setShowUpdateModal(true);
+        return;
+      }
+      if (state.status === AppUpdateStatus.Installing) {
+        setUpdateModalState('installing');
+        setShowUpdateModal(true);
+        return;
+      }
+      if (state.status === AppUpdateStatus.Error) {
+        setUpdateModalState('error');
+        setShowUpdateModal(true);
+        return;
+      }
+      if (state.status === AppUpdateStatus.Ready) {
+        setUpdateModalState('info');
+        setShowUpdateModal(true);
+        if (options?.autoInstallReady && state.readyFilePath) {
+          shouldInstallReadyUpdateRef.current = false;
+          const installResult = await electronApi?.appUpdate.installReady();
+          if (installResult && !installResult.success) {
+            setUpdateModalState('error');
+            setUpdateError(installResult.error || i18nService.t('updateInstallFailed'));
+          }
+        }
+        return;
+      }
+      if (state.status === AppUpdateStatus.Available) {
+        setUpdateModalState('info');
+      }
+    },
+    [brandRuntimeConfig.update, electronApi]
+  );
+
+  useEffect(() => {
+    if (!electronApi) {
+      return;
+    }
+
+    let mounted = true;
+    void electronApi.appUpdate.getState().then((state) => {
+      if (mounted) {
+        void applyAppUpdateRuntimeState(state);
+      }
+    }).catch((error) => {
+      console.error('[AppUpdate] failed to load runtime state:', error);
+    });
+
+    const unsubscribe = electronApi.appUpdate.onStateChanged((state) => {
+      void applyAppUpdateRuntimeState(state, {
+        autoInstallReady: shouldInstallReadyUpdateRef.current,
+      });
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, [applyAppUpdateRuntimeState, electronApi]);
+
   const runUpdateCheck = useCallback(
     async (options?: { manual?: boolean }) => {
       if (!electronApi) {
@@ -836,6 +934,13 @@ const App: React.FC = () => {
 
       if (nextUpdate) {
         await setStoredAppUpdateInfo(nextUpdate);
+        const runtimeResult = await electronApi.appUpdate.setAvailable({
+          latestVersion: nextUpdate.latestVersion,
+          date: nextUpdate.date,
+          changeLog: nextUpdate.changeLog,
+          url: nextUpdate.url,
+        }, { source: options?.manual ? 'manual' : 'auto' });
+        await applyAppUpdateRuntimeState(runtimeResult.state);
         if (nextUpdate.forceUpdate) {
           setShowUpdateModal(true);
           setUpdateModalState('info');
@@ -851,7 +956,7 @@ const App: React.FC = () => {
 
       return nextUpdate;
     },
-    [brandRuntimeConfig.update, electronApi, enterpriseConfig?.disableUpdate, updateInfo?.forceUpdate]
+    [applyAppUpdateRuntimeState, brandRuntimeConfig.update, electronApi, enterpriseConfig?.disableUpdate, updateInfo?.forceUpdate]
   );
 
   const handleUpdateFound = useCallback((info: AppUpdateInfo) => {
@@ -878,6 +983,22 @@ const App: React.FC = () => {
 
   const handleConfirmUpdate = useCallback(async () => {
     if (!updateInfo) return;
+    if (!electronApi) {
+      setUpdateModalState('error');
+      setUpdateError(i18nService.t('initializationElectronUnavailable'));
+      return;
+    }
+
+    if (appUpdateState.readyFilePath) {
+      shouldInstallReadyUpdateRef.current = false;
+      setUpdateModalState('installing');
+      const installResult = await electronApi.appUpdate.installReady();
+      if (!installResult.success) {
+        setUpdateModalState('error');
+        setUpdateError(installResult.error || i18nService.t('updateInstallFailed'));
+      }
+      return;
+    }
 
     // If the URL is a fallback page (not a direct file download), open in browser
     if (updateInfo.url.includes('#') || updateInfo.url.endsWith('/download-list')) {
@@ -904,40 +1025,25 @@ const App: React.FC = () => {
     setDownloadProgress(null);
     setUpdateError(null);
 
-    if (!electronApi) {
-      setUpdateModalState('error');
-      setUpdateError(i18nService.t('initializationElectronUnavailable'));
-      return;
-    }
-
     const unsubscribe = electronApi.appUpdate.onDownloadProgress((progress) => {
       setDownloadProgress(progress);
     });
 
     try {
-      const downloadResult = await electronApi.appUpdate.download(updateInfo.url);
+      shouldInstallReadyUpdateRef.current = true;
+      const downloadResult = await electronApi.appUpdate.retryDownload();
       unsubscribe();
 
       if (!downloadResult.success) {
-        // If user cancelled, handleCancelDownload already set the state — don't overwrite
-        if (downloadResult.error === 'Download cancelled') {
-          return;
-        }
         setUpdateModalState('error');
-        setUpdateError(downloadResult.error || i18nService.t('updateDownloadFailed'));
+        setUpdateError(i18nService.t('updateDownloadFailed'));
         return;
       }
 
-      setUpdateModalState('installing');
-      const installResult = await electronApi.appUpdate.install(downloadResult.filePath!);
-
-      if (!installResult.success) {
-        setUpdateModalState('error');
-        setUpdateError(installResult.error || i18nService.t('updateInstallFailed'));
-      }
-      // If successful, app will quit and relaunch
+      await applyAppUpdateRuntimeState(downloadResult.state, { autoInstallReady: true });
     } catch (error) {
       unsubscribe();
+      shouldInstallReadyUpdateRef.current = false;
       const msg = error instanceof Error ? error.message : '';
       // If user cancelled, handleCancelDownload already set the state — don't overwrite
       if (msg === 'Download cancelled') {
@@ -946,7 +1052,7 @@ const App: React.FC = () => {
       setUpdateModalState('error');
       setUpdateError(msg || i18nService.t('updateDownloadFailed'));
     }
-  }, [electronApi, updateInfo, showToast]);
+  }, [appUpdateState.readyFilePath, applyAppUpdateRuntimeState, electronApi, updateInfo, showToast]);
 
   const handleCancelDownload = useCallback(async () => {
     if (!electronApi) {
@@ -955,16 +1061,25 @@ const App: React.FC = () => {
     if (updateInfo?.forceUpdate) {
       return;
     }
+    shouldInstallReadyUpdateRef.current = false;
     await electronApi.appUpdate.cancelDownload();
     setUpdateModalState('info');
     setDownloadProgress(null);
   }, [electronApi, updateInfo?.forceUpdate]);
 
-  const handleRetryUpdate = useCallback(() => {
+  const handleRetryUpdate = useCallback(async () => {
+    if (!electronApi) {
+      return;
+    }
     setUpdateModalState('info');
     setUpdateError(null);
     setDownloadProgress(null);
-  }, []);
+    if (appUpdateState.status === AppUpdateStatus.Error && updateInfo && !updateInfo.url.includes('#') && !updateInfo.url.endsWith('/download-list')) {
+      shouldInstallReadyUpdateRef.current = false;
+      const result = await electronApi.appUpdate.retryDownload();
+      await applyAppUpdateRuntimeState(result.state);
+    }
+  }, [appUpdateState.status, applyAppUpdateRuntimeState, electronApi, updateInfo]);
 
   useEffect(() => {
     if (!updateInfo?.forceUpdate) {

@@ -1,14 +1,20 @@
+import { PlatformRegistry } from '@shared/platform';
 import React, { useEffect, useRef, useState } from 'react';
-import { scheduledTaskService } from '../../services/scheduledTask';
-import { i18nService } from '../../services/i18n';
+import { useSelector } from 'react-redux';
+
 import type {
   ScheduledTask,
   ScheduledTaskChannelOption,
   ScheduledTaskConversationOption,
   ScheduledTaskInput,
 } from '../../../scheduledTask/types';
+import { i18nService } from '../../services/i18n';
+import { scheduledTaskService } from '../../services/scheduledTask';
+import { RootState } from '../../store';
+import type { Model } from '../../store/slices/modelSlice';
+import { toOpenClawModelRef } from '../../utils/openclawModelRef';
+import ModelSelector from '../ModelSelector';
 import { formatScheduleLabel, type PlanType, scheduleToPlanInfo } from './utils';
-import { PlatformRegistry } from '@shared/platform';
 
 interface TaskFormProps {
   mode: 'create' | 'edit';
@@ -28,12 +34,13 @@ interface FormState {
   hour: number;
   minute: number;
   second: number;
-  weekday: number;
+  weekdays: number[];
   monthDay: number;
   payloadText: string;
   notifyChannel: string;
   notifyTo: string;
   notifyAccountId?: string;
+  modelId: string;
 }
 
 function nowDefaults() {
@@ -53,16 +60,36 @@ const DEFAULT_FORM_STATE: FormState = {
   description: '',
   planType: 'daily',
   ...nowDefaults(),
-  weekday: 1,
+  weekdays: [1, 2, 3, 4, 5],
   monthDay: 1,
   payloadText: '',
   notifyChannel: 'none',
   notifyTo: '',
   notifyAccountId: undefined,
+  modelId: '',
 };
 
 function isIMChannel(channel: string): boolean {
   return PlatformRegistry.isIMChannel(channel);
+}
+
+function conversationOptionMatchesValue(
+  channel: string,
+  optionConversationId: string,
+  selectedValue: string,
+): boolean {
+  const optionId = optionConversationId.trim();
+  const value = selectedValue.trim();
+  if (!optionId || !value) return false;
+  if (optionId === value) return true;
+
+  const platform = PlatformRegistry.platformOfChannel(channel);
+  if (platform === 'nim') {
+    if (optionId.endsWith(`:${value}`)) return true;
+    if (optionId.endsWith(`|${value}`)) return true;
+  }
+
+  return false;
 }
 
 function createFormState(task?: ScheduledTask): FormState {
@@ -79,12 +106,13 @@ function createFormState(task?: ScheduledTask): FormState {
     hour: planInfo.hour,
     minute: planInfo.minute,
     second: planInfo.second,
-    weekday: planInfo.weekday,
+    weekdays: planInfo.weekdays,
     monthDay: planInfo.monthDay,
     payloadText: task.payload.kind === 'systemEvent' ? task.payload.text : task.payload.message,
     notifyChannel: task.delivery.channel || 'none',
     notifyTo: task.delivery.to || '',
     notifyAccountId: task.delivery.accountId,
+    modelId: task.payload.kind === 'agentTurn' ? (task.payload.model ?? '') : '',
   };
 }
 
@@ -97,45 +125,30 @@ function buildScheduleInput(form: FormState): ScheduledTaskInput['schedule'] {
   const min = String(form.minute);
   const hr = String(form.hour);
 
+  if (form.planType === 'hourly') {
+    return { kind: 'cron', expr: `${min} * * * *` };
+  }
+
   if (form.planType === 'daily') {
     return { kind: 'cron', expr: `${min} ${hr} * * *` };
   }
 
   if (form.planType === 'weekly') {
-    return { kind: 'cron', expr: `${min} ${hr} * * ${form.weekday}` };
+    const dowField = [...form.weekdays].sort((a, b) => a - b).join(',');
+    return { kind: 'cron', expr: `${min} ${hr} * * ${dowField}` };
   }
 
   return { kind: 'cron', expr: `${min} ${hr} ${form.monthDay} * *` };
 }
 
-const WEEKDAY_KEYS = [
-  'scheduledTasksFormWeekSun',
-  'scheduledTasksFormWeekMon',
-  'scheduledTasksFormWeekTue',
-  'scheduledTasksFormWeekWed',
-  'scheduledTasksFormWeekThu',
-  'scheduledTasksFormWeekFri',
-  'scheduledTasksFormWeekSat',
-] as const;
-
 function getChannelOptionValue(channel: string, accountId?: string): string {
   return `${channel}::${accountId ?? ''}`;
-}
-
-function parseChannelOptionValue(value: string): { channel: string; accountId?: string } {
-  const separatorIndex = value.indexOf('::');
-  if (separatorIndex === -1) {
-    return { channel: value };
-  }
-
-  const channel = value.slice(0, separatorIndex);
-  const accountId = value.slice(separatorIndex + 2) || undefined;
-  return { channel, accountId };
 }
 
 const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDirtyChange }) => {
   const [form, setForm] = useState<FormState>(() => createFormState(task));
   const initialFormRef = useRef(JSON.stringify(createFormState(task)));
+  const availableModels = useSelector((state: RootState) => state.model.availableModels);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [channelOptions, setChannelOptions] = useState<ScheduledTaskChannelOption[]>(() => {
     const base: ScheduledTaskChannelOption[] = [];
@@ -159,6 +172,9 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   const isDirty = JSON.stringify(form) !== initialFormRef.current;
   const isAdvanced = form.planType === 'advanced';
   const showConversationSelector = isIMChannel(form.notifyChannel);
+  const selectedFilterAccountId = channelOptions.find((option) => (
+    option.value === form.notifyChannel && option.accountId === form.notifyAccountId
+  ))?.filterAccountId;
 
   useEffect(() => {
     const nextForm = createFormState(task);
@@ -205,7 +221,11 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
 
     let cancelled = false;
     setConversationsLoading(true);
-    void scheduledTaskService.listChannelConversations(form.notifyChannel, form.notifyAccountId).then((result) => {
+    void scheduledTaskService.listChannelConversations(
+      form.notifyChannel,
+      form.notifyAccountId,
+      selectedFilterAccountId ?? form.notifyAccountId,
+    ).then((result) => {
       if (cancelled) return;
       setConversations(result);
       setConversationsLoading(false);
@@ -218,7 +238,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     return () => {
       cancelled = true;
     };
-  }, [form.notifyChannel, form.notifyAccountId]);
+  }, [form.notifyChannel, form.notifyAccountId, form.notifyTo, selectedFilterAccountId, showConversationSelector]);
 
   const updateForm = (patch: Partial<FormState>) => {
     setForm((current) => ({ ...current, ...patch }));
@@ -245,6 +265,10 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
       nextErrors.schedule = i18nService.t('scheduledTasksFormValidationTimeRequired');
     }
 
+    if (form.planType === 'weekly' && form.weekdays.length === 0) {
+      nextErrors.schedule = i18nService.t('scheduledTasksFormValidationWeekdayRequired');
+    }
+
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -269,6 +293,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
         payload: {
           kind: 'agentTurn',
           message: form.payloadText.trim(),
+          ...(form.modelId ? { model: form.modelId } : {}),
         },
         delivery: form.notifyChannel === 'none'
           ? { mode: 'none' }
@@ -296,8 +321,17 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   };
 
   const inputClass = 'w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50';
+  const textareaInputClass = 'w-full rounded-t-lg px-3 py-2 text-sm text-foreground focus:outline-none resize-none bg-transparent';
   const labelClass = 'block text-sm font-medium text-foreground mb-1';
   const errorClass = 'text-xs text-red-500 mt-1';
+
+  const selectedModelValue: Model | null = form.modelId
+    ? availableModels.find((model) => toOpenClawModelRef(model) === form.modelId) ?? null
+    : null;
+
+  const handleModelChange = (model: Model | null) => {
+    updateForm({ modelId: model ? toOpenClawModelRef(model) : '' });
+  };
 
   const timeValue = `${String(form.hour).padStart(2, '0')}:${String(form.minute).padStart(2, '0')}`;
   const handleTimeChange = (value: string) => {
@@ -305,6 +339,49 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     if (!Number.isNaN(h) && !Number.isNaN(m)) {
       updateForm({ hour: h, minute: m });
     }
+  };
+
+  const [channelDropdownOpen, setChannelDropdownOpen] = useState(false);
+  const channelDropdownRef = React.useRef<HTMLDivElement>(null);
+  const [convDropdownOpen, setConvDropdownOpen] = useState(false);
+  const convDropdownRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (channelDropdownRef.current && !channelDropdownRef.current.contains(event.target as Node)) {
+        setChannelDropdownOpen(false);
+      }
+      if (convDropdownRef.current && !convDropdownRef.current.contains(event.target as Node)) {
+        setConvDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const getChannelLogo = (channelValue: string): string | null => {
+    const platform = PlatformRegistry.platformOfChannel(channelValue);
+    if (platform) {
+      return PlatformRegistry.logo(platform);
+    }
+    return null;
+  };
+
+  const isChannelUnsupported = (channelValue: string): boolean => {
+    return channelValue === 'openclaw-weixin';
+  };
+
+  const getChannelDisplayLabel = (channelValue: string): string => {
+    if (channelValue === 'none') return i18nService.t('scheduledTasksFormNotifyChannelNone');
+    const platform = PlatformRegistry.platformOfChannel(channelValue);
+    if (platform) {
+      const label = i18nService.t(platform) || PlatformRegistry.get(platform).label;
+      return isChannelUnsupported(channelValue)
+        ? `${label} (${i18nService.t('scheduledTasksChannelUnsupported')})`
+        : label;
+    }
+    const option = channelOptions.find((channel) => channel.value === channelValue);
+    return option ? option.label : channelValue;
   };
 
   const renderScheduleRow = () => {
@@ -331,6 +408,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
         className={`${inputClass} flex-1 min-w-0`}
       >
         <option value="once">{i18nService.t('scheduledTasksFormScheduleModeOnce')}</option>
+        <option value="hourly">{i18nService.t('scheduledTasksFormScheduleModeHourly')}</option>
         <option value="daily">{i18nService.t('scheduledTasksFormScheduleModeDaily')}</option>
         <option value="weekly">{i18nService.t('scheduledTasksFormScheduleModeWeekly')}</option>
         <option value="monthly">{i18nService.t('scheduledTasksFormScheduleModeMonthly')}</option>
@@ -390,27 +468,88 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
       );
     }
 
-    if (form.planType === 'weekly') {
+    if (form.planType === 'hourly') {
       return (
         <div>
           <label className={labelClass}>{i18nService.t('scheduledTasksFormScheduleType')}</label>
           <div className="flex items-center gap-3">
             {planSelect}
             <select
-              value={form.weekday}
-              onChange={(e) => updateForm({ weekday: Number(e.target.value) })}
-              className={`${inputClass} flex-1 min-w-0`}
+              value={form.minute}
+              onChange={(e) => updateForm({ minute: Number(e.target.value) })}
+              className="w-20 shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground text-center focus:outline-none focus:ring-2 focus:ring-primary/50"
             >
-              {WEEKDAY_KEYS.map((key, idx) => (
-                <option key={idx} value={idx}>{i18nService.t(key)}</option>
+              {Array.from({ length: 60 }, (_, i) => (
+                <option key={i} value={i}>{String(i).padStart(2, '0')}</option>
               ))}
             </select>
+            <span className="shrink-0 text-sm text-secondary">
+              {i18nService.t('scheduledTasksFormHourlyMinuteSuffix')}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    if (form.planType === 'weekly') {
+      const weekdayShortLabels: [string, number][] =
+        i18nService.getLanguage() === 'zh'
+          ? [
+              ['scheduledTasksFormWeekShortMon', 1],
+              ['scheduledTasksFormWeekShortTue', 2],
+              ['scheduledTasksFormWeekShortWed', 3],
+              ['scheduledTasksFormWeekShortThu', 4],
+              ['scheduledTasksFormWeekShortFri', 5],
+              ['scheduledTasksFormWeekShortSat', 6],
+              ['scheduledTasksFormWeekShortSun', 0],
+            ]
+          : [
+              ['scheduledTasksFormWeekShortSun', 0],
+              ['scheduledTasksFormWeekShortMon', 1],
+              ['scheduledTasksFormWeekShortTue', 2],
+              ['scheduledTasksFormWeekShortWed', 3],
+              ['scheduledTasksFormWeekShortThu', 4],
+              ['scheduledTasksFormWeekShortFri', 5],
+              ['scheduledTasksFormWeekShortSat', 6],
+            ];
+
+      const toggleWeekday = (day: number) => {
+        const next = form.weekdays.includes(day)
+          ? form.weekdays.filter((value) => value !== day)
+          : [...form.weekdays, day];
+        updateForm({ weekdays: next });
+      };
+
+      return (
+        <div>
+          <label className={labelClass}>{i18nService.t('scheduledTasksFormScheduleType')}</label>
+          <div className="flex items-center gap-3">
+            {planSelect}
             <input
               type="time"
               value={timeValue}
               onChange={(e) => handleTimeChange(e.target.value)}
               className={`${inputClass} flex-1 min-w-0`}
             />
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            {weekdayShortLabels.map(([key, dayValue]) => {
+              const selected = form.weekdays.includes(dayValue);
+              return (
+                <button
+                  key={dayValue}
+                  type="button"
+                  onClick={() => toggleWeekday(dayValue)}
+                  className={`w-9 h-9 rounded-full text-sm font-medium transition-colors ${
+                    selected
+                      ? 'bg-primary text-white'
+                      : 'border border-border text-secondary hover:bg-surface-raised'
+                  }`}
+                >
+                  {i18nService.t(key)}
+                </button>
+              );
+            })}
           </div>
         </div>
       );
@@ -444,57 +583,152 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   };
 
   const renderNotifyRow = () => {
-    const notifyChannelValue = form.notifyChannel === 'none'
-      ? 'none'
-      : getChannelOptionValue(form.notifyChannel, form.notifyAccountId);
+    const selectedLogo = getChannelLogo(form.notifyChannel);
+    const selectedConversation = conversations.find(
+      (conversation) => conversationOptionMatchesValue(form.notifyChannel, conversation.conversationId, form.notifyTo),
+    );
+    const selectedConversationLabel = selectedConversation
+      ? selectedConversation.conversationId
+      : form.notifyTo;
 
     return (
       <div>
         <label className={labelClass}>{i18nService.t('scheduledTasksFormNotifyChannel')}</label>
         <div className="flex items-center gap-3">
-          <select
-            value={notifyChannelValue}
-            onChange={(event) => {
-              const { channel, accountId } = parseChannelOptionValue(event.target.value);
-              updateForm({ notifyChannel: channel, notifyTo: '', notifyAccountId: accountId });
-            }}
-            className={`${inputClass} ${showConversationSelector ? 'flex-1 min-w-0' : ''}`}
-          >
-            <option value="none">{i18nService.t('scheduledTasksFormNotifyChannelNone')}</option>
-            {channelOptions.map((channel) => {
-              const unsupported = channel.value === 'openclaw-weixin';
-              return (
-                <option
-                  key={getChannelOptionValue(channel.value, channel.accountId)}
-                  value={getChannelOptionValue(channel.value, channel.accountId)}
-                  disabled={unsupported}
-                >
-                  {unsupported
-                    ? `${channel.label} (${i18nService.t('scheduledTasksChannelUnsupported')})`
-                    : channel.label}
-                </option>
-              );
-            })}
-          </select>
-          {showConversationSelector && (
-            <select
-              value={form.notifyTo}
-              onChange={(event) => updateForm({ notifyTo: event.target.value })}
-              disabled={conversationsLoading}
-              className={`${inputClass} flex-1 min-w-0`}
+          <div className={`relative ${showConversationSelector ? 'flex-1 min-w-0' : 'w-full'}`} ref={channelDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setChannelDropdownOpen(!channelDropdownOpen)}
+              className={`${inputClass} w-full flex items-center justify-between cursor-pointer`}
             >
-              {conversationsLoading ? (
-                <option value="">{i18nService.t('scheduledTasksFormNotifyConversationLoading')}</option>
-              ) : conversations.length === 0 ? (
-                <option value="">{i18nService.t('scheduledTasksFormNotifyConversationNone')}</option>
-              ) : (
-                conversations.map((conv) => (
-                  <option key={conv.conversationId} value={conv.conversationId}>
-                    {conv.conversationId}
-                  </option>
-                ))
+              <span className="flex items-center gap-2 truncate">
+                {selectedLogo ? (
+                  <img src={selectedLogo} alt="" className="w-5 h-5 object-contain rounded" />
+                ) : (
+                  <span className="w-5 h-5" />
+                )}
+                <span className="truncate">
+                  {(() => {
+                    const base = getChannelDisplayLabel(form.notifyChannel);
+                    if (!form.notifyAccountId) return base;
+                    const selected = channelOptions.find((option) => (
+                      option.value === form.notifyChannel && option.accountId === form.notifyAccountId
+                    ));
+                    return selected ? `${base} · ${selected.label}` : base;
+                  })()}
+                </span>
+              </span>
+              <svg className={`w-4 h-4 ml-2 flex-shrink-0 transition-transform ${channelDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {channelDropdownOpen && (
+              <div className="absolute z-50 w-full mt-1 rounded-xl border border-border bg-surface shadow-lg overflow-hidden">
+                <div
+                  className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-surface-raised transition-colors"
+                  onClick={() => {
+                    updateForm({ notifyChannel: 'none', notifyTo: '', notifyAccountId: undefined });
+                    setChannelDropdownOpen(false);
+                  }}
+                >
+                  <span className="w-5 h-5" />
+                  <span className="text-sm text-foreground">
+                    {i18nService.t('scheduledTasksFormNotifyChannelNone')}
+                  </span>
+                </div>
+                {channelOptions.map((channel) => {
+                  const unsupported = isChannelUnsupported(channel.value);
+                  const logo = getChannelLogo(channel.value);
+                  const platform = PlatformRegistry.platformOfChannel(channel.value);
+                  const platformLabel = platform
+                    ? (i18nService.t(platform) || channel.label)
+                    : channel.label;
+                  const displayName = channel.accountId ? `${platformLabel} · ${channel.label}` : platformLabel;
+                  const isActive = form.notifyChannel === channel.value
+                    && (channel.accountId ? form.notifyAccountId === channel.accountId : !form.notifyAccountId);
+                  return (
+                    <div
+                      key={getChannelOptionValue(channel.value, channel.accountId)}
+                      className={`flex items-center gap-2 px-3 py-2 transition-colors ${
+                        unsupported
+                          ? 'opacity-50 cursor-not-allowed'
+                          : 'cursor-pointer hover:bg-surface-raised'
+                      } ${isActive ? 'bg-surface-raised' : ''}`}
+                      onClick={() => {
+                        if (!unsupported) {
+                          updateForm({ notifyChannel: channel.value, notifyTo: '', notifyAccountId: channel.accountId });
+                          setChannelDropdownOpen(false);
+                        }
+                      }}
+                    >
+                      {logo ? (
+                        <img src={logo} alt={displayName} className="w-5 h-5 object-contain rounded" />
+                      ) : (
+                        <span className="w-5 h-5" />
+                      )}
+                      <span className={`text-sm ${unsupported ? 'text-secondary' : 'text-foreground'}`}>
+                        {unsupported
+                          ? `${displayName} (${i18nService.t('scheduledTasksChannelUnsupported')})`
+                          : displayName}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {showConversationSelector && (
+            <div className="relative flex-1 min-w-0" ref={convDropdownRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!conversationsLoading) setConvDropdownOpen(!convDropdownOpen);
+                }}
+                disabled={conversationsLoading}
+                className={`${inputClass} w-full flex items-center justify-between cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                <span className="truncate text-sm">
+                  {conversationsLoading
+                    ? i18nService.t('scheduledTasksFormNotifyConversationLoading')
+                    : selectedConversationLabel || i18nService.t('scheduledTasksFormNotifyConversationNone')}
+                </span>
+                <svg className={`w-4 h-4 ml-2 flex-shrink-0 transition-transform ${convDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {convDropdownOpen && !conversationsLoading && (
+                <div className="absolute z-50 w-full mt-1 rounded-xl border border-border bg-surface shadow-lg overflow-hidden">
+                  {conversations.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-secondary">
+                      {i18nService.t('scheduledTasksFormNotifyConversationNone')}
+                    </div>
+                  ) : (
+                    conversations.map((conversation) => {
+                      const isActive = conversationOptionMatchesValue(
+                        form.notifyChannel,
+                        conversation.conversationId,
+                        form.notifyTo,
+                      );
+                      return (
+                        <div
+                          key={conversation.conversationId}
+                          className={`px-3 py-2 text-sm cursor-pointer hover:bg-surface-raised transition-colors truncate ${
+                            isActive ? 'bg-surface-raised text-foreground' : 'text-foreground'
+                          }`}
+                          onClick={() => {
+                            updateForm({ notifyTo: conversation.conversationId });
+                            setConvDropdownOpen(false);
+                          }}
+                        >
+                          {conversation.conversationId}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               )}
-            </select>
+            </div>
           )}
         </div>
       </div>
@@ -523,12 +757,23 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
         <label className={labelClass}>
           {i18nService.t('scheduledTasksFormPayloadTextAgent')}
         </label>
-        <textarea
-          value={form.payloadText}
-          onChange={(event) => updateForm({ payloadText: event.target.value })}
-          className={`${inputClass} h-28 resize-none`}
-          placeholder={i18nService.t('scheduledTasksFormPromptPlaceholder')}
-        />
+        <div className="rounded-lg border border-border bg-surface focus-within:ring-1 focus-within:ring-primary/40 focus-within:border-primary">
+          <textarea
+            value={form.payloadText}
+            onChange={(event) => updateForm({ payloadText: event.target.value })}
+            className={textareaInputClass}
+            placeholder={i18nService.t('scheduledTasksFormPromptPlaceholder')}
+            rows={4}
+          />
+          <div className="flex items-center px-2 py-1">
+            <ModelSelector
+              dropdownDirection="up"
+              value={selectedModelValue}
+              onChange={handleModelChange}
+              defaultLabel={i18nService.t('scheduledTasksFormModelDefault')}
+            />
+          </div>
+        </div>
         {errors.payloadText && <p className={errorClass}>{errors.payloadText}</p>}
       </div>
 

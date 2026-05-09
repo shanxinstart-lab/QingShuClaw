@@ -80,6 +80,29 @@ test('parseMemoryMd: normalises internal whitespace in entry text', () => {
   expect(entries[0].text).toBe('text with extra spaces');
 });
 
+test('parseMemoryMd: preserves entries across multiple sections', () => {
+  const md = [
+    '# User Memories',
+    '',
+    '## Work',
+    '- Uses TypeScript daily',
+    '- Prefers Vim',
+    '',
+    '## Personal',
+    '- Likes coffee',
+    '- Lives in Shanghai',
+    '',
+  ].join('\n');
+
+  const entries = parseMemoryMd(md);
+  expect(entries.map((entry) => entry.text)).toEqual([
+    'Uses TypeScript daily',
+    'Prefers Vim',
+    'Likes coffee',
+    'Lives in Shanghai',
+  ]);
+});
+
 test('parseMemoryMd: keeps one-character memory entries', () => {
   const entries = parseMemoryMd('- C\n');
   expect(entries).toHaveLength(1);
@@ -434,6 +457,29 @@ test('migrateSqliteToMemoryMd: migrates texts to MEMORY.md and marks done', () =
     const entries = parseMemoryMd(fs.readFileSync(filePath, 'utf-8'));
     expect(entries.length).toBe(2);
     expect(entries.some((e: { text: string }) => e.text === 'I live in Beijing')).toBeTruthy();
+  } finally {
+    cleanupDir(dir);
+  }
+});
+
+test('migrateSqliteToMemoryMd: keeps one-character memory texts', () => {
+  const dir = makeTmpDir();
+  try {
+    const filePath = memFilePath(dir);
+    let done = false;
+    const source = {
+      isMigrationDone: () => false,
+      markMigrationDone: () => { done = true; },
+      getActiveMemoryTexts: () => ['C'],
+    };
+
+    const count = migrateSqliteToMemoryMd(filePath, source);
+    expect(count).toBe(1);
+    expect(done).toBe(true);
+
+    const entries = parseMemoryMd(fs.readFileSync(filePath, 'utf-8'));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text).toBe('C');
   } finally {
     cleanupDir(dir);
   }

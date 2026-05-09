@@ -1635,6 +1635,11 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     setHoveredRailIndex(null);
   }, [currentSession?.id]);
 
+  const closeMenu = useCallback(() => {
+    setMenuPosition(null);
+    setShowConfirmDelete(false);
+  }, []);
+
   // Close menu on outside click
   useEffect(() => {
     if (!menuPosition) return;
@@ -1660,7 +1665,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('resize', handleScroll);
     };
-  }, [menuPosition]);
+  }, [closeMenu, menuPosition]);
 
   // Helper: truncate path for display
   const truncatePath = (path: string, maxLength = 20): string => {
@@ -1770,11 +1775,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     lastAutoPlayedMessageIdRef.current = lastAssistantMessage.id;
     void playAssistantMessage(lastAssistantMessage);
   }, [currentSession, isMac, isStreaming, playAssistantMessage, ttsAvailability]);
-
-  const closeMenu = () => {
-    setMenuPosition(null);
-    setShowConfirmDelete(false);
-  };
 
   // Open folder in Finder/Explorer
   const handleOpenFolder = useCallback(async () => {

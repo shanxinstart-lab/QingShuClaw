@@ -99,10 +99,56 @@ function makeCronService() {
   };
 }
 
+test('migrateScheduledTasksToOpenclaw skips when already migrated', async () => {
+  const kv = makeKv({ [MigrationKey.TasksToOpenclaw]: 'true' });
+  const cron = makeCronService();
+  const db = makeSqlJsDb({
+    tables: new Set(['scheduled_tasks']),
+    taskRows: [{
+      id: 'task-1',
+      name: 'Already migrated task',
+      description: '',
+      enabled: 1,
+      schedule_json: JSON.stringify({ type: 'cron', expression: '0 9 * * *' }),
+      prompt: 'Should not migrate',
+      notify_platforms_json: '[]',
+    }],
+  });
+
+  await migrateScheduledTasksToOpenclaw({
+    db: db as never,
+    getKv: kv.getKv,
+    setKv: kv.setKv,
+    cronJobService: cron as never,
+  });
+
+  expect(cron.jobs).toHaveLength(0);
+  expect(kv.store[MigrationKey.TasksToOpenclaw]).toBe('true');
+});
+
 test('migrateScheduledTasksToOpenclaw marks fresh installs as migrated', async () => {
   const kv = makeKv();
   const cron = makeCronService();
   const db = makeSqlJsDb();
+
+  await migrateScheduledTasksToOpenclaw({
+    db: db as never,
+    getKv: kv.getKv,
+    setKv: kv.setKv,
+    cronJobService: cron as never,
+  });
+
+  expect(kv.store[MigrationKey.TasksToOpenclaw]).toBe('true');
+  expect(cron.jobs).toHaveLength(0);
+});
+
+test('migrateScheduledTasksToOpenclaw marks empty legacy tables as migrated', async () => {
+  const kv = makeKv();
+  const cron = makeCronService();
+  const db = makeSqlJsDb({
+    tables: new Set(['scheduled_tasks']),
+    taskRows: [],
+  });
 
   await migrateScheduledTasksToOpenclaw({
     db: db as never,
@@ -147,6 +193,38 @@ test('migrateScheduledTasksToOpenclaw converts valid cron tasks', async () => {
   expect(kv.store[MigrationKey.TasksToOpenclaw]).toBe('true');
 });
 
+test('migrateScheduledTasksToOpenclaw converts interval tasks', async () => {
+  const kv = makeKv();
+  const cron = makeCronService();
+  const db = makeSqlJsDb({
+    tables: new Set(['scheduled_tasks']),
+    taskRows: [{
+      id: 'task-interval',
+      name: 'Hourly check',
+      description: '',
+      enabled: 1,
+      schedule_json: JSON.stringify({ type: 'interval', intervalMs: 3_600_000 }),
+      prompt: 'Check emails',
+      notify_platforms_json: '[]',
+    }],
+  });
+
+  await migrateScheduledTasksToOpenclaw({
+    db: db as never,
+    getKv: kv.getKv,
+    setKv: kv.setKv,
+    cronJobService: cron as never,
+  });
+
+  expect(cron.jobs).toHaveLength(1);
+  expect(cron.jobs[0]).toMatchObject({
+    name: 'Hourly check',
+    schedule: { kind: ScheduleKind.Every, everyMs: 3_600_000 },
+    delivery: { mode: DeliveryMode.None },
+  });
+  expect(kv.store[MigrationKey.TasksToOpenclaw]).toBe('true');
+});
+
 test('migrateScheduledTasksToOpenclaw skips expired one-time tasks', async () => {
   const kv = makeKv();
   const cron = makeCronService();
@@ -171,6 +249,45 @@ test('migrateScheduledTasksToOpenclaw skips expired one-time tasks', async () =>
   });
 
   expect(cron.jobs).toHaveLength(0);
+  expect(kv.store[MigrationKey.TasksToOpenclaw]).toBe('true');
+});
+
+test('migrateScheduledTasksToOpenclaw skips invalid schedule_json and continues', async () => {
+  const kv = makeKv();
+  const cron = makeCronService();
+  const db = makeSqlJsDb({
+    tables: new Set(['scheduled_tasks']),
+    taskRows: [
+      {
+        id: 'task-bad',
+        name: 'Bad schedule',
+        description: '',
+        enabled: 1,
+        schedule_json: 'not json',
+        prompt: 'Skip me',
+        notify_platforms_json: '[]',
+      },
+      {
+        id: 'task-good',
+        name: 'Good schedule',
+        description: '',
+        enabled: 1,
+        schedule_json: JSON.stringify({ type: 'cron', expression: '0 8 * * *' }),
+        prompt: 'Morning brief',
+        notify_platforms_json: '[]',
+      },
+    ],
+  });
+
+  await migrateScheduledTasksToOpenclaw({
+    db: db as never,
+    getKv: kv.getKv,
+    setKv: kv.setKv,
+    cronJobService: cron as never,
+  });
+
+  expect(cron.jobs).toHaveLength(1);
+  expect(cron.jobs[0].name).toBe('Good schedule');
   expect(kv.store[MigrationKey.TasksToOpenclaw]).toBe('true');
 });
 

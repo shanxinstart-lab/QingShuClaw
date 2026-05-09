@@ -30,6 +30,21 @@ describe('extractDiffFromToolInput', () => {
     ]);
   });
 
+  test('extracts Edit edits array fields from OpenClaw format', () => {
+    expect(extractDiffFromToolInput('Edit', {
+      path: '/tmp/openclaw.ts',
+      edits: [
+        { oldText: 'const enabled = false;', newText: 'const enabled = true;' },
+      ],
+    })).toEqual([
+      {
+        filePath: '/tmp/openclaw.ts',
+        oldStr: 'const enabled = false;',
+        newStr: 'const enabled = true;',
+      },
+    ]);
+  });
+
   test('returns null for unsupported tool inputs', () => {
     expect(extractDiffFromToolInput('Read', { file_path: '/tmp/example.ts' })).toBeNull();
   });

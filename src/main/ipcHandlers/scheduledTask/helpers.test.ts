@@ -61,11 +61,13 @@ describe('scheduled task helpers', () => {
       value: 'dingtalk',
       label: '钉钉一号',
       accountId: 'dingtalk',
+      filterAccountId: 'dingtalk',
     });
     expect(channels).toContainEqual({
       value: 'feishu',
       label: '飞书机器人 A',
       accountId: 'feishu-a',
+      filterAccountId: 'feishu-a',
     });
     expect(channels).toContainEqual({
       value: 'openclaw-weixin',

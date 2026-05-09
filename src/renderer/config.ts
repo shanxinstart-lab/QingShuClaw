@@ -91,6 +91,10 @@ export interface AppConfig {
       oauthRefreshToken?: string;
       /** OAuth token expiry as Unix timestamp in milliseconds */
       oauthTokenExpiresAt?: number;
+      /** OAuth access token used by the runtime. */
+      oauthAccessToken?: string;
+      /** OAuth resource base URL returned by MiniMax. */
+      oauthBaseUrl?: string;
       models?: Array<{
         id: string;
         name: string;
@@ -209,6 +213,8 @@ export interface AppConfig {
       authType?: 'apikey' | 'oauth';
       oauthRefreshToken?: string;
       oauthTokenExpiresAt?: number;
+      oauthAccessToken?: string;
+      oauthBaseUrl?: string;
       displayName?: string;
       models?: Array<{
         id: string;
@@ -405,5 +411,6 @@ export const getProviderDisplayName = (
       : '';
     return name || getCustomProviderDefaultName(providerKey);
   }
-  return providerKey.charAt(0).toUpperCase() + providerKey.slice(1);
+  return ProviderRegistry.get(providerKey)?.label
+    || providerKey.charAt(0).toUpperCase() + providerKey.slice(1);
 };

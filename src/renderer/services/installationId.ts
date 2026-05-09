@@ -41,7 +41,7 @@ const getAuthUserId = (): string | null => {
   return typeof userId === 'string' && userId.trim() ? userId.trim() : null;
 };
 
-export const getUpdateQueryString = async (): Promise<string> => {
+export const getUpdateQueryString = async (version?: string | null): Promise<string> => {
   try {
     const params = new URLSearchParams();
 
@@ -53,6 +53,11 @@ export const getUpdateQueryString = async (): Promise<string> => {
     const userId = getAuthUserId();
     if (userId) {
       params.append('userId', userId);
+    }
+
+    const normalizedVersion = typeof version === 'string' ? version.trim() : '';
+    if (normalizedVersion) {
+      params.append('version', normalizedVersion);
     }
 
     return params.toString();

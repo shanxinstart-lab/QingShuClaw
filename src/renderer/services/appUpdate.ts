@@ -90,6 +90,20 @@ const shouldForceUpdate = (currentVersion: string, updateConfig: UpdateConfig): 
   return compareVersions(currentVersion, updateConfig.minimumSupportedVersion) < 0;
 };
 
+export const applyBrandUpdatePolicy = (
+  updateInfo: Omit<AppUpdateInfo, 'forceUpdate' | 'minimumSupportedVersion' | 'forceReason'>,
+  currentVersion: string,
+  updateConfig: UpdateConfig,
+): AppUpdateInfo => {
+  const forceUpdate = shouldForceUpdate(currentVersion, updateConfig);
+  return {
+    ...updateInfo,
+    forceUpdate,
+    minimumSupportedVersion: updateConfig.minimumSupportedVersion,
+    forceReason: forceUpdate ? updateConfig.forceReason : null,
+  };
+};
+
 type UpdateValue = NonNullable<NonNullable<UpdateApiResponse['data']>['value']>;
 
 const getPlatformDownloadUrl = (value: UpdateValue | undefined, fallbackDownloadUrl: string): string => {
@@ -122,7 +136,7 @@ export const checkForAppUpdate = async (
   }
 ): Promise<AppUpdateInfo | null> => {
   const baseUrl = options.manual ? options.updateConfig.manualCheckUrl : options.updateConfig.autoCheckUrl;
-  const queryString = await getUpdateQueryString();
+  const queryString = await getUpdateQueryString(currentVersion);
   const url = appendQueryString(baseUrl, queryString);
   console.log(`[AppUpdate] checking update, currentVersion=${currentVersion}, url=${url}`);
 
@@ -152,14 +166,12 @@ export const checkForAppUpdate = async (
     return null;
   }
 
-  const forceUpdate = shouldForceUpdate(currentVersion, options.updateConfig);
-
   const toEntry = (log?: ChangeLogLang): ChangeLogEntry => ({
     title: typeof log?.title === 'string' ? log.title : '',
     content: Array.isArray(log?.content) ? log.content : [],
   });
 
-  const result: AppUpdateInfo = {
+  const result = applyBrandUpdatePolicy({
     latestVersion,
     date: value?.date?.trim() || '',
     changeLog: {
@@ -167,12 +179,9 @@ export const checkForAppUpdate = async (
       en: toEntry(value?.changeLog?.en),
     },
     url: getPlatformDownloadUrl(value, options.updateConfig.fallbackDownloadUrl),
-    forceUpdate,
-    minimumSupportedVersion: options.updateConfig.minimumSupportedVersion,
-    forceReason: forceUpdate ? options.updateConfig.forceReason : null,
-  };
+  }, currentVersion, options.updateConfig);
   console.log(
-    `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, forceUpdate=${forceUpdate}, downloadUrl=${result.url}`
+    `[AppUpdate] update available: ${currentVersion} -> ${latestVersion}, forceUpdate=${result.forceUpdate}, downloadUrl=${result.url}`
   );
   return result;
 };

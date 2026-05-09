@@ -17,6 +17,7 @@ export type EnterpriseManifest = {
     skills: boolean | 'merge' | 'overwrite';
     agents: boolean | 'force';
     mcp: boolean | 'merge' | 'overwrite';
+    plugins?: boolean | 'merge' | 'overwrite';
   };
   autoAcceptPrivacy?: boolean;
 };
@@ -29,6 +30,275 @@ const SANDBOX_MODE_MAP: Record<string, string> = {
 
 const ENTERPRISE_CONFIG_DIR = 'enterprise-config';
 const MANIFEST_FILE = 'manifest.json';
+const ACCOUNT_COMPAT_CHANNEL_KEYS = ['feishu', 'dingtalk', 'dingtalk-connector', 'qqbot', 'wecom', 'moltbot-popo'] as const;
+type AccountCompatChannelKey = typeof ACCOUNT_COMPAT_CHANNEL_KEYS[number];
+
+const ACCOUNT_COMPAT_CHANNEL_TOP_LEVEL_MAP: Record<AccountCompatChannelKey, Record<string, string>> = {
+  feishu: {
+    enabled: 'enabled',
+    appId: 'appId',
+    appSecret: 'appSecret',
+    domain: 'domain',
+    dmPolicy: 'dmPolicy',
+    allowFrom: 'allowFrom',
+    groupPolicy: 'groupPolicy',
+    groupAllowFrom: 'groupAllowFrom',
+    groups: 'groups',
+    historyLimit: 'historyLimit',
+    streaming: 'streaming',
+    replyMode: 'replyMode',
+    blockStreaming: 'blockStreaming',
+    footer: 'footer',
+    blockStreamingCoalesce: 'blockStreamingCoalesce',
+    mediaMaxMb: 'mediaMaxMb',
+  },
+  dingtalk: {
+    enabled: 'enabled',
+    clientId: 'clientId',
+    clientSecret: 'clientSecret',
+    dmPolicy: 'dmPolicy',
+    allowFrom: 'allowFrom',
+    groupPolicy: 'groupPolicy',
+    sessionTimeout: 'sessionTimeout',
+    separateSessionByConversation: 'separateSessionByConversation',
+    groupSessionScope: 'groupSessionScope',
+    sharedMemoryAcrossConversations: 'sharedMemoryAcrossConversations',
+    gatewayBaseUrl: 'gatewayBaseUrl',
+  },
+  'dingtalk-connector': {
+    enabled: 'enabled',
+    clientId: 'clientId',
+    clientSecret: 'clientSecret',
+    dmPolicy: 'dmPolicy',
+    allowFrom: 'allowFrom',
+    groupPolicy: 'groupPolicy',
+    sessionTimeout: 'sessionTimeout',
+    separateSessionByConversation: 'separateSessionByConversation',
+    groupSessionScope: 'groupSessionScope',
+    sharedMemoryAcrossConversations: 'sharedMemoryAcrossConversations',
+    gatewayBaseUrl: 'gatewayBaseUrl',
+  },
+  qqbot: {
+    enabled: 'enabled',
+    appId: 'appId',
+    clientSecret: 'appSecret',
+    dmPolicy: 'dmPolicy',
+    allowFrom: 'allowFrom',
+    groupPolicy: 'groupPolicy',
+    groupAllowFrom: 'groupAllowFrom',
+    historyLimit: 'historyLimit',
+    markdownSupport: 'markdownSupport',
+    imageServerBaseUrl: 'imageServerBaseUrl',
+  },
+  wecom: {
+    enabled: 'enabled',
+    botId: 'botId',
+    secret: 'secret',
+    dmPolicy: 'dmPolicy',
+    allowFrom: 'allowFrom',
+    groupPolicy: 'groupPolicy',
+    groupAllowFrom: 'groupAllowFrom',
+    sendThinkingMessage: 'sendThinkingMessage',
+  },
+  'moltbot-popo': {
+    enabled: 'enabled',
+    connectionMode: 'connectionMode',
+    appKey: 'appKey',
+    appSecret: 'appSecret',
+    token: 'token',
+    aesKey: 'aesKey',
+    webhookBaseUrl: 'webhookBaseUrl',
+    webhookPath: 'webhookPath',
+    webhookPort: 'webhookPort',
+    dmPolicy: 'dmPolicy',
+    allowFrom: 'allowFrom',
+    groupPolicy: 'groupPolicy',
+    groupAllowFrom: 'groupAllowFrom',
+    textChunkLimit: 'textChunkLimit',
+    richTextChunkLimit: 'richTextChunkLimit',
+    debug: 'debug',
+  },
+};
+
+const ACCOUNT_COMPAT_CHANNEL_TOP_LEVEL_CREDENTIAL_KEYS: Record<AccountCompatChannelKey, string[]> = {
+  feishu: ['appId', 'appSecret'],
+  dingtalk: ['clientId', 'clientSecret'],
+  'dingtalk-connector': ['clientId', 'clientSecret'],
+  qqbot: ['appId', 'appSecret', 'clientSecret', 'clientSecretFile'],
+  wecom: ['botId', 'secret'],
+  'moltbot-popo': ['appKey', 'appSecret', 'token', 'aesKey'],
+};
+
+const ACCOUNT_COMPAT_CHANNEL_ACCOUNT_CREDENTIAL_KEYS: Record<AccountCompatChannelKey, string[]> = {
+  feishu: ['appId', 'appSecret'],
+  dingtalk: ['clientId', 'clientSecret'],
+  'dingtalk-connector': ['clientId', 'clientSecret'],
+  qqbot: ['appId', 'clientSecret', 'appSecret', 'clientSecretFile'],
+  wecom: ['botId', 'secret'],
+  'moltbot-popo': ['appKey', 'appSecret', 'token', 'aesKey'],
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveMergeMode(value: boolean | 'merge' | 'overwrite' | undefined): 'merge' | 'overwrite' | null {
+  if (!value) return null;
+  return value === 'overwrite' ? 'overwrite' : 'merge';
+}
+
+function resolveEnterprisePluginsSourceDir(configPath: string): string | null {
+  const pluginsDir = path.join(configPath, 'plugins');
+  return fs.existsSync(pluginsDir) ? pluginsDir : null;
+}
+
+function readAccountsFromChannelConfig(cfg: unknown): Record<string, Record<string, unknown>> | null {
+  if (!isRecord(cfg) || !isRecord(cfg.accounts)) return null;
+  const accounts: Record<string, Record<string, unknown>> = {};
+  for (const [accountId, accountCfg] of Object.entries(cfg.accounts)) {
+    if (isRecord(accountCfg)) {
+      accounts[accountId] = accountCfg;
+    }
+  }
+  return accounts;
+}
+
+function buildTopLevelAccountOverlay(
+  channelKey: AccountCompatChannelKey,
+  cfg: unknown,
+): Record<string, unknown> {
+  if (!isRecord(cfg)) return {};
+  const keyMap = ACCOUNT_COMPAT_CHANNEL_TOP_LEVEL_MAP[channelKey];
+  const overlay: Record<string, unknown> = {};
+  for (const [accountKey, topLevelKey] of Object.entries(keyMap)) {
+    if (Object.prototype.hasOwnProperty.call(cfg, topLevelKey)) {
+      overlay[accountKey] = cfg[topLevelKey];
+    }
+  }
+  return overlay;
+}
+
+function hasAccountCredentialFields(channelKey: AccountCompatChannelKey, cfg: Record<string, unknown>): boolean {
+  return ACCOUNT_COMPAT_CHANNEL_ACCOUNT_CREDENTIAL_KEYS[channelKey].some((key) => (
+    Object.prototype.hasOwnProperty.call(cfg, key) && cfg[key] !== undefined && cfg[key] !== null && cfg[key] !== ''
+  ));
+}
+
+function normalizeMultiAccountChannelConfig(
+  channelKey: AccountCompatChannelKey,
+  cfg: unknown,
+  fallbackAccounts?: Record<string, Record<string, unknown>> | null,
+): Record<string, unknown> | unknown {
+  if (!isRecord(cfg)) return cfg;
+
+  const overlay = buildTopLevelAccountOverlay(channelKey, cfg);
+  const currentAccounts = readAccountsFromChannelConfig(cfg) ?? fallbackAccounts;
+  if (!currentAccounts || Object.keys(currentAccounts).length === 0) {
+    return cfg;
+  }
+  if (Object.keys(overlay).length === 0) {
+    return cfg;
+  }
+
+  const normalizedAccounts: Record<string, Record<string, unknown>> = {};
+  for (const [accountId, accountCfg] of Object.entries(currentAccounts)) {
+    if (accountId === 'default' && !hasAccountCredentialFields(channelKey, accountCfg)) {
+      continue;
+    }
+    normalizedAccounts[accountId] = { ...accountCfg, ...overlay };
+  }
+
+  return {
+    ...cfg,
+    accounts: normalizedAccounts,
+  };
+}
+
+function stripTopLevelAccountCredentialFields(
+  channelKey: AccountCompatChannelKey,
+  cfg: unknown,
+): Record<string, unknown> | unknown {
+  const accounts = readAccountsFromChannelConfig(cfg);
+  if (!isRecord(cfg) || !accounts) {
+    return cfg;
+  }
+
+  const sanitized = { ...cfg };
+  if (accounts.default && !hasAccountCredentialFields(channelKey, accounts.default)) {
+    const sanitizedAccounts = { ...accounts };
+    delete sanitizedAccounts.default;
+    sanitized.accounts = sanitizedAccounts;
+  }
+  const stripKeys = channelKey === 'wecom'
+    ? Object.values(ACCOUNT_COMPAT_CHANNEL_TOP_LEVEL_MAP.wecom)
+    : ACCOUNT_COMPAT_CHANNEL_TOP_LEVEL_CREDENTIAL_KEYS[channelKey];
+  for (const key of stripKeys) {
+    delete sanitized[key];
+  }
+  return sanitized;
+}
+
+function stripMergedChannelTopLevelAccountCredentialFields(config: Record<string, unknown>): Record<string, unknown> {
+  const channels = isRecord(config.channels) ? config.channels : null;
+  if (!channels) return config;
+
+  let changed = false;
+  const sanitizedChannels: Record<string, unknown> = { ...channels };
+  for (const channelKey of ACCOUNT_COMPAT_CHANNEL_KEYS) {
+    const channelCfg = channels[channelKey];
+    const sanitizedCfg = stripTopLevelAccountCredentialFields(channelKey, channelCfg);
+    if (sanitizedCfg !== channelCfg) {
+      changed = true;
+      sanitizedChannels[channelKey] = sanitizedCfg;
+    }
+  }
+
+  return changed
+    ? { ...config, channels: sanitizedChannels }
+    : config;
+}
+
+function normalizePopoEnterpriseConfig(cfg: unknown): unknown {
+  const normalizedCfg = normalizeMultiAccountChannelConfig('moltbot-popo', cfg);
+  const accounts = readAccountsFromChannelConfig(normalizedCfg);
+  if (!accounts) {
+    return cfg;
+  }
+
+  const accountEntries = Object.entries(accounts);
+  const firstAccount = accountEntries[0]?.[1];
+  if (!firstAccount) {
+    return cfg;
+  }
+
+  if (accountEntries.length > 1) {
+    console.warn('[Enterprise] POPO enterprise config contains multiple accounts; applying the first account in single-instance mode');
+  }
+  return firstAccount;
+}
+
+type OptionalPopoMultiInstanceStore = {
+  setPopoMultiInstanceConfig?: (config: { instances: Array<Record<string, unknown>> }) => void;
+  setPopoConfig: (config: unknown) => void;
+};
+
+function syncPopoEnterpriseConfig(imStore: IMStore, cfg: unknown): void {
+  const normalizedCfg = normalizeMultiAccountChannelConfig('moltbot-popo', cfg);
+  const accounts = readAccountsFromChannelConfig(normalizedCfg);
+  const popoStore = imStore as unknown as OptionalPopoMultiInstanceStore;
+
+  if (accounts && typeof popoStore.setPopoMultiInstanceConfig === 'function') {
+    const instances = Object.entries(accounts).map(([accountId, accountCfg], idx) => ({
+      ...accountCfg,
+      instanceId: accountId,
+      instanceName: typeof accountCfg.name === 'string' ? accountCfg.name : `POPO Bot ${idx + 1}`,
+    }));
+    popoStore.setPopoMultiInstanceConfig({ instances });
+    return;
+  }
+
+  popoStore.setPopoConfig(normalizePopoEnterpriseConfig(cfg));
+}
 
 /**
  * Check if an enterprise config package exists at the well-known path.
@@ -90,6 +360,7 @@ export function syncEnterpriseConfig(
   }
 
   const agentsForce = manifest.sync.agents === 'force';
+  const pluginsMode = resolveMergeMode(manifest.sync.plugins);
 
   // File copy operations — only run when version changes to avoid
   // unnecessary I/O on every startup.
@@ -103,6 +374,10 @@ export function syncEnterpriseConfig(
       syncAgents(configPath, getWorkingDirectory(), agentsForce);
     }
 
+    if (pluginsMode) {
+      syncPlugins(configPath, pluginsMode);
+    }
+
     if (manifest.sync.mcp) {
       const mcpMode = manifest.sync.mcp === 'overwrite' ? 'overwrite' : 'merge';
       syncMcpServers(configPath, mcpUpsertByName, mcpClearAll, mcpMode);
@@ -111,6 +386,9 @@ export function syncEnterpriseConfig(
     // Agents: force mode always copies, default mode only copies missing files
     if (manifest.sync.agents) {
       syncAgents(configPath, getWorkingDirectory(), agentsForce);
+    }
+    if (pluginsMode) {
+      syncPlugins(configPath, pluginsMode);
     }
     console.log('[Enterprise] version unchanged, skipping file copy for skills and MCP');
   }
@@ -227,15 +505,201 @@ function syncIMChannels(configPath: string, imStore: IMStore): void {
       return;
     }
 
+    const resolveInstanceId = (
+      accountId: string,
+      instances: Array<{ instanceId: string }>,
+    ): string => {
+      const existing = instances.find((inst) => (
+        inst.instanceId === accountId
+        || inst.instanceId.startsWith(accountId)
+        || inst.instanceId.slice(0, 8) === accountId
+      ));
+      return existing?.instanceId ?? accountId;
+    };
+
+    const syncAccountConfigs = (
+      cfg: unknown,
+      instances: Array<{ instanceId: string }>,
+      setInstanceConfig: (instanceId: string, config: Record<string, unknown>) => void,
+      mapAccountConfig: (accountId: string, accountCfg: Record<string, unknown>) => Record<string, unknown>,
+      channelKey: AccountCompatChannelKey,
+    ): boolean => {
+      const accounts = readAccountsFromChannelConfig(normalizeMultiAccountChannelConfig(channelKey, cfg));
+      if (!accounts) return false;
+      for (const [accountId, accountCfg] of Object.entries(accounts)) {
+        setInstanceConfig(resolveInstanceId(accountId, instances), mapAccountConfig(accountId, accountCfg));
+      }
+      return true;
+    };
+
     // Use platform-specific setters so values are merged with defaults.
+    // For multi-instance platforms, update instances when enterprise config
+    // supplies account maps instead of replacing the whole platform config.
     const PLATFORM_SETTERS: Record<string, (cfg: any) => void> = {
       'telegram': (cfg) => imStore.setTelegramOpenClawConfig(cfg),
       'discord': (cfg) => imStore.setDiscordOpenClawConfig(cfg),
-      'feishu': (cfg) => imStore.setFeishuOpenClawConfig(cfg),
-      'dingtalk-connector': (cfg) => imStore.setDingTalkOpenClawConfig(cfg),
-      'qqbot': (cfg) => imStore.setQQConfig(cfg),
-      'wecom': (cfg) => imStore.setWecomConfig(cfg),
-      'moltbot-popo': (cfg) => imStore.setPopoConfig(cfg),
+      'feishu': (cfg) => {
+        const instances = imStore.getFeishuInstances();
+        if (syncAccountConfigs(
+          cfg,
+          instances,
+          (instanceId, config) => imStore.setFeishuInstanceConfig(instanceId, config),
+          (accountId, accountCfg) => ({
+            enabled: accountCfg.enabled,
+            instanceName: typeof accountCfg.name === 'string' ? accountCfg.name : accountId,
+            appId: accountCfg.appId,
+            appSecret: accountCfg.appSecret,
+            domain: accountCfg.domain,
+            dmPolicy: accountCfg.dmPolicy,
+            allowFrom: accountCfg.allowFrom,
+            groupPolicy: accountCfg.groupPolicy,
+            groupAllowFrom: accountCfg.groupAllowFrom,
+            groups: accountCfg.groups,
+            historyLimit: accountCfg.historyLimit,
+            streaming: accountCfg.streaming,
+            replyMode: accountCfg.replyMode,
+            blockStreaming: accountCfg.blockStreaming,
+            footer: accountCfg.footer,
+            blockStreamingCoalesce: accountCfg.blockStreamingCoalesce,
+            mediaMaxMb: accountCfg.mediaMaxMb,
+          }),
+          'feishu',
+        )) {
+          return;
+        }
+        if (instances.length > 0) {
+          for (const inst of instances) {
+            imStore.setFeishuInstanceConfig(inst.instanceId, cfg);
+          }
+        } else {
+          imStore.setFeishuOpenClawConfig(cfg);
+        }
+      },
+      'dingtalk': (cfg) => {
+        const instances = imStore.getDingTalkInstances();
+        if (syncAccountConfigs(
+          cfg,
+          instances,
+          (instanceId, config) => imStore.setDingTalkInstanceConfig(instanceId, config),
+          (accountId, accountCfg) => ({
+            enabled: accountCfg.enabled,
+            instanceName: typeof accountCfg.name === 'string' ? accountCfg.name : accountId,
+            clientId: accountCfg.clientId,
+            clientSecret: accountCfg.clientSecret,
+            dmPolicy: accountCfg.dmPolicy,
+            allowFrom: accountCfg.allowFrom,
+            groupPolicy: accountCfg.groupPolicy,
+            sessionTimeout: accountCfg.sessionTimeout,
+            separateSessionByConversation: accountCfg.separateSessionByConversation,
+            groupSessionScope: accountCfg.groupSessionScope,
+            sharedMemoryAcrossConversations: accountCfg.sharedMemoryAcrossConversations,
+            gatewayBaseUrl: accountCfg.gatewayBaseUrl,
+          }),
+          'dingtalk',
+        )) {
+          return;
+        }
+        if (instances.length > 0) {
+          for (const inst of instances) {
+            imStore.setDingTalkInstanceConfig(inst.instanceId, cfg);
+          }
+        } else {
+          imStore.setDingTalkOpenClawConfig(cfg);
+        }
+      },
+      'dingtalk-connector': (cfg) => {
+        const instances = imStore.getDingTalkInstances();
+        if (syncAccountConfigs(
+          cfg,
+          instances,
+          (instanceId, config) => imStore.setDingTalkInstanceConfig(instanceId, config),
+          (accountId, accountCfg) => ({
+            enabled: accountCfg.enabled,
+            instanceName: typeof accountCfg.name === 'string' ? accountCfg.name : accountId,
+            clientId: accountCfg.clientId,
+            clientSecret: accountCfg.clientSecret,
+            dmPolicy: accountCfg.dmPolicy,
+            allowFrom: accountCfg.allowFrom,
+            groupPolicy: accountCfg.groupPolicy,
+            sessionTimeout: accountCfg.sessionTimeout,
+            separateSessionByConversation: accountCfg.separateSessionByConversation,
+            groupSessionScope: accountCfg.groupSessionScope,
+            sharedMemoryAcrossConversations: accountCfg.sharedMemoryAcrossConversations,
+            gatewayBaseUrl: accountCfg.gatewayBaseUrl,
+          }),
+          'dingtalk-connector',
+        )) {
+          return;
+        }
+        if (instances.length > 0) {
+          for (const inst of instances) {
+            imStore.setDingTalkInstanceConfig(inst.instanceId, cfg);
+          }
+        } else {
+          imStore.setDingTalkOpenClawConfig(cfg);
+        }
+      },
+      'qqbot': (cfg) => {
+        const instances = imStore.getQQInstances();
+        if (syncAccountConfigs(
+          cfg,
+          instances,
+          (instanceId, config) => imStore.setQQInstanceConfig(instanceId, config),
+          (accountId, accountCfg) => ({
+            enabled: accountCfg.enabled,
+            instanceName: typeof accountCfg.name === 'string' ? accountCfg.name : accountId,
+            appId: accountCfg.appId,
+            appSecret: accountCfg.clientSecret ?? accountCfg.appSecret,
+            dmPolicy: accountCfg.dmPolicy,
+            allowFrom: accountCfg.allowFrom,
+            groupPolicy: accountCfg.groupPolicy,
+            groupAllowFrom: accountCfg.groupAllowFrom,
+            historyLimit: accountCfg.historyLimit,
+            markdownSupport: accountCfg.markdownSupport,
+            imageServerBaseUrl: accountCfg.imageServerBaseUrl,
+          }),
+          'qqbot',
+        )) {
+          return;
+        }
+        if (instances.length > 0) {
+          for (const inst of instances) {
+            imStore.setQQInstanceConfig(inst.instanceId, cfg);
+          }
+        } else {
+          imStore.setQQConfig(cfg);
+        }
+      },
+      'wecom': (cfg) => {
+        const instances = imStore.getWecomInstances();
+        if (syncAccountConfigs(
+          cfg,
+          instances,
+          (instanceId, config) => imStore.setWecomInstanceConfig(instanceId, config),
+          (accountId, accountCfg) => ({
+            enabled: accountCfg.enabled,
+            instanceName: typeof accountCfg.name === 'string' ? accountCfg.name : accountId,
+            botId: accountCfg.botId,
+            secret: accountCfg.secret,
+            dmPolicy: accountCfg.dmPolicy,
+            allowFrom: accountCfg.allowFrom,
+            groupPolicy: accountCfg.groupPolicy,
+            groupAllowFrom: accountCfg.groupAllowFrom,
+            sendThinkingMessage: accountCfg.sendThinkingMessage,
+          }),
+          'wecom',
+        )) {
+          return;
+        }
+        if (instances.length > 0) {
+          for (const inst of instances) {
+            imStore.setWecomInstanceConfig(inst.instanceId, cfg);
+          }
+        } else {
+          imStore.setWecomConfig(cfg);
+        }
+      },
+      'moltbot-popo': (cfg) => syncPopoEnterpriseConfig(imStore, cfg),
       'nim': (cfg) => imStore.setNimConfig(cfg),
       'openclaw-weixin': (cfg) => imStore.setWeixinConfig(cfg),
       'netease-bee': (cfg) => imStore.setNeteaseBeeChanConfig(cfg),
@@ -267,7 +731,7 @@ function syncCoworkConfig(
   try {
     const raw = fs.readFileSync(openclawPath, 'utf-8');
     const config = JSON.parse(raw) as Record<string, unknown>;
-    const agents = config.agents as { defaults?: { sandbox?: { mode?: string }; workspace?: string } } | undefined;
+    const agents = config.agents as { defaults?: { sandbox?: { mode?: string }; workspace?: string; cwd?: string } } | undefined;
     const updates: Record<string, string> = {};
 
     updates.agentEngine = 'openclaw';
@@ -279,8 +743,9 @@ function syncCoworkConfig(
       }
     }
 
-    if (agents?.defaults?.workspace) {
-      updates.workingDirectory = agents.defaults.workspace;
+    const importedWorkingDirectory = agents?.defaults?.cwd || agents?.defaults?.workspace;
+    if (importedWorkingDirectory) {
+      updates.workingDirectory = importedWorkingDirectory;
     }
 
     setConfig(updates);
@@ -459,6 +924,17 @@ function syncMcpServers(
   }
 }
 
+function syncPlugins(configPath: string, mode: 'merge' | 'overwrite'): void {
+  const pluginsDir = resolveEnterprisePluginsSourceDir(configPath);
+  if (!pluginsDir) {
+    console.log('[Enterprise] no plugins/ directory found, skipping plugin sync');
+    return;
+  }
+
+  const pluginCount = fs.readdirSync(pluginsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;
+  console.log(`[Enterprise] registered ${pluginCount} plugin(s) from ${pluginsDir} (mode: ${mode})`);
+}
+
 /**
  * Deep merge source into target. Source values win on conflict.
  * Arrays are replaced (not concatenated).
@@ -480,6 +956,25 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   return result;
 }
 
+function readPluginLoadPaths(config: Record<string, unknown>): string[] {
+  const plugins = config.plugins;
+  if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
+    return [];
+  }
+
+  const load = (plugins as Record<string, unknown>).load;
+  if (!load || typeof load !== 'object' || Array.isArray(load)) {
+    return [];
+  }
+
+  const paths = (load as Record<string, unknown>).paths;
+  if (!Array.isArray(paths)) {
+    return [];
+  }
+
+  return paths.filter((value): value is string => typeof value === 'string' && value.length > 0);
+}
+
 /**
  * Merge enterprise openclaw.json fields into the runtime-generated openclaw.json.
  * Called AFTER openclawConfigSync generates the runtime config.
@@ -499,11 +994,62 @@ export function mergeEnterpriseOpenclawConfig(runtimeConfigPath: string): void {
     const enterpriseRaw = fs.readFileSync(enterpriseOpenclawPath, 'utf-8');
     const enterpriseConfig = JSON.parse(enterpriseRaw) as Record<string, unknown>;
 
-    const merged = deepMerge(runtimeConfig, enterpriseConfig);
+    const merged = mergeOpenClawConfigs(runtimeConfig, enterpriseConfig);
     enforceLegacyFeishuPluginDisabled(merged);
     fs.writeFileSync(runtimeConfigPath, JSON.stringify(merged, null, 2), 'utf-8');
     console.log('[Enterprise] merged enterprise openclaw.json into runtime config');
   } catch (error) {
     console.error('[Enterprise] failed to merge enterprise openclaw.json:', error);
   }
+}
+
+export function mergeOpenClawConfigs(
+  runtimeConfig: Record<string, unknown>,
+  enterpriseConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalizedEnterpriseConfig: Record<string, unknown> = { ...enterpriseConfig };
+  const runtimeChannels = isRecord(runtimeConfig.channels) ? runtimeConfig.channels : null;
+  const enterpriseChannels = isRecord(enterpriseConfig.channels) ? enterpriseConfig.channels : null;
+  if (enterpriseChannels) {
+    const normalizedChannels: Record<string, unknown> = { ...enterpriseChannels };
+    for (const channelKey of ACCOUNT_COMPAT_CHANNEL_KEYS) {
+      const enterpriseChannelCfg = enterpriseChannels[channelKey];
+      if (!enterpriseChannelCfg) continue;
+      const runtimeChannelCfg = runtimeChannels?.[channelKey];
+      normalizedChannels[channelKey] = normalizeMultiAccountChannelConfig(
+        channelKey,
+        enterpriseChannelCfg,
+        readAccountsFromChannelConfig(runtimeChannelCfg),
+      );
+    }
+    normalizedEnterpriseConfig.channels = normalizedChannels;
+  }
+
+  const merged = stripMergedChannelTopLevelAccountCredentialFields(
+    deepMerge(runtimeConfig, normalizedEnterpriseConfig),
+  );
+
+  const mergedPluginLoadPaths = Array.from(new Set([
+    ...readPluginLoadPaths(runtimeConfig),
+    ...readPluginLoadPaths(normalizedEnterpriseConfig),
+  ]));
+
+  if (mergedPluginLoadPaths.length === 0) {
+    return merged;
+  }
+
+  const existingPlugins = merged.plugins;
+  const plugins = existingPlugins && typeof existingPlugins === 'object' && !Array.isArray(existingPlugins)
+    ? { ...(existingPlugins as Record<string, unknown>) }
+    : {};
+  const existingLoad = plugins.load;
+  const load = existingLoad && typeof existingLoad === 'object' && !Array.isArray(existingLoad)
+    ? { ...(existingLoad as Record<string, unknown>) }
+    : {};
+
+  load.paths = mergedPluginLoadPaths;
+  plugins.load = load;
+  merged.plugins = plugins;
+
+  return merged;
 }

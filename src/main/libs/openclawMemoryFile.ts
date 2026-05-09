@@ -134,13 +134,13 @@ export function serializeMemoryMd(entries: OpenClawMemoryEntry[]): string {
  * all non-bullet content and the overall document structure.
  *
  * Strategy:
- *   1. Build a map from desired fingerprint → desired text.
+ *   1. Build lookup structures for the desired state.
  *   2. Walk original lines:
  *      - Non-bullet lines → keep verbatim (headings, prose, blank lines).
+ *      - Bullets inside fenced code blocks → keep verbatim.
  *      - Bullet lines still present in desired entries → keep in-place.
  *      - Bullet lines no longer desired → remove.
- *      - Bullets inside fenced code blocks → keep verbatim.
- *   3. Append genuinely new entries at the end.
+ *   3. Append genuinely new or unmatched desired entries at the end.
  */
 function rebuildMemoryMd(
   originalContent: string,
@@ -151,13 +151,18 @@ function rebuildMemoryMd(
   }
 
   const desiredById = new Map<string, string>();
-  for (const entry of entries) {
-    desiredById.set(entry.id, entry.text);
+  for (const e of entries) {
+    desiredById.set(e.id, e.text);
   }
 
   const originalEntries = parseMemoryMd(originalContent);
-  const originalIds = new Set(originalEntries.map((entry) => entry.id));
-  const newEntries = entries.filter((entry) => !originalIds.has(entry.id));
+  const originalIds = new Set(originalEntries.map((e) => e.id));
+  const newEntries: OpenClawMemoryEntry[] = [];
+  for (const e of entries) {
+    if (!originalIds.has(e.id)) {
+      newEntries.push(e);
+    }
+  }
 
   const lines = originalContent.split(/\r?\n/);
   const result: string[] = [];
@@ -180,8 +185,8 @@ function rebuildMemoryMd(
         const text = match[1].replace(/\s+/g, ' ').trim();
         if (text) {
           const fp = fingerprint(text);
-          const desiredText = desiredById.get(fp);
-          if (desiredText !== undefined) {
+          if (desiredById.has(fp)) {
+            const desiredText = desiredById.get(fp)!;
             const indent = line.match(/^(\s*)/)?.[1] ?? '';
             result.push(`${indent}- ${desiredText}`);
             desiredById.delete(fp);
@@ -196,11 +201,19 @@ function rebuildMemoryMd(
     result.push(line);
   }
 
-  const remainingTexts = [
-    ...newEntries.map((entry) => entry.text),
-    ...[...desiredById.values()].filter((text) => !newEntries.some((entry) => entry.text === text)),
-  ];
+  if (newEntries.length > 0) {
+    const lastLine = result[result.length - 1];
+    if (lastLine !== undefined && lastLine.trim() !== '') {
+      result.push('');
+    }
+    for (const e of newEntries) {
+      result.push(`- ${e.text}`);
+    }
+  }
 
+  const remainingTexts = [...desiredById.values()].filter((text) => (
+    !newEntries.some((entry) => entry.text === text)
+  ));
   if (remainingTexts.length > 0) {
     const lastLine = result[result.length - 1];
     if (lastLine !== undefined && lastLine.trim() !== '') {
@@ -362,7 +375,7 @@ export function migrateSqliteToMemoryMd(
     let skipped = 0;
     for (const raw of texts) {
       const text = raw.replace(/\s+/g, ' ').trim();
-      if (!text || text.length < 2) continue;
+      if (!text) continue;
       const id = fingerprint(text);
       if (existingIds.has(id)) {
         skipped++;

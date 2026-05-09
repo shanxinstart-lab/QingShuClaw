@@ -35,3 +35,21 @@ export const getSkillStoreUrl = (): string => {
     ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/skill-store'
     : 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/skill-store';
 };
+
+export const getUpdateCheckUrl = (): string => {
+  return isTestMode()
+    ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/update'
+    : 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/update';
+};
+
+export const getManualUpdateCheckUrl = (): string => {
+  return isTestMode()
+    ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/update-manual'
+    : 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/update-manual';
+};
+
+export const getFallbackDownloadUrl = (): string => {
+  return isTestMode()
+    ? 'https://lobsterai.inner.youdao.com/#/download-list'
+    : 'https://lobsterai.youdao.com/#/download-list';
+};

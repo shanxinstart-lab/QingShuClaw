@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { __mcpServerManagerTestUtils } from './mcpServerManager';
+import { __mcpServerManagerTestUtils,McpServerManager } from './mcpServerManager';
 
 describe('mcpServerManager abort handling', () => {
   test('raceAbortSignal rejects when aborted before the tool promise resolves', async () => {
@@ -29,5 +29,36 @@ describe('mcpServerManager abort handling', () => {
         'Tool aborted',
       ),
     ).resolves.toBe('ok');
+  });
+
+  test('local MCP tools honor abort signals', async () => {
+    const manager = new McpServerManager();
+    const controller = new AbortController();
+
+    manager.registerLocalServer({
+      name: 'local-test',
+      tools: [{
+        server: 'local-test',
+        name: 'slow_tool',
+        description: '',
+        inputSchema: {},
+      }],
+      callTool: async () => new Promise((resolve) => {
+        setTimeout(() => resolve({
+          content: [{ type: 'text', text: 'too late' }],
+          isError: false,
+        }), 50);
+      }),
+    });
+
+    const resultPromise = manager.callTool('local-test', 'slow_tool', {}, {
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(resultPromise).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'Tool execution error: Tool "slow_tool" aborted' }],
+      isError: true,
+    });
   });
 });

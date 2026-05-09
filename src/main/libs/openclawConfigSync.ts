@@ -667,6 +667,7 @@ export const buildProviderSelection = (options: {
   modelId: string;
   apiType: 'anthropic' | 'openai' | undefined;
   providerName?: string;
+  authType?: 'apikey' | 'oauth';
   codingPlanEnabled?: boolean;
   supportsImage?: boolean;
   modelName?: string;
@@ -708,6 +709,10 @@ export const buildProviderSelection = (options: {
     providerName === ProviderName.Moonshot && !options.codingPlanEnabled
       ? options.modelId.includes('thinking')
       : undefined;
+  const auth = options.providerName === ProviderName.Copilot
+    || (options.providerName === ProviderName.Minimax && options.authType === 'oauth')
+    ? AuthType.OAuth
+    : AuthType.ApiKey;
   const request = shouldUseEnvProxyForProviderBaseUrl(baseUrl)
     ? { proxy: { mode: 'env-proxy' as const } }
     : undefined;
@@ -721,7 +726,7 @@ export const buildProviderSelection = (options: {
       baseUrl,
       api,
       apiKey,
-      auth: options.providerName === ProviderName.Copilot ? AuthType.OAuth : AuthType.ApiKey,
+      auth,
       ...(request ? { request } : {}),
       models: [
         {
@@ -1024,6 +1029,7 @@ export class OpenClawConfigSync {
       modelId,
       apiType,
       providerName: apiResolution.providerMetadata?.providerName,
+      authType: apiResolution.providerMetadata?.authType,
       codingPlanEnabled: apiResolution.providerMetadata?.codingPlanEnabled,
       supportsImage: apiResolution.providerMetadata?.supportsImage,
       modelName: apiResolution.providerMetadata?.modelName,
@@ -1039,6 +1045,7 @@ export class OpenClawConfigSync {
           modelId: m.id,
           apiType: p.apiType,
           providerName: p.providerName,
+          authType: p.authType,
           codingPlanEnabled: p.codingPlanEnabled,
           supportsImage: m.supportsImage,
           modelName: m.name,
@@ -1115,6 +1122,12 @@ export class OpenClawConfigSync {
 
     const hasMcpBridgePlugin = isBundledPluginAvailable('mcp-bridge');
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
+    const hasQwenProvider = Object.values(allProvidersMap).some((provider) => (
+      isDashScopeUrl(provider.baseUrl)
+    ));
+    const qwenPortalAuthPluginId = hasQwenProvider
+      ? resolveExternalPluginConfigId('qwen-portal-auth')
+      : null;
 
     const dingTalkInstances = this.getDingTalkInstances();
     const enabledDingTalkInstances = dingTalkInstances.filter((instance) => instance.enabled && instance.clientId);
@@ -1196,6 +1209,7 @@ export class OpenClawConfigSync {
       weixinPluginId,
       hasMcpBridgePlugin ? 'mcp-bridge' : null,
       hasAskUserPlugin ? 'ask-user-question' : null,
+      qwenPortalAuthPluginId,
     ].filter((id): id is string => Boolean(id));
     const externalPluginLoadPaths = resolveExternalPluginLoadPaths(enabledExternalPluginIds);
     const existingPluginEntries = this.getExistingPluginEntries(configPath);
@@ -1274,6 +1288,7 @@ export class OpenClawConfigSync {
         mergePluginEntry(pluginEntries, weixinPluginId, { enabled: true });
         mergePluginEntry(pluginEntries, hasMcpBridgePlugin ? 'mcp-bridge' : null, { enabled: true });
         mergePluginEntry(pluginEntries, hasAskUserPlugin ? 'ask-user-question' : null, { enabled: true });
+        mergePluginEntry(pluginEntries, qwenPortalAuthPluginId, { enabled: true });
         mergePluginEntry(pluginEntries, 'acpx', { enabled: false });
 
         return Object.keys(pluginEntries).length > 0
@@ -1440,7 +1455,7 @@ export class OpenClawConfigSync {
           ...mapFeishuReplyMode(instance.replyMode),
         };
       }
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), feishu: { accounts } };
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), feishu: { enabled: true, accounts } };
     }
 
     // Sync DingTalk OpenClaw channel config (via dingtalk-connector plugin)
@@ -1465,6 +1480,7 @@ export class OpenClawConfigSync {
         };
       }
       const dingtalkChannel: Record<string, unknown> = {
+        enabled: true,
         accounts,
         ...(gatewayToken ? { gatewayToken: '${LOBSTER_DINGTALK_GW_TOKEN}' } : {}),
       };
@@ -1502,7 +1518,7 @@ export class OpenClawConfigSync {
         }
         accounts[instance.instanceId.slice(0, 8)] = account;
       }
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), qqbot: { accounts } };
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), qqbot: { enabled: true, accounts } };
     }
 
     // Sync WeCom OpenClaw channel config (via wecom-openclaw-plugin)
@@ -1531,7 +1547,7 @@ export class OpenClawConfigSync {
           sendThinkingMessage: instance.sendThinkingMessage ?? true,
         };
       }
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: { accounts } };
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: { enabled: true, accounts } };
     }
 
     // Sync POPO OpenClaw channel config (via moltbot-popo plugin)

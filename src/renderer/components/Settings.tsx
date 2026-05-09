@@ -42,6 +42,11 @@ import type { WakeInputStatus } from '../../shared/wakeInput/constants';
 import { TtsEngine, TtsPrepareStatus, type TtsAvailability, type TtsVoice } from '../../shared/tts/constants';
 import { getProviderIcon } from '../providers/uiRegistry';
 import {
+  AppUpdateSource,
+  AppUpdateStatus,
+  type AppUpdateRuntimeState,
+} from '../../shared/appUpdate/constants';
+import {
   DEFAULT_SPEECH_INPUT_CONFIG,
   DEFAULT_TTS_CONFIG,
   DEFAULT_VOICE_POST_PROCESS_CONFIG,
@@ -116,8 +121,16 @@ const providerKeys = [
 ] as const;
 
 type ProviderType = (typeof providerKeys)[number];
+const CODING_PLAN_PROVIDER_KEYS = ['zhipu', 'qwen', 'volcengine', 'moonshot', 'qianfan', 'xiaomi'] as const;
+type CodingPlanProviderType = (typeof CODING_PLAN_PROVIDER_KEYS)[number];
+const isCodingPlanProvider = (provider: ProviderType): provider is CodingPlanProviderType => (
+  (CODING_PLAN_PROVIDER_KEYS as readonly string[]).includes(provider)
+);
 type ProvidersConfig = NonNullable<AppConfig['providers']>;
 type ProviderConfig = ProvidersConfig[string];
+const isCodingPlanEnabled = (providerConfig: ProviderConfig): boolean => (
+  Boolean((providerConfig as { codingPlanEnabled?: boolean }).codingPlanEnabled)
+);
 type Model = NonNullable<ProviderConfig['models']>[number];
 type ProviderConnectionTestResult = {
   success: boolean;
@@ -259,6 +272,27 @@ const resolveBaseUrl = (
     || defaultConfig.providers?.[provider]?.baseUrl
     || '';
 };
+
+const getUpdateCheckStatusFromRuntimeStatus = (
+  state: AppUpdateRuntimeState,
+): 'idle' | 'checking' | 'upToDate' | 'error' | 'downloading' | 'ready' => {
+  if (state.source !== AppUpdateSource.Manual) {
+    return 'idle';
+  }
+  switch (state.status) {
+    case AppUpdateStatus.Checking:
+      return 'checking';
+    case AppUpdateStatus.Downloading:
+      return 'downloading';
+    case AppUpdateStatus.Ready:
+      return 'ready';
+    case AppUpdateStatus.Error:
+      return 'error';
+    default:
+      return 'idle';
+  }
+};
+
 const shouldAutoSwitchProviderBaseUrl = (provider: ProviderType, currentBaseUrl: string): boolean => {
   const anthropicUrl = ProviderRegistry.getSwitchableBaseUrl(provider, 'anthropic');
   const openaiUrl = ProviderRegistry.getSwitchableBaseUrl(provider, 'openai');
@@ -462,7 +496,7 @@ const Settings: React.FC<SettingsProps> = ({
   // Add state for providers configuration
   const [providers, setProviders] = useState<ProvidersConfig>(() => getDefaultProviders());
 
-  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'minimax' && providers.minimax.authType === 'oauth');
+  const isBaseUrlLocked = (isCodingPlanProvider(activeProvider) && isCodingPlanEnabled(providers[activeProvider])) || (activeProvider === 'minimax' && providers.minimax.authType === 'oauth');
   
   // 创建引用来确保内容区域的滚动
   const contentRef = useRef<HTMLDivElement>(null);
@@ -491,11 +525,49 @@ const Settings: React.FC<SettingsProps> = ({
   const [testMode, setTestMode] = useState(false);
   const [logoClickCount, setLogoClickCount] = useState(0);
   const [testModeUnlocked, setTestModeUnlocked] = useState(false);
-  const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error'>('idle');
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<'idle' | 'checking' | 'upToDate' | 'error' | 'downloading' | 'ready'>('idle');
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateRuntimeState | null>(null);
   const isMac = window.electron.platform === 'darwin';
 
   useEffect(() => {
     window.electron.appInfo.getVersion().then(setAppVersion);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const syncUpdateStatus = async () => {
+      try {
+        const state = await window.electron.appUpdate.getState();
+        if (!mounted) {
+          return;
+        }
+        setAppUpdateState(state);
+        setUpdateCheckStatus(getUpdateCheckStatusFromRuntimeStatus(state));
+      } catch (error) {
+        console.error('Failed to load app update state in settings:', error);
+      }
+    };
+
+    void syncUpdateStatus();
+
+    const unsubscribe = window.electron.appUpdate.onStateChanged((state) => {
+      if (
+        updateCheckTimerRef.current != null &&
+        state.source === AppUpdateSource.Manual &&
+        state.status !== AppUpdateStatus.Idle
+      ) {
+        window.clearTimeout(updateCheckTimerRef.current);
+        updateCheckTimerRef.current = null;
+      }
+      setAppUpdateState(state);
+      setUpdateCheckStatus(getUpdateCheckStatusFromRuntimeStatus(state));
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -518,7 +590,11 @@ const Settings: React.FC<SettingsProps> = ({
   }, []);
 
   const handleCheckUpdate = useCallback(async () => {
-    if (updateCheckManaged || updateCheckStatus === 'checking') return;
+    if (
+      updateCheckManaged ||
+      updateCheckStatus === 'checking' ||
+      updateCheckStatus === 'downloading'
+    ) return;
     setUpdateCheckStatus('checking');
     try {
       const result = onManualCheckUpdate ? await onManualCheckUpdate() : 'upToDate';
@@ -550,6 +626,22 @@ const Settings: React.FC<SettingsProps> = ({
       }, 3000);
     }
   }, [onManualCheckUpdate, updateCheckManaged, updateCheckStatus]);
+
+  const updateButtonLabel = useMemo(() => {
+    if (
+      updateCheckStatus === 'downloading' &&
+      appUpdateState?.progress?.percent != null &&
+      Number.isFinite(appUpdateState.progress.percent)
+    ) {
+      return `${i18nService.t('updateDownloadingBackground')} ${Math.round(appUpdateState.progress.percent * 100)}%`;
+    }
+    if (updateCheckStatus === 'checking') return i18nService.t('updateChecking');
+    if (updateCheckStatus === 'downloading') return i18nService.t('updateDownloadingBackground');
+    if (updateCheckStatus === 'ready') return i18nService.t('updateReadyTitle');
+    if (updateCheckStatus === 'upToDate') return i18nService.t('updateUpToDate');
+    if (updateCheckStatus === 'error') return i18nService.t('updateCheckFailed');
+    return i18nService.t('checkForUpdate');
+  }, [appUpdateState?.progress?.percent, updateCheckStatus]);
 
   const handleExportLogs = useCallback(async () => {
     if (isExportingLogs) {
@@ -1189,49 +1281,13 @@ const Settings: React.FC<SettingsProps> = ({
         };
       }
 
-      // Handle codingPlanEnabled toggle for zhipu
-      if (field === 'codingPlanEnabled' && provider === 'zhipu') {
+      // Coding Plan 开关必须保存为 boolean，避免配置同步时被字符串误判。
+      if (field === 'codingPlanEnabled' && isCodingPlanProvider(provider)) {
         const codingPlanEnabled = value === 'true';
         return {
           ...prev,
-          zhipu: {
-            ...prev.zhipu,
-            codingPlanEnabled,
-          },
-        };
-      }
-
-      // Handle codingPlanEnabled toggle for qwen
-      if (field === 'codingPlanEnabled' && provider === 'qwen') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          qwen: {
-            ...prev.qwen,
-            codingPlanEnabled,
-          },
-        };
-      }
-
-      // Handle codingPlanEnabled toggle for volcengine
-      if (field === 'codingPlanEnabled' && provider === 'volcengine') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          volcengine: {
-            ...prev.volcengine,
-            codingPlanEnabled,
-          },
-        };
-      }
-
-      // Handle codingPlanEnabled toggle for moonshot
-      if (field === 'codingPlanEnabled' && provider === 'moonshot') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          moonshot: {
-            ...prev.moonshot,
+          [provider]: {
+            ...prev[provider],
             codingPlanEnabled,
           },
         };
@@ -1368,19 +1424,19 @@ const Settings: React.FC<SettingsProps> = ({
             baseUrl = defaultBaseUrl;
           }
 
-          setProviders(prev => ({
-            ...prev,
-            minimax: {
-              ...prev.minimax,
-              enabled: true,
-              apiKey: tokenPayload.access_token!,
-              baseUrl,
-              apiFormat: 'anthropic',
-              authType: 'oauth',
-              oauthRefreshToken: tokenPayload.refresh_token,
-              oauthTokenExpiresAt: tokenPayload.expired_in,
-              models: [...(defaultConfig.providers?.minimax.models ?? [])],
-            },
+	          setProviders(prev => ({
+	            ...prev,
+	            minimax: {
+	              ...prev.minimax,
+	              enabled: true,
+	              oauthAccessToken: tokenPayload.access_token!,
+	              oauthBaseUrl: baseUrl,
+	              apiFormat: 'anthropic',
+	              authType: 'oauth',
+	              oauthRefreshToken: tokenPayload.refresh_token,
+	              oauthTokenExpiresAt: tokenPayload.expired_in,
+	              models: [...(defaultConfig.providers?.minimax.models ?? [])],
+	            },
           }));
 
           setMinimaxOAuthPhase({ kind: 'success' });
@@ -1404,16 +1460,18 @@ const Settings: React.FC<SettingsProps> = ({
     setMinimaxOAuthPhase({ kind: 'idle' });
   };
 
-  const handleMiniMaxOAuthLogout = () => {
-    setProviders(prev => ({
-      ...prev,
-      minimax: {
-        ...prev.minimax,
-        apiKey: '',
-        oauthRefreshToken: undefined,
-        oauthTokenExpiresAt: undefined,
-      },
-    }));
+	  const handleMiniMaxOAuthLogout = () => {
+	    setProviders(prev => ({
+	      ...prev,
+	      minimax: {
+	        ...prev.minimax,
+	        apiKey: '',
+	        oauthAccessToken: undefined,
+	        oauthBaseUrl: undefined,
+	        oauthRefreshToken: undefined,
+	        oauthTokenExpiresAt: undefined,
+	      },
+	    }));
     setMinimaxOAuthPhase({ kind: 'idle' });
   };
 
@@ -4087,6 +4145,22 @@ const Settings: React.FC<SettingsProps> = ({
                     </p>
                   </div>
                 )}
+                {/* Qianfan Coding Plan 提示 */}
+                {activeProvider === 'qianfan' && providers.qianfan.codingPlanEnabled && (
+                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
+                    <p className="text-[11px] text-primary dark:text-primary">
+                      <span className="font-medium">Coding Plan:</span> {i18nService.t('qianfanCodingPlanEndpointHint')}
+                    </p>
+                  </div>
+                )}
+                {/* Xiaomi Coding Plan 提示 */}
+                {activeProvider === 'xiaomi' && isCodingPlanEnabled(providers.xiaomi) && (
+                  <div className="mt-1.5 p-2 rounded-lg bg-primary-muted border border-primary-muted">
+                    <p className="text-[11px] text-primary dark:text-primary">
+                      <span className="font-medium">Coding Plan:</span> {i18nService.t('xiaomiCodingPlanEndpointHint')}
+                    </p>
+                  </div>
+                )}
               </div>
               )}
 
@@ -4235,6 +4309,62 @@ const Settings: React.FC<SettingsProps> = ({
                       type="checkbox"
                       checked={providers.moonshot.codingPlanEnabled ?? false}
                       onChange={(e) => handleProviderConfigChange('moonshot', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                  </label>
+                </div>
+              )}
+
+              {/* Qianfan Coding Plan 开关 (仅 Qianfan) */}
+              {activeProvider === 'qianfan' && (
+                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-medium text-foreground">
+                        Coding Plan
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
+                        Beta
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-secondary">
+                      {i18nService.t('qianfanCodingPlanHint')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3">
+                    <input
+                      type="checkbox"
+                      checked={providers.qianfan.codingPlanEnabled ?? false}
+                      onChange={(e) => handleProviderConfigChange('qianfan', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                  </label>
+                </div>
+              )}
+
+              {/* Xiaomi Coding Plan 开关 (仅 Xiaomi) */}
+              {activeProvider === 'xiaomi' && (
+                <div className="flex items-center justify-between p-3 rounded-xl bg-surface border border-border">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-medium text-foreground">
+                        Coding Plan
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary-muted text-primary">
+                        Beta
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-secondary">
+                      {i18nService.t('xiaomiCodingPlanHint')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3">
+                    <input
+                      type="checkbox"
+                      checked={isCodingPlanEnabled(providers.xiaomi)}
+                      onChange={(e) => handleProviderConfigChange('xiaomi', 'codingPlanEnabled', e.target.checked ? 'true' : 'false')}
                       className="sr-only peer"
                     />
                     <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
@@ -4450,20 +4580,17 @@ const Settings: React.FC<SettingsProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-secondary">{appVersion}</span>
                   {!updateCheckManaged && (
-                    <button
-                      type="button"
-                      disabled={updateCheckStatus === 'checking'}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleCheckUpdate();
-                      }}
-                      className="text-xs px-2 py-0.5 rounded-md border border-border text-secondary hover:text-primary dark:hover:text-primary hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {updateCheckStatus === 'checking' && i18nService.t('updateChecking')}
-                      {updateCheckStatus === 'upToDate' && i18nService.t('updateUpToDate')}
-                      {updateCheckStatus === 'error' && i18nService.t('updateCheckFailed')}
-                      {updateCheckStatus === 'idle' && i18nService.t('checkForUpdate')}
-                    </button>
+	                    <button
+	                      type="button"
+	                      disabled={updateCheckStatus === 'checking' || updateCheckStatus === 'downloading'}
+	                      onClick={(e) => {
+	                        e.stopPropagation();
+	                        void handleCheckUpdate();
+	                      }}
+	                      className="text-xs px-2 py-0.5 rounded-md border border-border text-secondary hover:text-primary dark:hover:text-primary hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+	                    >
+	                      {updateButtonLabel}
+	                    </button>
                   )}
                   {updateCheckManaged && (
                     <span className="text-xs text-claude-textSecondary dark:text-claude-darkTextSecondary">

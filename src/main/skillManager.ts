@@ -19,7 +19,7 @@ import { cpRecursiveSync } from './fsCompat';
 import { t } from './i18n';
 import { getElectronNodeRuntimePath } from './libs/coworkUtil';
 import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
-import { mergeReports,scanMultipleSkillDirs, scanSkillSecurity } from './libs/skillSecurity/skillSecurityScanner';
+import { mergeReports,scanMultipleSkillDirs } from './libs/skillSecurity/skillSecurityScanner';
 import type { SecurityReportAction,SkillSecurityReport } from './libs/skillSecurity/skillSecurityTypes';
 import { SqliteStore } from './sqliteStore';
 
@@ -1147,11 +1147,6 @@ const downloadNpmPackage = async (spec: string, tempRoot: string): Promise<strin
 
   // Use tar to extract (Node.js built-in zlib + tar via npm's own bundled tar)
   const tarExtract = await new Promise<{ code: number; stderr: string }>((resolve) => {
-    const tarCommand = npmCliJs ? electronPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
-    const tarArgs = npmCliJs
-      ? [npmCliJs, 'exec', '--', 'tar', 'xzf', tgzPath, '-C', extractDir]
-      : ['exec', '--', 'tar', 'xzf', tgzPath, '-C', extractDir];
-
     // Try system tar first (available on all platforms including Windows 10+)
     const child = spawn('tar', ['xzf', tgzPath, '-C', extractDir], {
       windowsHide: true,

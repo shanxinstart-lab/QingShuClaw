@@ -390,6 +390,65 @@ test('late event for a closed run does not recreate a managed session turn', () 
   expect(adapter.sessionIdByRunId.has('closed-run')).toBe(false);
 });
 
+test('stale lifecycle error fallback does not fail a newer turn', async () => {
+  vi.useFakeTimers();
+  try {
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: 'old turn', timestamp: 1, metadata: {} },
+    ]);
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+
+    const oldTurn = {
+      sessionId: session.id,
+      sessionKey,
+      runId: 'old-run',
+      turnToken: 1,
+      startedAtMs: 1,
+      knownRunIds: new Set(['old-run']),
+      assistantMessageId: null,
+      committedAssistantText: '',
+      currentAssistantSegmentText: '',
+      currentText: '',
+      agentAssistantTextLength: 0,
+      hasSeenAgentAssistantStream: false,
+      currentContentText: '',
+      currentContentBlocks: [],
+      sawNonTextContentBlocks: false,
+      textStreamMode: 'unknown',
+      toolUseMessageIdByToolCallId: new Map(),
+      toolResultMessageIdByToolCallId: new Map(),
+      toolResultTextByToolCallId: new Map(),
+      stopRequested: false,
+      pendingUserSync: false,
+      bufferedChatPayloads: [],
+      bufferedAgentPayloads: [],
+    };
+    adapter.activeTurns.set(session.id, oldTurn);
+    adapter.latestTurnTokenBySession.set(session.id, oldTurn.turnToken);
+
+    adapter.handleAgentLifecycleEvent(session.id, { phase: 'error', error: 'old run failed' });
+
+    const newTurn = {
+      ...oldTurn,
+      runId: 'new-run',
+      turnToken: 2,
+      knownRunIds: new Set(['new-run']),
+    };
+    adapter.activeTurns.set(session.id, newTurn);
+    adapter.latestTurnTokenBySession.set(session.id, newTurn.turnToken);
+    session.status = 'running';
+
+    await vi.advanceTimersByTimeAsync(2100);
+
+    expect(session.status).toBe('running');
+    expect(adapter.activeTurns.get(session.id)?.runId).toBe('new-run');
+    expect(session.messages.some((message) => message.type === 'system')).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('reconcileWithHistory: preserves tool messages', async () => {
   const { session, store, getReplaceCallCount } = createReconcileStore([
     { id: 'msg-1', type: 'user', content: 'Run a command', timestamp: 1, metadata: {} },
@@ -969,4 +1028,95 @@ test('patchSession uses the persisted IM channel session key for model updates',
       },
     },
   ]);
+});
+
+test('patchSession normalizes model refs before sending model updates', async () => {
+  const channelSessionKey = 'agent:agent-1:openclaw-weixin:bot-1:direct:user-1';
+  const { session, store } = createHistoryStore([]);
+  session.agentId = 'agent-1';
+
+  const patchRequests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const adapter = new OpenClawRuntimeAdapter(store, {
+    startGateway: async () => ({ phase: 'running' }),
+    getGatewayConnectionInfo: () => ({}),
+  } as never, {
+    normalizeModelRef: (modelRef) => modelRef === 'legacy-qwen'
+      ? 'qwen-portal/qwen3.6-plus'
+      : modelRef,
+  });
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: async (method: string, params?: Record<string, unknown>) => {
+      patchRequests.push({ method, params });
+      return {};
+    },
+  };
+  adapter.ensureGatewayClientReady = async () => {};
+  adapter.setChannelSessionSync({
+    getOpenClawSessionKeyForCoworkSession: (sessionId: string) => ({
+      isChannelSession: sessionId === session.id,
+      sessionKey: channelSessionKey,
+    }),
+  } as never);
+
+  await adapter.patchSession(session.id, { model: 'legacy-qwen' });
+
+  expect(patchRequests).toEqual([
+    {
+      method: 'sessions.patch',
+      params: {
+        key: channelSessionKey,
+        model: 'qwen-portal/qwen3.6-plus',
+      },
+    },
+  ]);
+});
+
+test('startSession sends the session cwd to OpenClaw chat.send', async () => {
+  const { session, store } = createHistoryStore([]);
+  session.cwd = '/tmp/qingshu-workspace';
+  session.status = 'idle';
+  session.agentId = 'main';
+  store.getAgent = () => null;
+
+  const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: async (method: string, params?: Record<string, unknown>) => {
+      requests.push({ method, params });
+      if (method === 'chat.history') {
+        return { messages: [] };
+      }
+      if (method === 'chat.send') {
+        setTimeout(() => {
+          adapter.handleGatewayEvent({
+            event: 'chat',
+            payload: {
+              runId: params?.idempotencyKey,
+              sessionKey: params?.sessionKey,
+              state: 'final',
+              message: { role: 'assistant', content: 'pong' },
+            },
+          });
+        }, 0);
+        return { runId: params?.idempotencyKey };
+      }
+      return {};
+    },
+  };
+  adapter.ensureGatewayClientReady = async () => {};
+  adapter.startChannelPolling = () => {};
+
+  await adapter.startSession(session.id, 'ping', { skipInitialUserMessage: true });
+
+  const chatSend = requests.find((request) => request.method === 'chat.send');
+  expect(chatSend?.params).toMatchObject({
+    sessionKey: 'agent:main:lobsterai:session-1',
+    message: expect.stringContaining('ping'),
+    deliver: false,
+    cwd: '/tmp/qingshu-workspace',
+  });
 });

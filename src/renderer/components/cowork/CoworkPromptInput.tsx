@@ -21,6 +21,7 @@ import {
   setDraftPrompt,
   updateCurrentSessionModelOverride,
 } from '../../store/slices/coworkSlice';
+import type { Model } from '../../store/slices/modelSlice';
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { Skill } from '../../types/skill';
@@ -36,7 +37,7 @@ import {
   type WakeActivationOverlayStateChange,
 } from '../wakeActivationOverlayHelpers';
 import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
-import { resolveAgentModelSelection } from './agentModelSelection';
+import { resolveAgentModelSelection, resolveEffectiveModel, shouldRepairAgentModelAfterSessionModelChange } from './agentModelSelection';
 import FolderSelectorPopover from './FolderSelectorPopover';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
@@ -223,12 +224,18 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const currentSessionModelOverride = currentSession && currentSession.id === sessionId
     ? currentSession.modelOverride?.trim() ?? ''
     : '';
+  const currentAgentModelRef = currentAgent?.model?.trim() ?? '';
+  const shouldRepairCurrentAgentModel = shouldRepairAgentModelAfterSessionModelChange({
+    sessionModel: currentSessionModelOverride,
+    agentModel: currentAgentModelRef,
+    availableModels,
+  });
   const {
-    selectedModel: effectiveSelectedModel,
+    selectedModel: agentSelectedModel,
     hasInvalidExplicitModel: agentModelIsInvalid,
   } = resolveAgentModelSelection({
     sessionModel: currentSessionModelOverride,
-    agentModel: currentAgent?.model ?? '',
+    agentModel: currentAgentModelRef,
     availableModels,
     fallbackModel: globalSelectedModel,
     engine: coworkAgentEngine,
@@ -238,6 +245,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     : currentAgent?.model?.trim()
       ? resolveOpenClawModelRef(currentAgent.model, availableModels) ?? null
       : null;
+  const effectiveSelectedModel = resolveEffectiveModel({
+    sessionId,
+    agentSelectedModel,
+    globalSelectedModel,
+  });
 
   const getSpeechVoiceCommandConfig = useCallback(() => ({
     ...DEFAULT_SPEECH_INPUT_CONFIG,
@@ -664,12 +676,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       }
     }
 
-    // Build prompt with ALL attachments that have real file paths (both regular files and images).
-    // Image attachments also need their file paths in the prompt so the model knows
-    // where the original files are located (e.g., for skills like seedream that need --image <path>).
-    // Note: inline/clipboard images have pseudo-paths starting with 'inline:' and are excluded.
+    // 有 base64 数据的图片已经通过 chat.send attachments 传递，避免再把本地路径写进 prompt。
+    // 否则 OpenClaw 会把路径当作 Native-image 处理，路径校验失败时可能连 base64 图片也丢弃。
     const attachmentLines = attachments
-      .filter((a) => !a.path.startsWith('inline:'))
+      .filter((a) => !a.path.startsWith('inline:') && !(a.isImage && a.dataUrl))
       .map((attachment) => `${INPUT_FILE_LABEL}: ${attachment.path}`)
       .join('\n');
     const finalPrompt = trimmedValue
@@ -1065,16 +1075,24 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             // Fallback: add as regular file attachment
             addAttachment(nativePath);
           } else {
-            // No native path (clipboard/drag from browser) - read via FileReader
+            let dataUrl: string | null = null;
             try {
-              const dataUrl = await fileToDataUrl(file);
-              addImageAttachmentFromDataUrl(file.name, dataUrl);
+              dataUrl = await fileToDataUrl(file);
             } catch (error) {
-              console.error('Failed to read image from clipboard:', error);
-              const stagedPath = await saveInlineFile(file);
-              if (stagedPath) {
-                addAttachment(stagedPath);
-              }
+              console.error('Failed to read clipboard image as data URL:', error);
+            }
+
+            const stagedPath = await saveInlineFile(file);
+            if (stagedPath) {
+              addAttachment(stagedPath, {
+                isImage: true,
+                dataUrl: dataUrl ?? undefined,
+              });
+            } else if (dataUrl) {
+              console.warn('Clipboard image saved only in memory because disk persistence failed');
+              addImageAttachmentFromDataUrl(file.name, dataUrl);
+            } else {
+              console.error('Failed to process clipboard image');
             }
           }
           continue;
@@ -1303,7 +1321,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     <ModelSelector
                       dropdownDirection="up"
                       disabled={isPatchingModel}
-                      value={coworkAgentEngine === 'openclaw' ? explicitSelectedModel : undefined}
+                      value={coworkAgentEngine === 'openclaw'
+                        ? (agentModelIsInvalid && currentSessionModelOverride
+                          ? { id: '__invalid__', name: currentSessionModelOverride.split('/').pop() || currentSessionModelOverride } as Model
+                          : explicitSelectedModel)
+                        : undefined}
                       onChange={coworkAgentEngine === 'openclaw'
                         ? async (nextModel) => {
                           if (sessionId) {
@@ -1326,6 +1348,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                                   sessionId,
                                   modelOverride: previousModelOverride,
                                 }));
+                              } else if (currentAgent && shouldRepairCurrentAgentModel && nextModelRef) {
+                                await agentService.updateAgent(currentAgent.id, { model: nextModelRef });
                               }
                             } catch {
                               if (requestId === modelPatchRequestIdRef.current) {

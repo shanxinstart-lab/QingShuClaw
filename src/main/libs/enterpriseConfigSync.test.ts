@@ -18,6 +18,7 @@ describe('enterpriseConfigSync', () => {
     const mod = await import('./enterpriseConfigSync');
     expect(typeof mod.resolveEnterpriseConfigPath).toBe('function');
     expect(typeof mod.syncEnterpriseConfig).toBe('function');
+    expect(typeof mod.mergeOpenClawConfigs).toBe('function');
   });
 
   test('manifest with all sync disabled parses correctly', () => {
@@ -72,6 +73,418 @@ describe('enterpriseConfigSync', () => {
     expect(map['qqbot']).toBe('qq');
     expect(map['moltbot-popo']).toBe('popo');
     expect(map['openclaw-weixin']).toBe('weixin');
+  });
+
+  test('syncEnterpriseConfig reads moltbot-popo accounts with top-level enterprise overrides', async () => {
+    const configDir = path.join(tmpDir, 'enterprise-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'manifest.json'),
+      JSON.stringify({
+        version: '1.0.0',
+        name: 'Test',
+        sync: { openclaw: true, skills: false, agents: false, mcp: false },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'openclaw.json'),
+      JSON.stringify({
+        channels: {
+          'moltbot-popo': {
+            accounts: {
+              default: {
+                enabled: true,
+                appKey: 'old-key',
+                appSecret: 'old-secret',
+                connectionMode: 'websocket',
+                aesKey: 'old-aes',
+                dmPolicy: 'open',
+                allowFrom: ['*'],
+              },
+            },
+            enabled: true,
+            appKey: 'new-key',
+            appSecret: 'new-secret',
+            connectionMode: 'webhook',
+            webhookPort: 3200,
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+          },
+        },
+      }),
+    );
+
+    const mod = await import('./enterpriseConfigSync');
+    const setPopoConfigCalls: Array<Record<string, unknown>> = [];
+    const imStore = {
+      setPopoConfig: (config: Record<string, unknown>) => {
+        setPopoConfigCalls.push(config);
+      },
+      setTelegramOpenClawConfig: () => undefined,
+      setDiscordOpenClawConfig: () => undefined,
+      setFeishuOpenClawConfig: () => undefined,
+      setDingTalkOpenClawConfig: () => undefined,
+      setQQConfig: () => undefined,
+      setWecomConfig: () => undefined,
+      setNimConfig: () => undefined,
+      setWeixinConfig: () => undefined,
+      setNeteaseBeeChanConfig: () => undefined,
+    };
+
+    mod.syncEnterpriseConfig(
+      configDir,
+      { get: () => undefined, set: () => undefined } as any,
+      imStore as any,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+    );
+
+    expect(setPopoConfigCalls).toEqual([
+      {
+        enabled: true,
+        appKey: 'new-key',
+        appSecret: 'new-secret',
+        connectionMode: 'webhook',
+        aesKey: 'old-aes',
+        dmPolicy: 'allowlist',
+        allowFrom: ['u1'],
+        webhookPort: 3200,
+      },
+    ]);
+  });
+
+  test('syncEnterpriseConfig writes moltbot-popo accounts to multi-instance store when available', async () => {
+    const configDir = path.join(tmpDir, 'enterprise-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'manifest.json'),
+      JSON.stringify({
+        version: '1.0.0',
+        name: 'Test',
+        sync: { openclaw: true, skills: false, agents: false, mcp: false },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'openclaw.json'),
+      JSON.stringify({
+        channels: {
+          'moltbot-popo': {
+            accounts: {
+              bot1: {
+                enabled: true,
+                name: 'Sales Bot',
+                appKey: 'old-key-1',
+                appSecret: 'old-secret-1',
+                aesKey: 'old-aes-1',
+              },
+              bot2: {
+                enabled: false,
+                appKey: 'old-key-2',
+                appSecret: 'old-secret-2',
+                aesKey: 'old-aes-2',
+              },
+            },
+            enabled: true,
+            appKey: 'new-key',
+            appSecret: 'new-secret',
+            connectionMode: 'webhook',
+            webhookPort: 3200,
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+          },
+        },
+      }),
+    );
+
+    const mod = await import('./enterpriseConfigSync');
+    const setPopoMultiInstanceCalls: Array<Record<string, unknown>> = [];
+    const setPopoConfigCalls: Array<Record<string, unknown>> = [];
+    const imStore = {
+      setPopoMultiInstanceConfig: (config: Record<string, unknown>) => {
+        setPopoMultiInstanceCalls.push(config);
+      },
+      setPopoConfig: (config: Record<string, unknown>) => {
+        setPopoConfigCalls.push(config);
+      },
+      setTelegramOpenClawConfig: () => undefined,
+      setDiscordOpenClawConfig: () => undefined,
+      setFeishuOpenClawConfig: () => undefined,
+      setDingTalkOpenClawConfig: () => undefined,
+      setQQConfig: () => undefined,
+      setWecomConfig: () => undefined,
+      setNimConfig: () => undefined,
+      setWeixinConfig: () => undefined,
+      setNeteaseBeeChanConfig: () => undefined,
+    };
+
+    mod.syncEnterpriseConfig(
+      configDir,
+      { get: () => undefined, set: () => undefined } as any,
+      imStore as any,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+    );
+
+    expect(setPopoConfigCalls).toEqual([]);
+    expect(setPopoMultiInstanceCalls).toEqual([
+      {
+        instances: [
+          {
+            enabled: true,
+            name: 'Sales Bot',
+            appKey: 'new-key',
+            appSecret: 'new-secret',
+            aesKey: 'old-aes-1',
+            connectionMode: 'webhook',
+            webhookPort: 3200,
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+            instanceId: 'bot1',
+            instanceName: 'Sales Bot',
+          },
+          {
+            enabled: true,
+            appKey: 'new-key',
+            appSecret: 'new-secret',
+            aesKey: 'old-aes-2',
+            connectionMode: 'webhook',
+            webhookPort: 3200,
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+            instanceId: 'bot2',
+            instanceName: 'POPO Bot 2',
+          },
+        ],
+      },
+    ]);
+  });
+
+  test('syncEnterpriseConfig syncs feishu account maps into existing instances', async () => {
+    const configDir = path.join(tmpDir, 'enterprise-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'manifest.json'),
+      JSON.stringify({
+        version: '1.0.0',
+        name: 'Test',
+        sync: { openclaw: true, skills: false, agents: false, mcp: false },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'openclaw.json'),
+      JSON.stringify({
+        channels: {
+          feishu: {
+            accounts: {
+              abcdef12: {
+                enabled: true,
+                name: 'Old Bot',
+                appId: 'old-app',
+                appSecret: 'old-secret',
+                dmPolicy: 'open',
+                allowFrom: ['*'],
+              },
+            },
+            enabled: true,
+            appId: 'new-app',
+            appSecret: 'new-secret',
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+          },
+        },
+      }),
+    );
+
+    const mod = await import('./enterpriseConfigSync');
+    const setFeishuInstanceConfigCalls: Array<{ instanceId: string; config: Record<string, unknown> }> = [];
+    const imStore = {
+      getFeishuInstances: () => [{ instanceId: 'abcdef12-long-existing-id' }],
+      setFeishuInstanceConfig: (instanceId: string, config: Record<string, unknown>) => {
+        setFeishuInstanceConfigCalls.push({ instanceId, config });
+      },
+      setFeishuOpenClawConfig: () => undefined,
+      setTelegramOpenClawConfig: () => undefined,
+      setDiscordOpenClawConfig: () => undefined,
+      setDingTalkOpenClawConfig: () => undefined,
+      setQQConfig: () => undefined,
+      setWecomConfig: () => undefined,
+      setPopoConfig: () => undefined,
+      setNimConfig: () => undefined,
+      setWeixinConfig: () => undefined,
+      setNeteaseBeeChanConfig: () => undefined,
+    };
+
+    mod.syncEnterpriseConfig(
+      configDir,
+      { get: () => undefined, set: () => undefined } as any,
+      imStore as any,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+    );
+
+    expect(setFeishuInstanceConfigCalls).toEqual([
+      {
+        instanceId: 'abcdef12-long-existing-id',
+        config: {
+          enabled: true,
+          instanceName: 'Old Bot',
+          appId: 'new-app',
+          appSecret: 'new-secret',
+          domain: undefined,
+          dmPolicy: 'allowlist',
+          allowFrom: ['u1'],
+          groupPolicy: undefined,
+          groupAllowFrom: undefined,
+          groups: undefined,
+          historyLimit: undefined,
+          streaming: undefined,
+          replyMode: undefined,
+          blockStreaming: undefined,
+          footer: undefined,
+          blockStreamingCoalesce: undefined,
+          mediaMaxMb: undefined,
+        },
+      },
+    ]);
+  });
+
+  test('mergeOpenClawConfigs removes top-level credentials when accounts exist', async () => {
+    const mod = await import('./enterpriseConfigSync');
+    const merged = mod.mergeOpenClawConfigs(
+      {
+        channels: {
+          feishu: {
+            accounts: {
+              default: {
+                appId: 'runtime-app',
+                appSecret: 'runtime-secret',
+              },
+            },
+            appId: 'runtime-app',
+            appSecret: 'runtime-secret',
+            dmPolicy: 'open',
+          },
+        },
+      },
+      {
+        channels: {
+          feishu: {
+            appId: 'enterprise-app',
+            appSecret: 'enterprise-secret',
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+          },
+        },
+      },
+    );
+
+    expect(merged.channels).toEqual({
+      feishu: {
+        accounts: {
+          default: {
+            appId: 'enterprise-app',
+            appSecret: 'enterprise-secret',
+            dmPolicy: 'allowlist',
+            allowFrom: ['u1'],
+          },
+        },
+        dmPolicy: 'allowlist',
+        allowFrom: ['u1'],
+      },
+    });
+  });
+
+  test('mergeOpenClawConfigs preserves runtime plugin load paths and appends enterprise paths', async () => {
+    const mod = await import('./enterpriseConfigSync');
+    const merged = mod.mergeOpenClawConfigs(
+      {
+        plugins: {
+          load: {
+            paths: ['/runtime/plugins'],
+          },
+        },
+      },
+      {
+        plugins: {
+          load: {
+            paths: ['/enterprise/custom-plugins'],
+          },
+        },
+      },
+    );
+
+    expect(merged).toEqual({
+      plugins: {
+        load: {
+          paths: [
+            '/runtime/plugins',
+            '/enterprise/custom-plugins',
+          ],
+        },
+      },
+    });
+  });
+
+  test('syncEnterpriseConfig prefers agent cwd over workspace for cowork working directory', async () => {
+    const configDir = path.join(tmpDir, 'enterprise-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'manifest.json'),
+      JSON.stringify({
+        version: '1.0.0',
+        name: 'Test',
+        sync: { openclaw: true, skills: false, agents: false, mcp: false },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'openclaw.json'),
+      JSON.stringify({
+        agents: {
+          defaults: {
+            workspace: '/tmp/runtime-workspace-main',
+            cwd: '/tmp/task-working-directory',
+            sandbox: { mode: 'off' },
+          },
+        },
+      }),
+    );
+
+    const mod = await import('./enterpriseConfigSync');
+    const setConfigCalls: Array<Record<string, string>> = [];
+    const imStore = {
+      setTelegramOpenClawConfig: () => undefined,
+      setDiscordOpenClawConfig: () => undefined,
+      setFeishuOpenClawConfig: () => undefined,
+      setDingTalkOpenClawConfig: () => undefined,
+      setQQConfig: () => undefined,
+      setWecomConfig: () => undefined,
+      setPopoConfig: () => undefined,
+      setNimConfig: () => undefined,
+      setWeixinConfig: () => undefined,
+      setNeteaseBeeChanConfig: () => undefined,
+    };
+
+    mod.syncEnterpriseConfig(
+      configDir,
+      { get: () => undefined, set: () => undefined } as any,
+      imStore as any,
+      () => undefined,
+      () => undefined,
+      (config) => setConfigCalls.push(config),
+      () => undefined,
+    );
+
+    expect(setConfigCalls).toContainEqual({
+      agentEngine: 'openclaw',
+      executionMode: 'local',
+      workingDirectory: '/tmp/task-working-directory',
+    });
   });
 
   test('recursive directory copy preserves nested structure', () => {

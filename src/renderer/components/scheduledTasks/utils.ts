@@ -1,13 +1,15 @@
 import cronstrue from 'cronstrue/i18n';
-import { i18nService } from '../../services/i18n';
+
 import type {
+  Schedule,
+  ScheduleCron,
   ScheduledTask,
   ScheduledTaskDelivery,
   ScheduledTaskPayload,
-  Schedule,
-  ScheduleCron,
   TaskLastStatus,
 } from '../../../scheduledTask/types';
+import { PlatformRegistry } from '../../../shared/platform';
+import { i18nService } from '../../services/i18n';
 
 const WEEKDAY_KEYS = [
   'scheduledTasksFormWeekSun',
@@ -53,6 +55,13 @@ function parseField(field: string): ParsedField | null {
   return null;
 }
 
+function parseCommaSeparated(field: string): number[] | null {
+  if (!/^\d+(,\d+)*$/.test(field)) return null;
+  const values = field.split(',').map(Number);
+  if (values.some((value) => Number.isNaN(value))) return null;
+  return [...values].sort((a, b) => a - b);
+}
+
 /**
  * Convert a standard 5-field cron expression into a human-readable i18n string.
  * Handles common patterns; falls back to "Cron · expr" for complex expressions.
@@ -68,23 +77,24 @@ function formatCronExpr(schedule: ScheduleCron): string {
   const mon = parseField(monRaw);
   const dow = parseField(dowRaw);
 
-  // If any field is unparseable, fall back
-  if (!min || !hour || !dom || !mon || !dow) return fallbackCron(schedule);
+  // If any core field is unparseable, fall back. The day-of-week field can be
+  // null when it is a comma-separated list, which is handled below.
+  if (!min || !hour || !dom || !mon) return fallbackCron(schedule);
 
   // --- Every N minutes: */n * * * * ---
-  if (min.type === 'step' && hour.type === 'any' && dom.type === 'any' && mon.type === 'any' && dow.type === 'any') {
+  if (min.type === 'step' && hour.type === 'any' && dom.type === 'any' && mon.type === 'any' && dow?.type === 'any') {
     if (min.step === 1) return i18nService.t('scheduledTasksCronEveryMinute');
     return tpl(i18nService.t('scheduledTasksCronEveryNMinutes'), { n: String(min.step) });
   }
 
   // --- Every N hours: fixed-min */n * * * ---
-  if (min.type === 'value' && hour.type === 'step' && dom.type === 'any' && mon.type === 'any' && dow.type === 'any') {
+  if (min.type === 'value' && hour.type === 'step' && dom.type === 'any' && mon.type === 'any' && dow?.type === 'any') {
     if (hour.step === 1) return i18nService.t('scheduledTasksCronEveryHour');
     return tpl(i18nService.t('scheduledTasksCronEveryNHours'), { n: String(hour.step) });
   }
 
   // --- Every hour at fixed minute: M * * * * (e.g. 25 * * * *) ---
-  if (min.type === 'value' && hour.type === 'any' && dom.type === 'any' && mon.type === 'any' && dow.type === 'any') {
+  if (min.type === 'value' && hour.type === 'any' && dom.type === 'any' && mon.type === 'any' && dow?.type === 'any') {
     return tpl(i18nService.t('scheduledTasksCronEveryHourAtMinute'), { min: pad2(min.value) });
   }
 
@@ -93,7 +103,7 @@ function formatCronExpr(schedule: ScheduleCron): string {
   const time = `${pad2(hour.value)}:${pad2(min.value)}`;
 
   // --- Every day: M H * * * ---
-  if (dom.type === 'any' && mon.type === 'any' && dow.type === 'any') {
+  if (dom.type === 'any' && mon.type === 'any' && dow?.type === 'any') {
     return tpl(i18nService.t('scheduledTasksCronAtTime'), {
       schedule: i18nService.t('scheduledTasksCronEveryDay'),
       time,
@@ -102,48 +112,69 @@ function formatCronExpr(schedule: ScheduleCron): string {
 
   // --- Specific day-of-week: M H * * dow ---
   if (dom.type === 'any' && mon.type === 'any') {
-    // Weekdays 1-5
-    if (dow.type === 'range' && dow.from === 1 && dow.to === 5) {
-      return tpl(i18nService.t('scheduledTasksCronAtTime'), {
-        schedule: i18nService.t('scheduledTasksCronWeekdays'),
-        time,
-      });
-    }
-    // Weekends: 0,6 or 6,0
-    if (dow.type === 'list' && dow.values.length === 2 && dow.values.includes(0) && dow.values.includes(6)) {
-      return tpl(i18nService.t('scheduledTasksCronAtTime'), {
-        schedule: i18nService.t('scheduledTasksCronWeekends'),
-        time,
-      });
-    }
-    // Single weekday: M H * * 3 → "每周三 HH:MM" / "Every Wednesday at HH:MM"
-    if (dow.type === 'value' && dow.value >= 0 && dow.value <= 6) {
-      const dayName = i18nService.t(WEEKDAY_KEYS[dow.value]);
-      return tpl(i18nService.t('scheduledTasksCronAtTime'), {
-        schedule: `${i18nService.t('scheduledTasksCronEveryWeek')}${dayName}`,
-        time,
-      });
-    }
-    // Weekday range (e.g. 1-3)
-    if (dow.type === 'range' && dow.from >= 0 && dow.from <= 6 && dow.to >= 0 && dow.to <= 6) {
-      const fromName = i18nService.t(WEEKDAY_KEYS[dow.from]);
-      const toName = i18nService.t(WEEKDAY_KEYS[dow.to]);
-      return tpl(i18nService.t('scheduledTasksCronAtTime'), {
-        schedule: `${fromName}-${toName}`,
-        time,
-      });
-    }
-    if (dow.type === 'list' && dow.values.every((value) => value >= 0 && value <= 6)) {
-      const dayNames = dow.values.map((value) => i18nService.t(WEEKDAY_KEYS[value]));
-      return tpl(i18nService.t('scheduledTasksCronAtTime'), {
-        schedule: `${i18nService.t('scheduledTasksCronEveryWeek')}${dayNames.join('/')}`,
-        time,
-      });
+    if (dow) {
+      // Weekdays 1-5
+      if (dow.type === 'range' && dow.from === 1 && dow.to === 5) {
+        return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+          schedule: i18nService.t('scheduledTasksCronWeekdays'),
+          time,
+        });
+      }
+      // Weekends: 0,6 or 6,0
+      if (dow.type === 'list' && dow.values.length === 2 && dow.values.includes(0) && dow.values.includes(6)) {
+        return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+          schedule: i18nService.t('scheduledTasksCronWeekends'),
+          time,
+        });
+      }
+      // Single weekday: M H * * 3 -> "每周三 HH:MM" / "Every Wednesday at HH:MM"
+      if (dow.type === 'value' && dow.value >= 0 && dow.value <= 6) {
+        const dayName = i18nService.t(WEEKDAY_KEYS[dow.value]);
+        return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+          schedule: `${i18nService.t('scheduledTasksCronEveryWeek')}${dayName}`,
+          time,
+        });
+      }
+      // Weekday range (e.g. 1-3)
+      if (dow.type === 'range' && dow.from >= 0 && dow.from <= 6 && dow.to >= 0 && dow.to <= 6) {
+        const fromName = i18nService.t(WEEKDAY_KEYS[dow.from]);
+        const toName = i18nService.t(WEEKDAY_KEYS[dow.to]);
+        return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+          schedule: `${fromName}-${toName}`,
+          time,
+        });
+      }
+      if (dow.type === 'list' && dow.values.every((value) => value >= 0 && value <= 6)) {
+        const dayNames = dow.values.map((value) => i18nService.t(WEEKDAY_KEYS[value]));
+        return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+          schedule: `${i18nService.t('scheduledTasksCronEveryWeek')}${dayNames.join('/')}`,
+          time,
+        });
+      }
+    } else {
+      const days = parseCommaSeparated(dowRaw);
+      if (days && days.length > 0 && days.every((day) => day >= 0 && day <= 6)) {
+        if (days.join(',') === '1,2,3,4,5') {
+          return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+            schedule: i18nService.t('scheduledTasksCronWeekdays'),
+            time,
+          });
+        }
+        const separator = i18nService.getLanguage() === 'zh' ? '、' : ', ';
+        const sortedDays = i18nService.getLanguage() === 'zh'
+          ? [...days].sort((a, b) => ((a || 7) - (b || 7)))
+          : days;
+        const dayNames = sortedDays.map((day) => i18nService.t(WEEKDAY_KEYS[day]));
+        return tpl(i18nService.t('scheduledTasksCronAtTime'), {
+          schedule: `${i18nService.t('scheduledTasksCronEveryWeek')}${dayNames.join(separator)}`,
+          time,
+        });
+      }
     }
   }
 
   // --- Monthly on specific day: M H dom * * ---
-  if (dom.type === 'value' && mon.type === 'any' && dow.type === 'any') {
+  if (dom.type === 'value' && mon.type === 'any' && dow?.type === 'any') {
     return tpl(i18nService.t('scheduledTasksCronAtMonthDay'), {
       schedule: i18nService.t('scheduledTasksCronEveryMonth'),
       day: String(dom.value),
@@ -226,8 +257,9 @@ export function formatDeliveryLabel(delivery: ScheduledTaskDelivery): string {
   }
 
   if (delivery.mode === 'none' && delivery.channel) {
+    const channel = resolveChannelDisplayName(delivery.channel);
     const toLabel = delivery.to ? ` -> ${delivery.to}` : '';
-    return `${delivery.channel}${toLabel}`;
+    return `${channel}${toLabel}`;
   }
 
   if (delivery.mode === 'webhook') {
@@ -236,12 +268,20 @@ export function formatDeliveryLabel(delivery: ScheduledTaskDelivery): string {
       : i18nService.t('scheduledTasksFormDeliveryModeWebhook');
   }
 
-  const channel = delivery.channel || 'last';
+  const channel = delivery.channel ? resolveChannelDisplayName(delivery.channel) : 'last';
   const toLabel = delivery.to ? ` -> ${delivery.to}` : '';
   return `${i18nService.t('scheduledTasksFormDeliveryModeAnnounce')} · ${channel}${toLabel}`;
 }
 
-export type PlanType = 'once' | 'daily' | 'weekly' | 'monthly' | 'advanced';
+function resolveChannelDisplayName(channel: string): string {
+  const platform = PlatformRegistry.platformOfChannel(channel);
+  if (platform) {
+    return i18nService.t(platform) || PlatformRegistry.get(platform).label;
+  }
+  return channel;
+}
+
+export type PlanType = 'once' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'advanced';
 
 export interface PlanInfo {
   planType: PlanType;
@@ -249,6 +289,7 @@ export interface PlanInfo {
   minute: number;
   second: number;
   weekday: number;
+  weekdays: number[];
   monthDay: number;
   year: number;
   month: number;
@@ -261,6 +302,7 @@ const DEFAULT_PLAN_INFO: PlanInfo = {
   minute: 0,
   second: 0,
   weekday: 1,
+  weekdays: [1],
   monthDay: 1,
   year: new Date().getFullYear(),
   month: new Date().getMonth() + 1,
@@ -280,6 +322,7 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
       minute: date.getMinutes(),
       second: date.getSeconds(),
       weekday: DEFAULT_PLAN_INFO.weekday,
+      weekdays: DEFAULT_PLAN_INFO.weekdays,
       monthDay: DEFAULT_PLAN_INFO.monthDay,
     };
   }
@@ -297,7 +340,16 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
   const dom = parseField(domRaw);
   const dow = parseField(dowRaw);
 
-  if (!min || !hour || min.type !== 'value' || hour.type !== 'value') {
+  if (!min || min.type !== 'value') {
+    return { ...DEFAULT_PLAN_INFO, planType: 'advanced' };
+  }
+
+  // Hourly: M * * * *
+  if (hour && hour.type === 'any' && dom && dom.type === 'any') {
+    return { ...DEFAULT_PLAN_INFO, planType: 'hourly', minute: min.value };
+  }
+
+  if (!hour || hour.type !== 'value') {
     return { ...DEFAULT_PLAN_INFO, planType: 'advanced' };
   }
 
@@ -314,7 +366,23 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
 
   // Weekly: M H * * DOW (single value)
   if (dom && dom.type === 'any' && dow && dow.type === 'value' && dow.value >= 0 && dow.value <= 6) {
-    return { ...base, planType: 'weekly', weekday: dow.value };
+    return { ...base, planType: 'weekly', weekday: dow.value, weekdays: [dow.value] };
+  }
+
+  // Weekly: M H * * DOW,DOW,... (parsed list)
+  if (dom && dom.type === 'any' && dow && dow.type === 'list') {
+    const days = [...dow.values].sort((a, b) => a - b);
+    if (days.length > 0 && days.every((day) => day >= 0 && day <= 6)) {
+      return { ...base, planType: 'weekly', weekday: days[0], weekdays: days };
+    }
+  }
+
+  // Weekly: M H * * DOW,DOW,...
+  if (dom && dom.type === 'any' && dow === null) {
+    const days = parseCommaSeparated(dowRaw);
+    if (days && days.length > 0 && days.every((day) => day >= 0 && day <= 6)) {
+      return { ...base, planType: 'weekly', weekday: days[0], weekdays: days };
+    }
   }
 
   // Monthly: M H DOM * *

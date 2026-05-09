@@ -1,15 +1,16 @@
-import { join } from 'path';
 import { app } from 'electron';
+import { join } from 'path';
+
+import { ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
 import type { SqliteStore } from '../sqliteStore';
 import type { CoworkApiConfig } from './coworkConfigStore';
+import { type AnthropicApiFormat,normalizeProviderApiFormat } from './coworkFormatTransform';
 import {
   configureCoworkOpenAICompatProxy,
-  type OpenAICompatProxyTarget,
   getCoworkOpenAICompatProxyBaseURL,
   getCoworkOpenAICompatProxyStatus,
+  type OpenAICompatProxyTarget,
 } from './coworkOpenAICompatProxy';
-import { normalizeProviderApiFormat, type AnthropicApiFormat } from './coworkFormatTransform';
-import { ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
 
 const LOBSTERAI_SERVER_PROXY_PATH = '/api/qingshu-claw/proxy/v1';
 
@@ -25,6 +26,9 @@ type ProviderConfig = {
   baseUrl: string;
   apiFormat?: 'anthropic' | 'openai' | 'native';
   codingPlanEnabled?: boolean;
+  authType?: 'apikey' | 'oauth';
+  oauthAccessToken?: string;
+  oauthBaseUrl?: string;
   models?: ProviderModel[];
 };
 
@@ -41,6 +45,7 @@ export type ApiConfigResolution = {
   error?: string;
   providerMetadata?: {
     providerName: string;
+    authType?: ProviderConfig['authType'];
     codingPlanEnabled: boolean;
     supportsImage?: boolean;
     modelName?: string;
@@ -176,6 +181,28 @@ type MatchedProvider = {
   modelName?: string;
 };
 
+function resolveProviderCredential(providerName: string, providerConfig: ProviderConfig): {
+  apiKey: string;
+  baseURLOverride?: string;
+  apiFormatOverride?: AnthropicApiFormat;
+  isOAuth: boolean;
+} {
+  if (providerName === ProviderName.Minimax && providerConfig.authType === 'oauth') {
+    const oauthToken = providerConfig.oauthAccessToken?.trim() || '';
+    return {
+      apiKey: oauthToken,
+      baseURLOverride: providerConfig.oauthBaseUrl?.trim() || undefined,
+      apiFormatOverride: oauthToken ? 'anthropic' : undefined,
+      isOAuth: true,
+    };
+  }
+
+  return {
+    apiKey: providerConfig.apiKey?.trim() || '',
+    isOAuth: false,
+  };
+}
+
 function getEffectiveProviderApiFormat(providerName: string, apiFormat: unknown): AnthropicApiFormat {
   if (
     providerName === ProviderName.OpenAI
@@ -297,6 +324,12 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   }
 
   const [providerName, providerConfig] = providerEntry;
+  const credential = resolveProviderCredential(providerName, providerConfig);
+  if (credential.isOAuth && !credential.apiKey) {
+    const serverFallback = tryLobsteraiServerFallback(modelId);
+    if (serverFallback) return { matched: serverFallback };
+    return { matched: null, error: 'MiniMax OAuth mode selected but login not completed.' };
+  }
   let apiFormat = getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
   let baseURL = providerConfig.baseUrl?.trim();
 
@@ -312,7 +345,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
     return { matched: null, error: `Provider ${providerName} is missing base URL.` };
   }
 
-  if (apiFormat === 'anthropic' && providerRequiresApiKey(providerName) && !providerConfig.apiKey?.trim()) {
+  if (apiFormat === 'anthropic' && providerRequiresApiKey(providerName) && !credential.apiKey) {
     const serverFallback = tryLobsteraiServerFallback(modelId);
     if (serverFallback) return { matched: serverFallback };
     return { matched: null, error: `Provider ${providerName} requires API key for Anthropic-compatible mode.` };
@@ -326,11 +359,12 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
       providerName,
       providerConfig: {
         ...providerConfig,
+        apiKey: credential.apiKey || providerConfig.apiKey,
         models: normalizedModels,
       },
       modelId,
-      apiFormat,
-      baseURL,
+      apiFormat: credential.apiFormatOverride ?? apiFormat,
+      baseURL: credential.baseURLOverride ?? baseURL,
       supportsImage: matchedModel?.supportsImage,
       modelName: matchedModel?.name,
     },
@@ -465,6 +499,7 @@ export function resolveRawApiConfig(): ApiConfigResolution {
     },
     providerMetadata: {
       providerName: matched.providerName,
+      authType: matched.providerConfig.authType,
       codingPlanEnabled: !!matched.providerConfig.codingPlanEnabled,
       supportsImage: matched.supportsImage,
       modelName: matched.modelName,
@@ -493,7 +528,7 @@ export function resolveAllProviderApiKeys(): Record<string, string> {
 
   for (const [providerName, providerConfig] of Object.entries(appConfig.providers)) {
     if (!providerConfig?.enabled) continue;
-    const apiKey = providerConfig.apiKey?.trim();
+    const apiKey = resolveProviderCredential(providerName, providerConfig).apiKey;
     if (!apiKey && providerRequiresApiKey(providerName)) continue;
     const envName = providerName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     result[envName] = apiKey || 'sk-lobsterai-local';
@@ -507,6 +542,7 @@ export type ProviderRawConfig = {
   baseURL: string;
   apiKey: string;
   apiType: 'anthropic' | 'openai';
+  authType?: ProviderConfig['authType'];
   codingPlanEnabled: boolean;
   models: Array<{ id: string; name?: string; supportsImage?: boolean }>;
 };
@@ -523,13 +559,14 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
     if (!providerConfig?.enabled) continue;
     if (providerName === ProviderName.LobsteraiServer) continue;
 
-    const apiKey = providerConfig.apiKey?.trim() || '';
+    const credential = resolveProviderCredential(providerName, providerConfig);
+    const apiKey = credential.apiKey;
     if (!apiKey && providerRequiresApiKey(providerName)) continue;
 
-    const baseURL = providerConfig.baseUrl?.trim() || '';
+    const baseURL = credential.baseURLOverride || providerConfig.baseUrl?.trim() || '';
 
     let effectiveBaseURL = baseURL;
-    let effectiveApiFormat = getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
+    let effectiveApiFormat = credential.apiFormatOverride ?? getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
 
     if (providerConfig.codingPlanEnabled) {
       const resolved = resolveCodingPlanBaseUrl(providerName, true, effectiveApiFormat, effectiveBaseURL);
@@ -547,6 +584,7 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
       baseURL: effectiveBaseURL,
       apiKey: apiKey || 'sk-lobsterai-local',
       apiType: effectiveApiFormat === 'anthropic' ? 'anthropic' : 'openai',
+      authType: providerConfig.authType,
       codingPlanEnabled: !!providerConfig.codingPlanEnabled,
       models: normalizeProviderModels(providerName, models),
     });

@@ -43,6 +43,7 @@ type LocalMcpServerRegistration = {
   callTool: (
     toolName: string,
     args: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
   ) => Promise<LocalMcpToolResult>;
 };
 
@@ -524,9 +525,19 @@ export class McpServerManager {
   ): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }> {
     const localServer = this.localServers.get(serverName);
     if (localServer) {
+      if (options?.signal?.aborted) {
+        return {
+          content: [{ type: 'text', text: 'Tool execution aborted: request cancelled before start' }],
+          isError: true,
+        };
+      }
+
       try {
         log('INFO', `Calling local tool "${toolName}" on server "${serverName}"`);
-        return await localServer.callTool(toolName, args);
+        const toolPromise = localServer.callTool(toolName, args, options);
+        return options?.signal
+          ? await raceAbortSignal(toolPromise, options.signal, `Tool "${toolName}" aborted`)
+          : await toolPromise;
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         log('ERROR', `Local tool call "${toolName}" on "${serverName}" failed: ${errMsg}`);

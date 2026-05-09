@@ -1,13 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useSelector } from 'react-redux';
+import { XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import { CheckIcon } from '@heroicons/react/24/outline';
-import SearchIcon from '../icons/SearchIcon';
-import PuzzleIcon from '../icons/PuzzleIcon';
-import Cog6ToothIcon from '../icons/Cog6ToothIcon';
+import React, { useEffect, useRef,useState } from 'react';
+import { useSelector } from 'react-redux';
+
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
 import { Skill } from '../../types/skill';
+import Cog6ToothIcon from '../icons/Cog6ToothIcon';
+import PuzzleIcon from '../icons/PuzzleIcon';
+import SearchIcon from '../icons/SearchIcon';
 
 interface SkillsPopoverProps {
   isOpen: boolean;
@@ -31,12 +33,14 @@ const SkillsPopover: React.FC<SkillsPopoverProps> = ({
   const skills = useSelector((state: RootState) => state.skill.skills);
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
 
+  const normalizedSearchQuery = searchQuery.trim().replace(/\s+/g, ' ').toLowerCase();
+
   // Filter enabled skills based on search query
   const filteredSkills = skills
     .filter(s => s.enabled)
     .filter(s =>
-      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      skillService.getInstalledSkillDescription(s).toLowerCase().includes(searchQuery.toLowerCase())
+      s.name.toLowerCase().includes(normalizedSearchQuery) ||
+      skillService.getInstalledSkillDescription(s).toLowerCase().includes(normalizedSearchQuery)
     );
 
   // Calculate available height and focus search input when popover opens
@@ -118,8 +122,18 @@ const SkillsPopover: React.FC<SkillsPopoverProps> = ({
             placeholder={i18nService.t('searchSkills')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-surface text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-full pl-9 pr-8 py-2 text-sm rounded-lg bg-surface text-foreground placeholder-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-secondary hover:text-primary transition-colors"
+              title={i18nService.t('clear')}
+            >
+              <XCircleIconSolid className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 

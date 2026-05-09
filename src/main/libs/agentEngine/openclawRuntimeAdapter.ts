@@ -1,16 +1,37 @@
+import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'crypto';
 import { app, BrowserWindow } from 'electron';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+
 import type { OpenClawSessionPatch } from '../../../common/openclawSession';
-import type { CoworkMessage, CoworkSession, CoworkSessionStatus, CoworkExecutionMode, CoworkStore } from '../../coworkStore';
+import type { CoworkExecutionMode, CoworkMessage, CoworkSession, CoworkSessionStatus, CoworkStore } from '../../coworkStore';
+import { t } from '../../i18n';
+import { getCommandDangerLevel,isDeleteCommand } from '../commandSafety';
+import { setCoworkProxySessionId } from '../coworkOpenAICompatProxy';
+import { extractOpenClawAssistantStreamText } from '../openclawAssistantText';
+import {
+  buildManagedSessionKey,
+  isManagedSessionKey,
+  type OpenClawChannelSessionSync,
+  parseChannelSessionKey,
+  parseManagedSessionKey,
+} from '../openclawChannelSessionSync';
+import { OPENCLAW_AGENT_TIMEOUT_SECONDS } from '../openclawConfigSync';
 import {
   OpenClawEngineManager,
   type OpenClawGatewayConnectionInfo,
 } from '../openclawEngineManager';
+import {
+  extractGatewayHistoryEntries,
+  extractGatewayMessageText,
+  isHeartbeatAckText,
+  isTransientGatewayStatusText,
+} from '../openclawHistory';
+import { buildOpenClawLocalTimeContextPrompt } from '../openclawLocalTimeContextPrompt';
+import { buildTransientSessionFromOpenClawTranscript } from '../openclawTranscript';
+import { AgentLifecyclePhase, type AgentLifecyclePhase as AgentLifecyclePhaseValue } from './constants';
 import type {
   CoworkContinueOptions,
   CoworkRuntime,
@@ -18,28 +39,6 @@ import type {
   CoworkStartOptions,
   PermissionRequest,
 } from './types';
-import {
-  buildManagedSessionKey,
-  type OpenClawChannelSessionSync,
-  isManagedSessionKey,
-  parseManagedSessionKey,
-  parseChannelSessionKey,
-} from '../openclawChannelSessionSync';
-import {
-  extractGatewayHistoryEntries,
-  extractGatewayMessageText,
-  isHeartbeatAckText,
-  isTransientGatewayStatusText,
-  normalizeGatewayHistoryText,
-} from '../openclawHistory';
-import { buildTransientSessionFromOpenClawTranscript } from '../openclawTranscript';
-import { extractOpenClawAssistantStreamText } from '../openclawAssistantText';
-import { buildOpenClawLocalTimeContextPrompt } from '../openclawLocalTimeContextPrompt';
-import { isDeleteCommand, getCommandDangerLevel } from '../commandSafety';
-import { setCoworkProxySessionId } from '../coworkOpenAICompatProxy';
-import { OPENCLAW_AGENT_TIMEOUT_SECONDS } from '../openclawConfigSync';
-import { t } from '../../i18n';
-import { AgentLifecyclePhase, type AgentLifecyclePhase as AgentLifecyclePhaseValue } from './constants';
 
 const OPENCLAW_GATEWAY_TOOL_EVENTS_CAP = 'tool-events';
 const BRIDGE_MAX_MESSAGES = 20;
@@ -103,11 +102,15 @@ type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
     method: string,
     params?: unknown,
-    opts?: { expectFinal?: boolean; timeoutMs?: number },
+    opts?: { expectFinal?: boolean; timeoutMs?: number | null },
   ) => Promise<T>;
 };
 
 type GatewayClientCtor = new (options: Record<string, unknown>) => GatewayClientLike;
+
+type OpenClawRuntimeAdapterOptions = {
+  normalizeModelRef?: (modelRef: string) => string;
+};
 
 type ChatEventState = 'delta' | 'final' | 'aborted' | 'error';
 
@@ -773,6 +776,7 @@ const waitWithTimeout = async (promise: Promise<void>, timeoutMs: number): Promi
 export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntime {
   private readonly store: CoworkStore;
   private readonly engineManager: OpenClawEngineManager;
+  private readonly options: OpenClawRuntimeAdapterOptions;
   private readonly activeTurns = new Map<string, ActiveTurn>();
   private readonly sessionIdBySessionKey = new Map<string, string>();
   private readonly sessionIdByRunId = new Map<string, string>();
@@ -861,10 +865,21 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   agentTimeoutSeconds = OPENCLAW_AGENT_TIMEOUT_SECONDS;
   private static readonly CLIENT_TIMEOUT_GRACE_MS = 30_000;
 
-  constructor(store: CoworkStore, engineManager: OpenClawEngineManager) {
+  constructor(
+    store: CoworkStore,
+    engineManager: OpenClawEngineManager,
+    options: OpenClawRuntimeAdapterOptions = {},
+  ) {
     super();
     this.store = store;
     this.engineManager = engineManager;
+    this.options = options;
+  }
+
+  private normalizeModelRef(modelRef: string): string {
+    const normalized = modelRef.trim();
+    if (!normalized) return normalized;
+    return this.options.normalizeModelRef?.(normalized) ?? normalized;
   }
 
   setChannelSessionSync(sync: OpenClawChannelSessionSync): void {
@@ -1251,15 +1266,22 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.rememberSessionKey(sessionId, targetSessionKey);
     await this.ensureGatewayClientReady();
 
+    const normalizedPatch: OpenClawSessionPatch = {
+      ...patch,
+      ...(patch.model !== undefined
+        ? { model: patch.model ? this.normalizeModelRef(patch.model) : patch.model }
+        : {}),
+    };
+
     const sendPatch = async (): Promise<void> => {
       const client = this.requireGatewayClient();
       await client.request('sessions.patch', {
         key: targetSessionKey,
-        ...patch,
+        ...normalizedPatch,
       });
     };
 
-    if (patch.model !== undefined) {
+    if (normalizedPatch.model !== undefined) {
       await this.enqueueSessionModelPatch(sessionId, sendPatch);
       this.lastPatchedModelBySession.delete(sessionId);
       return;
@@ -1475,7 +1497,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const turnToken = this.nextTurnToken(sessionId);
 
     const agent = this.store.getAgent(agentId);
-    const currentModel = session.modelOverride || agent?.model || '';
+    const rawCurrentModel = session.modelOverride || agent?.model || '';
+    // Session modelOverride is user-selected and must not be rewritten by
+    // provider migration; only agent-level refs are safe to normalize.
+    const currentModel = session.modelOverride
+      ? rawCurrentModel
+      : (rawCurrentModel ? this.normalizeModelRef(rawCurrentModel) : '');
+    if (!session.modelOverride && currentModel && currentModel !== rawCurrentModel && agent?.id) {
+      this.store.updateAgent(agent.id, { model: currentModel });
+    }
     const channelSessionKey = this.channelSessionSync
       ?.getOpenClawSessionKeyForCoworkSession(sessionId)
       .sessionKey;
@@ -1499,6 +1529,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       options.systemPrompt ?? session.systemPrompt,
       agentId,
     );
+    const runCwd = session.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
     const completionPromise = new Promise<void>((resolve, reject) => {
       this.pendingTurns.set(sessionId, { resolve, reject });
     });
@@ -1539,7 +1570,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const client = this.requireGatewayClient();
     try {
-      const runCwd = session.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
       console.log('[OpenClawRuntime] chat.send params:', { sessionKey, messageLength: outboundMessage.length, runId });
       const attachments = options.imageAttachments?.length
         ? options.imageAttachments.map((img) => ({
@@ -1573,7 +1603,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       this.store.updateSession(sessionId, { status: 'error' });
       const message = error instanceof Error ? error.message : String(error);
       this.emit('error', sessionId, message);
-      this.rejectTurn(sessionId, new Error(message));
+      this.pendingTurns.delete(sessionId);
       throw error;
     }
 
@@ -2594,12 +2624,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // run; if the turn is still active after that, complete it ourselves.
       const FALLBACK_DELAY_MS = 3000;
       const endingTurn = this.activeTurns.get(sessionId);
+      const endingTurnToken = endingTurn?.turnToken;
       const endingRunId =
         endingTurn?.runId ??
         (isRecord(data) && typeof data.runId === 'string' ? data.runId : null);
       setTimeout(() => {
         const currentTurn = this.activeTurns.get(sessionId);
         if (!currentTurn) return;
+        if (endingTurnToken !== undefined && currentTurn.turnToken !== endingTurnToken) return;
         if (endingRunId && !currentTurn.knownRunIds.has(endingRunId)) return;
         console.log('[OpenClawRuntime] agent lifecycle end fallback: completing turn that missed chat final, sessionId:', sessionId);
         void this.completeChannelTurnFallback(sessionId, currentTurn);
@@ -2614,9 +2646,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // active after that, surface the error ourselves.
       const errorMessage = typeof data.error === 'string' ? data.error.trim() : 'OpenClaw run failed';
       const ERROR_FALLBACK_DELAY_MS = 2000;
+      const errorTurn = this.activeTurns.get(sessionId);
+      const errorTurnToken = errorTurn?.turnToken;
+      const errorRunId =
+        errorTurn?.runId ??
+        (isRecord(data) && typeof data.runId === 'string' ? data.runId : null);
       setTimeout(() => {
         const turn = this.activeTurns.get(sessionId);
         if (!turn) return;
+        if (errorTurnToken !== undefined && turn.turnToken !== errorTurnToken) return;
+        if (errorRunId && !turn.knownRunIds.has(errorRunId)) return;
         console.log('[OpenClawRuntime] agent lifecycle error fallback: surfacing error that missed chat error event, sessionId:', sessionId, 'error:', errorMessage);
         // Abort the retrying run on the gateway so the session is freed for new messages.
         // Without this, the gateway continues retrying indefinitely and rejects subsequent chat.send requests.
@@ -3051,10 +3090,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     // Track high-water mark.
     turn.agentAssistantTextLength = Math.max(turn.agentAssistantTextLength, text.length);
-    if (text.trim().length > 0) {
-      turn.hasSeenAgentAssistantStream = true;
-    }
-
     if (text.trim().length > 0) {
       turn.hasSeenAgentAssistantStream = true;
     }
@@ -4158,8 +4193,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // to place the user message before the assistant — preserving correct chronological
     // order. This handles the race condition where gateway chat.history lags behind
     // the real-time streaming events.
-    let syncedCount = 0;
-
     // Collect all user message indices that need syncing:
     // 1. Normal: user messages from firstNewIdx onwards
     // 2. Repair: user messages before firstNewIdx that are missing locally
@@ -4229,7 +4262,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
       this.emit('message', sessionId, userMessage);
       localUserTexts.add(entry.text);
-      syncedCount++;
     }
 
     this.channelSyncCursor.set(sessionId, historyEntries.length);

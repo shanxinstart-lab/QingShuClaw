@@ -335,13 +335,14 @@ export class QingShuManagedCatalogService {
     mcpServerManager.registerLocalServer({
       name: QingShuManagedToolRuntime.ServerName,
       tools,
-      callTool: async (toolName, args) => this.invokeManagedTool(toolName, args),
+      callTool: async (toolName, args, options) => this.invokeManagedTool(toolName, args, options),
     });
   }
 
   private async invokeManagedTool(
     toolName: string,
     args: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
   ): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }> {
     const toolAlias = buildManagedToolAlias(toolName);
     const backendPath = `/api/qingshu-claw/managed/tools/${encodeURIComponent(toolName)}/invoke`;
@@ -356,6 +357,7 @@ export class QingShuManagedCatalogService {
           headers: {
             'Content-Type': 'application/json',
           },
+          signal: options?.signal,
           body: JSON.stringify({
             arguments: args,
           }),
