@@ -8,6 +8,7 @@ import {
 import type { AgentSidebarAgentSummary } from './types';
 import {
   collapseAgentSidebarTaskList,
+  removeAgentSidebarTaskPreviews,
   sortAgentSidebarAgents,
   sortAgentSidebarTasks,
 } from './useAgentSidebarState';
@@ -91,4 +92,30 @@ test('sortAgentSidebarAgents keeps pinned agents in first-pinned-first order', (
 
 test('collapseAgentSidebarTaskList resets one agent history list to preview mode', () => {
   expect(collapseAgentSidebarTaskList(['agent-1', 'agent-2'], 'agent-1')).toEqual(['agent-2']);
+});
+
+test('removeAgentSidebarTaskPreviews removes selected tasks across loaded agents', () => {
+  const previews = {
+    'agent-1': [
+      makeSession('keep-1', 100),
+      makeSession('remove-1', 200),
+    ],
+    'agent-2': [
+      makeSession('remove-2', 300),
+      makeSession('keep-2', 400),
+    ],
+  };
+
+  const next = removeAgentSidebarTaskPreviews(previews, ['remove-1', 'remove-2']);
+
+  expect(next['agent-1'].map((session) => session.id)).toEqual(['keep-1']);
+  expect(next['agent-2'].map((session) => session.id)).toEqual(['keep-2']);
+});
+
+test('removeAgentSidebarTaskPreviews preserves state when nothing matches', () => {
+  const previews = {
+    'agent-1': [makeSession('keep-1', 100)],
+  };
+
+  expect(removeAgentSidebarTaskPreviews(previews, ['missing'])).toBe(previews);
 });

@@ -794,6 +794,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     batchSelectAll: '全选',
     batchDelete: '删除',
     batchCancel: '取消',
+    batchSelectionScope: '{agent} · 已选 {count} 个',
     batchDeleteConfirmTitle: '确认批量删除',
     batchDeleteConfirmMessage: '确定要删除选中的 {count} 个任务吗？此操作不可撤销。',
     back: '返回',
@@ -2570,6 +2571,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     batchSelectAll: 'Select All',
     batchDelete: 'Delete',
     batchCancel: 'Cancel',
+    batchSelectionScope: '{agent} · {count} selected',
     batchDeleteConfirmTitle: 'Confirm Batch Deletion',
     batchDeleteConfirmMessage:
       'Are you sure you want to delete {count} selected tasks? This action cannot be undone.',

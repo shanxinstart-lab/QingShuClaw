@@ -17,6 +17,7 @@ import type { AgentSidebarAgentNode, AgentSidebarTaskNode } from './types';
 interface AgentTreeNodeProps {
   agent: AgentSidebarAgentNode;
   isBatchMode: boolean;
+  batchAgentId: string | null;
   selectedIds: Set<string>;
   showBatchOption?: boolean;
   onToggleExpanded: (agentId: string) => void;
@@ -32,7 +33,7 @@ interface AgentTreeNodeProps {
   onShareTask: (task: AgentSidebarTaskNode) => Promise<void>;
   onToggleTaskPin: (task: AgentSidebarTaskNode, pinned: boolean) => Promise<void>;
   onRenameTask: (task: AgentSidebarTaskNode, title: string) => Promise<void>;
-  onToggleSelection: (sessionId: string) => void;
+  onToggleSelection: (sessionId: string, agentId: string) => void;
   onEnterBatchMode: (task: AgentSidebarTaskNode) => void;
 }
 
@@ -60,6 +61,7 @@ const AgentAvatar: React.FC<{ agent: AgentSidebarAgentNode }> = ({ agent }) => {
 const AgentTreeNode: React.FC<AgentTreeNodeProps> = ({
   agent,
   isBatchMode,
+  batchAgentId,
   selectedIds,
   showBatchOption = false,
   onToggleExpanded,
@@ -88,6 +90,8 @@ const AgentTreeNode: React.FC<AgentTreeNodeProps> = ({
   const previousExpandedRef = useRef(agent.isExpanded);
   const isMenuOpen = menuPosition !== null;
   const isMainAgent = isDefaultAgentId(agent.id);
+  const isBatchAgent = isBatchMode && batchAgentId === agent.id;
+  const isOutsideBatchAgent = isBatchMode && batchAgentId !== null && batchAgentId !== agent.id;
   const agentName = getAgentDisplayName(agent);
   const menuItemClassName =
     'flex w-full items-center gap-2 whitespace-nowrap px-2.5 py-1.5 text-left text-[13px] text-foreground transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]';
@@ -386,15 +390,16 @@ const AgentTreeNode: React.FC<AgentTreeNodeProps> = ({
                 <AgentTaskRow
                   key={task.id}
                   task={task}
-                  isBatchMode={isBatchMode}
+                  isBatchMode={isBatchAgent}
                   isSelected={selectedIds.has(task.id)}
-                  showBatchOption={showBatchOption}
+                  isSelectionDisabled={isOutsideBatchAgent}
+                  showBatchOption={showBatchOption && !isBatchMode}
                   onSelect={() => onSelectTask(task)}
                   onDelete={() => onDeleteTask(task)}
                   onShare={() => onShareTask(task)}
                   onTogglePin={(pinned) => onToggleTaskPin(task, pinned)}
                   onRename={(title) => onRenameTask(task, title)}
-                  onToggleSelection={() => onToggleSelection(task.id)}
+                  onToggleSelection={() => onToggleSelection(task.id, task.agentId)}
                   onEnterBatchMode={() => onEnterBatchMode(task)}
                 />
               ))}
