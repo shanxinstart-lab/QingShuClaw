@@ -1111,10 +1111,6 @@ const messageMetaClassName = (visible: boolean, align: 'left' | 'right' = 'left'
   visible ? 'opacity-100' : 'opacity-0 pointer-events-none',
 ].filter(Boolean).join(' ');
 
-function hasFocusWithin(element: HTMLElement): boolean {
-  return document.activeElement instanceof Node && element.contains(document.activeElement);
-}
-
 // Copy button component
 const CopyButton: React.FC<{
   content: string;
@@ -1217,7 +1213,7 @@ export const UserMessageItem: React.FC<{
     setIsHovered(false);
   }, []);
   const handleMouseLeave = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (hasFocusWithin(event.currentTarget)) return;
+    if (document.activeElement instanceof Node && event.currentTarget.contains(document.activeElement)) return;
     setIsHovered(false);
   }, []);
 
@@ -1343,7 +1339,7 @@ const AssistantMessageItem: React.FC<{
     setIsHovered(false);
   }, []);
   const handleMouseLeave = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (hasFocusWithin(event.currentTarget)) return;
+    if (document.activeElement instanceof Node && event.currentTarget.contains(document.activeElement)) return;
     setIsHovered(false);
   }, []);
 
