@@ -142,6 +142,31 @@ export const isSilentReplyPrefixText = (text: string): boolean => {
   return trimmed === 'NO';
 };
 
+const TRAILING_SILENT_REPLY_RE = /\n\s*NO_REPLY\s*$/i;
+
+export const stripTrailingSilentReplyToken = (text: string): string => {
+  return text.replace(TRAILING_SILENT_REPLY_RE, '').trimEnd();
+};
+
+const TRAILING_SILENT_REPLY_PARTIAL_TOKENS = [
+  'NO_REPLY', 'NO_REPL', 'NO_REP', 'NO_RE', 'NO_R', 'NO_', 'NO',
+];
+
+export const stripTrailingSilentReplyTail = (text: string): string => {
+  const stripped = text.replace(TRAILING_SILENT_REPLY_RE, '');
+  if (stripped !== text) return stripped.trimEnd();
+  const lastNewline = text.lastIndexOf('\n');
+  if (lastNewline < 0) return text;
+  const tail = text.slice(lastNewline + 1).trim().toUpperCase();
+  if (!tail) return text;
+  for (const token of TRAILING_SILENT_REPLY_PARTIAL_TOKENS) {
+    if (tail === token) {
+      return text.slice(0, lastNewline).trimEnd();
+    }
+  }
+  return text;
+};
+
 export const isHeartbeatPromptText = (text: string): boolean => {
   const normalized = text.trim().toLowerCase();
   if (!normalized) {
@@ -170,9 +195,15 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
     return null;
   }
 
-  const text = extractGatewayMessageText(message).trim();
+  let text = extractGatewayMessageText(message).trim();
   if (!text) {
     return null;
+  }
+  if (role === 'assistant') {
+    text = stripTrailingSilentReplyToken(text);
+    if (!text) {
+      return null;
+    }
   }
   if (shouldSuppressHeartbeatText(role, text)) {
     return null;

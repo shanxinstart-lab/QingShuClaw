@@ -1173,7 +1173,7 @@ const ReEditButton: React.FC<{
         e.stopPropagation();
         onClick();
       }}
-      className={`p-1.5 rounded-md dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-all duration-200 ${
+      className={`p-1.5 rounded-md hover:bg-surface-raised transition-all duration-200 ${
         visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}
       tabIndex={visible ? 0 : -1}
@@ -1213,7 +1213,9 @@ export const UserMessageItem: React.FC<{
     setIsHovered(false);
   }, []);
   const handleMouseLeave = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (document.activeElement instanceof Node && event.currentTarget.contains(document.activeElement)) return;
+    if (document.activeElement instanceof HTMLElement && event.currentTarget.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
     setIsHovered(false);
   }, []);
 
@@ -1339,7 +1341,9 @@ const AssistantMessageItem: React.FC<{
     setIsHovered(false);
   }, []);
   const handleMouseLeave = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (document.activeElement instanceof Node && event.currentTarget.contains(document.activeElement)) return;
+    if (document.activeElement instanceof HTMLElement && event.currentTarget.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
     setIsHovered(false);
   }, []);
 

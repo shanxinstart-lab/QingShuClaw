@@ -123,6 +123,25 @@ export const collapseAgentSidebarTaskList = (
     : expandedTaskListAgentIds;
 };
 
+export const removeAgentSidebarTaskPreviews = (
+  previewsByAgentId: Record<string, CoworkSessionSummary[]>,
+  sessionIds: Iterable<string>,
+): Record<string, CoworkSessionSummary[]> => {
+  const sessionIdSet = new Set(sessionIds);
+  if (sessionIdSet.size === 0) return previewsByAgentId;
+
+  let changed = false;
+  const next = { ...previewsByAgentId };
+
+  Object.entries(previewsByAgentId).forEach(([agentId, tasks]) => {
+    if (!tasks.some((task) => sessionIdSet.has(task.id))) return;
+    next[agentId] = tasks.filter((task) => !sessionIdSet.has(task.id));
+    changed = true;
+  });
+
+  return changed ? next : previewsByAgentId;
+};
+
 export const useAgentSidebarState = () => {
   const agents = useSelector((state: RootState) => state.agent.agents);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
@@ -417,14 +436,13 @@ export const useAgentSidebarState = () => {
 
   const removeTaskPreview = useCallback((sessionId: string) => {
     setTaskPreviewsByAgentId((previous) => {
-      let changed = false;
-      const next = { ...previous };
-      Object.entries(previous).forEach(([agentId, tasks]) => {
-        if (!tasks.some((task) => task.id === sessionId)) return;
-        next[agentId] = tasks.filter((task) => task.id !== sessionId);
-        changed = true;
-      });
-      return changed ? next : previous;
+      return removeAgentSidebarTaskPreviews(previous, [sessionId]);
+    });
+  }, []);
+
+  const removeTaskPreviews = useCallback((sessionIds: string[]) => {
+    setTaskPreviewsByAgentId((previous) => {
+      return removeAgentSidebarTaskPreviews(previous, sessionIds);
     });
   }, []);
 
@@ -473,6 +491,7 @@ export const useAgentSidebarState = () => {
     expandedTaskListAgentIdSet,
     patchTaskPreview,
     removeTaskPreview,
+    removeTaskPreviews,
     retryLoadTasks,
     loadMoreTasks,
     collapseTasks,

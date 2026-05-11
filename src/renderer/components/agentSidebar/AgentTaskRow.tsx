@@ -18,6 +18,7 @@ interface AgentTaskRowProps {
   task: AgentSidebarTaskNode;
   isBatchMode: boolean;
   isSelected: boolean;
+  isSelectionDisabled?: boolean;
   showBatchOption?: boolean;
   onSelect: () => void;
   onDelete: () => Promise<void>;
@@ -37,6 +38,7 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
   task,
   isBatchMode,
   isSelected,
+  isSelectionDisabled = false,
   showBatchOption = false,
   onSelect,
   onDelete,
@@ -144,7 +146,7 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
   }, [isRenaming]);
 
   const handleRowClick = () => {
-    if (isRenaming) return;
+    if (isRenaming || isSelectionDisabled) return;
     if (isBatchMode) {
       onToggleSelection();
       return;
@@ -177,12 +179,14 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
 
   return (
     <div
-      className={`group relative -ml-[6px] flex h-[30px] w-[calc(100%+12px)] cursor-pointer items-center gap-2 rounded-md ${
+      className={`group relative -ml-[6px] flex h-[30px] w-[calc(100%+12px)] items-center gap-2 rounded-md ${
         isBatchMode ? 'pl-4' : 'pl-[38px]'
       } pr-2.5 text-[14px] font-normal transition-colors ${
-        task.isSelected
+        isSelectionDisabled
+          ? 'cursor-default text-foreground/30'
+          : task.isSelected
           ? 'bg-black/[0.06] text-foreground dark:bg-white/[0.07]'
-          : 'text-foreground/80 hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]'
+          : 'cursor-pointer text-foreground/80 hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]'
       }`}
       onClick={handleRowClick}
       onMouseMove={() => setSuppressPinHover(false)}
@@ -190,8 +194,9 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
       role="treeitem"
       aria-level={2}
       aria-selected={task.isSelected}
+      aria-disabled={isSelectionDisabled || undefined}
     >
-      {!isBatchMode && !isRenaming && (
+      {!isBatchMode && !isRenaming && !isSelectionDisabled && (
         <button
           type="button"
           onClick={(event) => {
@@ -277,7 +282,7 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
         </>
       )}
 
-      {!isBatchMode && !isRenaming && (
+      {!isBatchMode && !isRenaming && !isSelectionDisabled && (
         <button
           ref={actionButtonRef}
           type="button"

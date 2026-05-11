@@ -9,6 +9,8 @@ import {
   isHeartbeatPromptText,
   isSilentReplyPrefixText,
   isSilentReplyText,
+  stripTrailingSilentReplyTail,
+  stripTrailingSilentReplyToken,
 } from './openclawHistory';
 
 describe('openclawHistory', () => {
@@ -212,5 +214,111 @@ If nothing needs attention, reply HEARTBEAT_OK.`)
     expect(isSilentReplyPrefixText('NO,')).toBe(false);
     expect(isSilentReplyPrefixText('NOT')).toBe(false);
     expect(isSilentReplyPrefixText('hello')).toBe(false);
+  });
+
+  describe('stripTrailingSilentReplyToken', () => {
+    test('strips trailing NO_REPLY after newline', () => {
+      expect(stripTrailingSilentReplyToken('Content here.\n\nNO_REPLY')).toBe('Content here.');
+    });
+
+    test('strips trailing NO_REPLY with extra whitespace', () => {
+      expect(stripTrailingSilentReplyToken('Content here.\n  NO_REPLY  ')).toBe('Content here.');
+    });
+
+    test('strips case-insensitively', () => {
+      expect(stripTrailingSilentReplyToken('Content\n\nno_reply')).toBe('Content');
+    });
+
+    test('does not strip NO_REPLY in the middle of text', () => {
+      const input = 'The token NO_REPLY is used.\nMore text.';
+      expect(stripTrailingSilentReplyToken(input)).toBe(input);
+    });
+
+    test('does not strip when NO_REPLY is the entire message', () => {
+      expect(stripTrailingSilentReplyToken('NO_REPLY')).toBe('NO_REPLY');
+    });
+
+    test('returns empty string when stripping leaves nothing', () => {
+      expect(stripTrailingSilentReplyToken('\nNO_REPLY')).toBe('');
+    });
+
+    test('does not modify normal text', () => {
+      const input = 'Normal response without the token.';
+      expect(stripTrailingSilentReplyToken(input)).toBe(input);
+    });
+  });
+
+  describe('stripTrailingSilentReplyTail', () => {
+    test('strips complete trailing NO_REPLY', () => {
+      expect(stripTrailingSilentReplyTail('Content\n\nNO_REPLY')).toBe('Content');
+    });
+
+    test('strips partial prefix NO', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNO')).toBe('Content');
+    });
+
+    test('strips partial prefix NO_', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNO_')).toBe('Content');
+    });
+
+    test('strips partial prefix NO_R', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNO_R')).toBe('Content');
+    });
+
+    test('strips partial prefix NO_RE', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNO_RE')).toBe('Content');
+    });
+
+    test('strips partial prefix NO_REP', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNO_REP')).toBe('Content');
+    });
+
+    test('strips partial prefix NO_REPL', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNO_REPL')).toBe('Content');
+    });
+
+    test('does not strip NO without preceding newline', () => {
+      expect(stripTrailingSilentReplyTail('say NO')).toBe('say NO');
+    });
+
+    test('does not strip non-matching tail', () => {
+      expect(stripTrailingSilentReplyTail('Content\nNOT')).toBe('Content\nNOT');
+      expect(stripTrailingSilentReplyTail('Content\nNORMAL')).toBe('Content\nNORMAL');
+    });
+
+    test('does not modify normal text', () => {
+      const input = 'Normal response.';
+      expect(stripTrailingSilentReplyTail(input)).toBe(input);
+    });
+  });
+
+  test('extractGatewayHistoryEntry strips trailing NO_REPLY from assistant', () => {
+    const entry = extractGatewayHistoryEntry({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Background notifications handled.\n\nNO_REPLY' }],
+    });
+    expect(entry).toEqual({
+      role: 'assistant',
+      text: 'Background notifications handled.',
+    });
+  });
+
+  test('extractGatewayHistoryEntry does not strip trailing NO_REPLY from user', () => {
+    const entry = extractGatewayHistoryEntry({
+      role: 'user',
+      content: 'Some user text\n\nNO_REPLY',
+    });
+    expect(entry).toEqual({
+      role: 'user',
+      text: 'Some user text\n\nNO_REPLY',
+    });
+  });
+
+  test('extractGatewayHistoryEntry returns null when stripping leaves empty text', () => {
+    const entry = extractGatewayHistoryEntry({
+      role: 'assistant',
+      content: [{ type: 'text', text: '\nNO_REPLY' }],
+    });
+    expect(entry).toBeNull();
   });
 });
