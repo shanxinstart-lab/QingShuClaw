@@ -112,6 +112,10 @@ export interface CoworkConfig {
   embeddingVectorWeight: number;
   embeddingRemoteBaseUrl: string;
   embeddingRemoteApiKey: string;
+  dreamingEnabled: boolean;
+  dreamingFrequency: string;
+  dreamingModel: string;
+  dreamingTimezone: string;
   openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
@@ -133,6 +137,10 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'embeddingVectorWeight'
   | 'embeddingRemoteBaseUrl'
   | 'embeddingRemoteApiKey'
+  | 'dreamingEnabled'
+  | 'dreamingFrequency'
+  | 'dreamingModel'
+  | 'dreamingTimezone'
 >>;
 
 export interface CoworkApiConfig {
@@ -263,6 +271,55 @@ export interface CoworkConfigResult {
   success: boolean;
   config?: CoworkConfig;
   error?: string;
+}
+
+// ── Dreaming content display types ──────────────────────────────────
+
+export interface DreamingPhaseInfo {
+  enabled: boolean;
+  cron: string;
+  nextRunAtMs?: number;
+}
+
+export interface DreamingEntry {
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  recallCount: number;
+  dailyCount: number;
+  groundedCount: number;
+  totalSignalCount: number;
+  lightHits: number;
+  remHits: number;
+  phaseHitCount: number;
+  promotedAt?: string;
+  lastRecalledAt?: string;
+}
+
+export interface DreamingStatusData {
+  enabled: boolean;
+  timezone?: string;
+  shortTermCount: number;
+  groundedSignalCount: number;
+  totalSignalCount: number;
+  promotedToday: number;
+  promotedTotal: number;
+  shortTermEntries: DreamingEntry[];
+  promotedEntries: DreamingEntry[];
+  phases?: {
+    light: DreamingPhaseInfo;
+    deep: DreamingPhaseInfo;
+    rem: DreamingPhaseInfo;
+  };
+}
+
+export interface DreamDiaryData {
+  found: boolean;
+  path: string;
+  content?: string;
+  updatedAtMs?: number;
 }
 
 // Stream event types for IPC communication

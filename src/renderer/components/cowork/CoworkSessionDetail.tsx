@@ -1111,10 +1111,6 @@ const messageMetaClassName = (visible: boolean, align: 'left' | 'right' = 'left'
   visible ? 'opacity-100' : 'opacity-0 pointer-events-none',
 ].filter(Boolean).join(' ');
 
-const hasFocusWithin = (element: HTMLElement): boolean => (
-  document.activeElement instanceof Node && element.contains(document.activeElement)
-);
-
 // Copy button component
 const CopyButton: React.FC<{
   content: string;

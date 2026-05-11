@@ -1482,6 +1482,35 @@ export class OpenClawConfigSync {
       };
     }
 
+    // Sync Dreaming config into memory-core plugin
+    if (managedConfig.plugins) {
+      const plugins = managedConfig.plugins as Record<string, unknown>;
+      const entries = plugins.entries as Record<string, Record<string, unknown>>;
+      const existingMemoryCore = entries['memory-core'] ?? {};
+      const existingMemoryCoreConfig = (existingMemoryCore as Record<string, unknown>).config as Record<string, unknown> | undefined;
+      if (coworkConfig.dreamingEnabled) {
+        entries['memory-core'] = {
+          ...existingMemoryCore,
+          config: {
+            ...existingMemoryCoreConfig,
+            dreaming: {
+              enabled: true,
+              frequency: coworkConfig.dreamingFrequency || '0 3 * * *',
+              ...(coworkConfig.dreamingTimezone ? { timezone: coworkConfig.dreamingTimezone } : {}),
+              ...(coworkConfig.dreamingModel ? { model: coworkConfig.dreamingModel } : {}),
+            },
+          },
+        };
+      } else if (existingMemoryCoreConfig?.dreaming) {
+        // Remove dreaming config when disabled
+        const { dreaming: _, ...restConfig } = existingMemoryCoreConfig;
+        entries['memory-core'] = {
+          ...existingMemoryCore,
+          config: Object.keys(restConfig).length > 0 ? restConfig : undefined,
+        };
+      }
+    }
+
     // Sync Telegram OpenClaw channel config — multi-instance via accounts
     const telegramInstances = this.getTelegramInstances();
     const enabledTelegramInstances = telegramInstances.filter(i => i.enabled && i.botToken);

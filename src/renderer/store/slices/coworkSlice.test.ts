@@ -59,6 +59,10 @@ test('setConfig preserves loaded OpenClaw session policy', () => {
     embeddingVectorWeight: 0.7,
     embeddingRemoteBaseUrl: '',
     embeddingRemoteApiKey: '',
+    dreamingEnabled: false,
+    dreamingFrequency: '0 3 * * *',
+    dreamingModel: '',
+    dreamingTimezone: '',
     openClawSessionPolicy: {
       keepAlive: '365d',
     },

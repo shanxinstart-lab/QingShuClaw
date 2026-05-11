@@ -48,6 +48,11 @@ const DEFAULT_EMBEDDING_VECTOR_WEIGHT = 0.7;
 const DEFAULT_EMBEDDING_REMOTE_BASE_URL = '';
 const DEFAULT_EMBEDDING_REMOTE_API_KEY = '';
 
+const DEFAULT_DREAMING_ENABLED = false;
+const DEFAULT_DREAMING_FREQUENCY = '0 3 * * *';
+const DEFAULT_DREAMING_MODEL = '';
+const DEFAULT_DREAMING_TIMEZONE = '';
+
 // Regexes and helper inlined from the removed coworkMemoryExtractor module.
 // Used only by shouldAutoDeleteMemoryText() during startup memory cleanup.
 const CHINESE_QUESTION_PREFIX_RE = /^(?:请问|问下|问一下|是否|能否|可否|为什么|为何|怎么|如何|谁|什么|哪(?:里|儿|个)?|几|多少|要不要|会不会|是不是|能不能|可不可以|行不行|对不对|好不好)/u;
@@ -498,6 +503,10 @@ export interface CoworkConfig {
   embeddingVectorWeight: number;
   embeddingRemoteBaseUrl: string;
   embeddingRemoteApiKey: string;
+  dreamingEnabled: boolean;
+  dreamingFrequency: string;
+  dreamingModel: string;
+  dreamingTimezone: string;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
@@ -518,6 +527,10 @@ CoworkConfig,
   | 'embeddingVectorWeight'
   | 'embeddingRemoteBaseUrl'
   | 'embeddingRemoteApiKey'
+  | 'dreamingEnabled'
+  | 'dreamingFrequency'
+  | 'dreamingModel'
+  | 'dreamingTimezone'
 >>;
 
 
@@ -1248,6 +1261,10 @@ export class CoworkStore {
       'embeddingVectorWeight',
       'embeddingRemoteBaseUrl',
       'embeddingRemoteApiKey',
+      'dreamingEnabled',
+      'dreamingFrequency',
+      'dreamingModel',
+      'dreamingTimezone',
     ] as const;
     const configRows = this.getAll<{ key: string; value: string }>(
       `SELECT key, value FROM cowork_config WHERE key IN (${configKeys.map(() => '?').join(', ')})`,
@@ -1281,6 +1298,10 @@ export class CoworkStore {
       embeddingVectorWeight: parseEmbeddingVectorWeight(cfg.get('embeddingVectorWeight')),
       embeddingRemoteBaseUrl: cfg.get('embeddingRemoteBaseUrl') || DEFAULT_EMBEDDING_REMOTE_BASE_URL,
       embeddingRemoteApiKey: cfg.get('embeddingRemoteApiKey') || DEFAULT_EMBEDDING_REMOTE_API_KEY,
+      dreamingEnabled: parseBooleanConfig(cfg.get('dreamingEnabled'), DEFAULT_DREAMING_ENABLED),
+      dreamingFrequency: cfg.get('dreamingFrequency') || DEFAULT_DREAMING_FREQUENCY,
+      dreamingModel: cfg.get('dreamingModel') || DEFAULT_DREAMING_MODEL,
+      dreamingTimezone: cfg.get('dreamingTimezone') || DEFAULT_DREAMING_TIMEZONE,
     };
   }
 
@@ -1334,6 +1355,18 @@ export class CoworkStore {
     }
     if (config.embeddingRemoteApiKey !== undefined) {
       this.upsertConfig('embeddingRemoteApiKey', String(config.embeddingRemoteApiKey), now);
+    }
+    if (config.dreamingEnabled !== undefined) {
+      this.upsertConfig('dreamingEnabled', config.dreamingEnabled ? '1' : '0', now);
+    }
+    if (config.dreamingFrequency !== undefined) {
+      this.upsertConfig('dreamingFrequency', String(config.dreamingFrequency), now);
+    }
+    if (config.dreamingModel !== undefined) {
+      this.upsertConfig('dreamingModel', String(config.dreamingModel), now);
+    }
+    if (config.dreamingTimezone !== undefined) {
+      this.upsertConfig('dreamingTimezone', String(config.dreamingTimezone), now);
     }
   }
 
