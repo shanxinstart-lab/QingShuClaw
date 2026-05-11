@@ -580,27 +580,6 @@ export interface ProviderDef {
   readonly openClawProviderId?: OpenClawProviderId;
 }
 
-export interface ProviderModelConfig {
-  id: string;
-  name: string;
-  supportsImage?: boolean;
-}
-
-export interface ProviderConfig {
-  enabled: boolean;
-  apiKey: string;
-  baseUrl: string;
-  apiFormat?: ApiFormat | 'native';
-  codingPlanEnabled?: boolean;
-  authType?: 'apikey' | 'oauth';
-  oauthRefreshToken?: string;
-  oauthTokenExpiresAt?: number;
-  oauthAccessToken?: string;
-  oauthBaseUrl?: string;
-  displayName?: string;
-  models?: ProviderModelConfig[];
-}
-
 // ═══════════════════════════════════════════════════════
 // 5. Registry Implementation
 // ═══════════════════════════════════════════════════════
@@ -656,7 +635,11 @@ class ProviderRegistryImpl {
   }
 
   getOpenClawProviderId(providerName: string): string {
-    return this.idIndex.get(providerName)?.openClawProviderId ?? providerName ?? OpenClawProviderId.Lobster;
+    const normalizedProviderName = providerName.trim();
+    if (!normalizedProviderName) {
+      return OpenClawProviderId.Lobster;
+    }
+    return this.idIndex.get(normalizedProviderName)?.openClawProviderId ?? normalizedProviderName;
   }
 
   getProviderModelSupportsImage(providerName: string, modelId: string): boolean | undefined {

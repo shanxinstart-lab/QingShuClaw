@@ -59,6 +59,7 @@ const mapExecutionModeToSandboxMode = (mode: CoworkExecutionMode): 'off' | 'non-
  */
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
 const DEFAULT_OPENCLAW_SESSION_KEEP_ALIVE = '30d';
+const SUPPORTED_MEMORY_SEARCH_PROVIDERS = ['openai', 'gemini', 'voyage', 'mistral', 'ollama'] as const;
 const OPENCLAW_SESSION_MAINTENANCE = {
   pruneAfter: '365d',
   maxEntries: 1000000,
@@ -132,6 +133,36 @@ const buildOpenClawSessionConfig = (
   reset: mapKeepAliveToSessionReset(keepAlive || DEFAULT_OPENCLAW_SESSION_KEEP_ALIVE),
   maintenance: { ...OPENCLAW_SESSION_MAINTENANCE },
 });
+
+const buildMemorySearchConfig = (coworkConfig: CoworkConfig): Record<string, unknown> | undefined => {
+  if (!coworkConfig.embeddingEnabled) return undefined;
+  const normalizedProvider = coworkConfig.embeddingProvider.trim().toLowerCase();
+  const provider = SUPPORTED_MEMORY_SEARCH_PROVIDERS.includes(
+    normalizedProvider as typeof SUPPORTED_MEMORY_SEARCH_PROVIDERS[number],
+  )
+    ? normalizedProvider
+    : 'openai';
+  const vectorWeight = Number.isFinite(coworkConfig.embeddingVectorWeight)
+    ? Math.max(0, Math.min(1, coworkConfig.embeddingVectorWeight))
+    : 0.7;
+  return {
+    enabled: true,
+    provider,
+    ...(coworkConfig.embeddingModel ? { model: coworkConfig.embeddingModel } : {}),
+    remote: {
+      ...(coworkConfig.embeddingRemoteBaseUrl ? { baseUrl: coworkConfig.embeddingRemoteBaseUrl } : {}),
+      ...(coworkConfig.embeddingRemoteApiKey ? { apiKey: coworkConfig.embeddingRemoteApiKey } : {}),
+    },
+    store: {
+      fts: { tokenizer: 'trigram' },
+    },
+    query: {
+      hybrid: {
+        vectorWeight,
+      },
+    },
+  };
+};
 
 const normalizeModelName = (modelId: string): string => {
   const trimmed = modelId.trim();
@@ -1119,6 +1150,7 @@ export class OpenClawConfigSync {
 
     const mainWorkspacePath = getMainAgentWorkspacePath(this.engineManager.getStateDir());
     ensureDir(mainWorkspacePath);
+    const memorySearchConfig = buildMemorySearchConfig(coworkConfig);
 
     const hasMcpBridgePlugin = isBundledPluginAvailable('mcp-bridge');
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
@@ -1242,6 +1274,7 @@ export class OpenClawConfigSync {
           },
           // 当前打包的 OpenClaw schema 不接受 agents.defaults.cwd，避免网关启动前配置校验失败。
           workspace: path.resolve(mainWorkspacePath),
+          ...(memorySearchConfig ? { memorySearch: memorySearchConfig } : {}),
         },
         ...this.buildAgentsList(providerSelection.primaryModel, this.engineManager.getStateDir()),
       },

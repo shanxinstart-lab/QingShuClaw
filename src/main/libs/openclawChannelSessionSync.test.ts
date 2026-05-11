@@ -57,6 +57,17 @@ describe('openclawChannelSessionSync', () => {
     expect(accountId).toBe('feishu001');
   });
 
+  test('keeps account scope in json session context conversation ids', () => {
+    const parsed = parseChannelSessionKey(
+      'agent:main:openai-user:{"channel":"feishu","accountid":"feishu001","peerid":"oc_abc"}',
+    );
+
+    expect(parsed).toEqual({
+      platform: 'feishu',
+      conversationId: 'feishu001:oc_abc',
+    });
+  });
+
   test('prefers per-instance agent bindings for multi-instance platforms', () => {
     const agentId = resolveAgentBinding(
       {

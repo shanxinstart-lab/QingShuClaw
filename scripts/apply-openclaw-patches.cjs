@@ -62,13 +62,14 @@ if (patchFiles.length === 0) {
 
 console.log(`[apply-openclaw-patches] Applying patches for openclaw ${openclawVersion} (${patchFiles.length} file(s))`);
 
-// Reset the OpenClaw source before applying patches. This avoids stale patched
-// files from another local branch causing false "already applied" results.
+// Reset openclaw source to a clean tag state before applying patches.
+// This removes stale patches left by a different LobsterAI branch that may have
+// applied different patches for the same openclaw version.
 try {
   execFileSync('git', ['reset', 'HEAD', '.'], { cwd: openclawSrc, stdio: 'pipe' });
   execFileSync('git', ['checkout', '.'], { cwd: openclawSrc, stdio: 'pipe' });
   execFileSync('git', ['clean', '-fd'], { cwd: openclawSrc, stdio: 'pipe' });
-  console.log('[apply-openclaw-patches] Reset openclaw source to a clean state before patching.');
+  console.log('[apply-openclaw-patches] Reset openclaw source to clean state before patching.');
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
   console.warn(`[apply-openclaw-patches] Warning: failed to reset openclaw source: ${message}`);
@@ -80,7 +81,7 @@ let skipped = 0;
 for (const patchFile of patchFiles) {
   const originalPatchPath = path.join(patchesDir, patchFile);
 
-  // Normalize line endings so CRLF-checked-out patch files do not make
+  // Normalize line endings: strip \r so CRLF-checked-out patches do not make
   // `git apply` report "corrupt patch" on Windows.
   const rawPatch = fs.readFileSync(originalPatchPath, 'utf8');
   const needsNormalize = rawPatch.includes('\r');
@@ -167,12 +168,9 @@ for (const patchFile of patchFiles) {
       process.exit(1);
     }
   } finally {
+    // Clean up temporary normalized patch file.
     if (needsNormalize && fs.existsSync(patchPath)) {
-      try {
-        fs.unlinkSync(patchPath);
-      } catch {
-        // Best effort cleanup only.
-      }
+      try { fs.unlinkSync(patchPath); } catch { /* Best effort cleanup only. */ }
     }
   }
 }

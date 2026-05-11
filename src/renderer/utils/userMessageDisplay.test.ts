@@ -218,3 +218,64 @@ describe('parseUserMessageForDisplay macOS media paths', () => {
     expect(parseUserMessageForDisplay(input)).toBe(toFileUrl(imgPath));
   });
 });
+
+describe('parseUserMessageForDisplay false positive safety', () => {
+  test('keeps user text that mentions a non-inbound file path', () => {
+    const msg = String.raw`文件在 C:\Users\test\Documents\photo.jpg`;
+    expect(parseUserMessageForDisplay(msg)).toBe(msg);
+  });
+
+  test('keeps user text that mentions media tags in a sentence', () => {
+    const msg = '格式是 media:video 这样的';
+    expect(parseUserMessageForDisplay(msg)).toBe(msg);
+  });
+
+  test('keeps image-send instructions when there is no media attachment marker', () => {
+    const msg = 'To send an image back, prefer the message tool - 这是说明文档的内容';
+    expect(parseUserMessageForDisplay(msg)).toBe(msg);
+  });
+
+  test('keeps inline image placeholder text that is not on its own line', () => {
+    const msg = '他发了一个[图片]标记在消息里';
+    expect(parseUserMessageForDisplay(msg)).toBe(msg);
+  });
+});
+
+describe('parseUserMessageForDisplay CRLF compatibility', () => {
+  test('renders OpenClaw image metadata with CRLF line endings', () => {
+    const imgPath = fileImg(WIN_INBOUND, 'b02db622.jpg');
+    const input = [
+      `[media attached: ${imgPath} (image/jpeg) | ${imgPath}]`,
+      'To send an image back, prefer the message tool (media/path/filePath). If you must inline, use MEDIA:https://example.com/image.jpg.',
+      '',
+      'media:image',
+    ].join('\r\n');
+
+    expect(parseUserMessageForDisplay(input)).toBe(toFileUrl(imgPath));
+  });
+
+  test('strips NIM attachment metadata with CRLF line endings', () => {
+    const input = [
+      '[图片] https://nos.netease.com/xxx.jpg',
+      '',
+      '[附件信息]',
+      `- 类型: image, 路径: ${fileImg(WIN_INBOUND, 'abc123.jpg')}, MIME: image/jpeg`,
+    ].join('\r\n');
+
+    expect(parseUserMessageForDisplay(input)).toBe('https://nos.netease.com/xxx.jpg');
+  });
+});
+
+describe('parseUserMessageForDisplay non-image media', () => {
+  test('strips OpenClaw PDF media markers without rendering an image', () => {
+    const pdfPath = fileImg(WIN_INBOUND, 'doc.pdf');
+    const input = [
+      `[media attached: ${pdfPath} (application/pdf) | ${pdfPath}]`,
+      'To send an image back, prefer the message tool (media/path/filePath). If you must inline, use MEDIA:https://example.com/image.jpg.',
+    ].join('\n');
+
+    const result = parseUserMessageForDisplay(input);
+    expect(result).not.toContain('[media attached');
+    expect(result).not.toContain('![](');
+  });
+});

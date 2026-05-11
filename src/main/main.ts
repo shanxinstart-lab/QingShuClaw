@@ -4659,6 +4659,44 @@ if (!gotTheLock) {
       };
     }
   });
+  const VALID_EMBEDDING_PROVIDERS = ['local', 'openai', 'gemini', 'voyage', 'mistral', 'ollama'] as const;
+
+  function normalizeEmbeddingConfig(config: {
+    embeddingEnabled?: boolean;
+    embeddingProvider?: string;
+    embeddingModel?: string;
+    embeddingLocalModelPath?: string;
+    embeddingVectorWeight?: number;
+    embeddingRemoteBaseUrl?: string;
+    embeddingRemoteApiKey?: string;
+  }) {
+    return {
+      embeddingEnabled: typeof config.embeddingEnabled === 'boolean'
+        ? config.embeddingEnabled
+        : undefined,
+      embeddingProvider: typeof config.embeddingProvider === 'string'
+        && (VALID_EMBEDDING_PROVIDERS as readonly string[]).includes(config.embeddingProvider)
+        ? config.embeddingProvider
+        : undefined,
+      embeddingModel: typeof config.embeddingModel === 'string'
+        ? config.embeddingModel.trim()
+        : undefined,
+      embeddingLocalModelPath: typeof config.embeddingLocalModelPath === 'string'
+        ? config.embeddingLocalModelPath.trim()
+        : undefined,
+      embeddingVectorWeight: typeof config.embeddingVectorWeight === 'number'
+        && Number.isFinite(config.embeddingVectorWeight)
+        ? Math.max(0, Math.min(1, config.embeddingVectorWeight))
+        : undefined,
+      embeddingRemoteBaseUrl: typeof config.embeddingRemoteBaseUrl === 'string'
+        ? config.embeddingRemoteBaseUrl.trim()
+        : undefined,
+      embeddingRemoteApiKey: typeof config.embeddingRemoteApiKey === 'string'
+        ? config.embeddingRemoteApiKey.trim()
+        : undefined,
+    };
+  }
+
   ipcMain.handle('cowork:config:set', async (_event, config: {
     workingDirectory?: string;
     executionMode?: 'auto' | 'local' | 'sandbox';
@@ -4669,6 +4707,13 @@ if (!gotTheLock) {
     memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
     memoryUserMemoriesMaxItems?: number;
     skipMissedJobs?: boolean;
+    embeddingEnabled?: boolean;
+    embeddingProvider?: string;
+    embeddingModel?: string;
+    embeddingLocalModelPath?: string;
+    embeddingVectorWeight?: number;
+    embeddingRemoteBaseUrl?: string;
+    embeddingRemoteApiKey?: string;
     openClawSessionPolicy?: { keepAlive?: '1d' | '7d' | '30d' | '365d' };
   }) => {
     try {
@@ -4706,6 +4751,7 @@ if (!gotTheLock) {
         typeof config.skipMissedJobs === 'boolean'
           ? config.skipMissedJobs
           : undefined;
+      const normalizedEmbedding = normalizeEmbeddingConfig(config);
       const normalizedOpenClawSessionPolicy =
         config.openClawSessionPolicy && typeof config.openClawSessionPolicy === 'object'
           ? {
@@ -4728,6 +4774,7 @@ if (!gotTheLock) {
         memoryGuardLevel: normalizedMemoryGuardLevel,
         memoryUserMemoriesMaxItems: normalizedMemoryUserMemoriesMaxItems,
         skipMissedJobs: normalizedSkipMissedJobs,
+        ...normalizedEmbedding,
         openClawSessionPolicy: normalizedOpenClawSessionPolicy,
       };
       const previousConfig = getCoworkStore().getConfig();
@@ -4749,7 +4796,8 @@ if (!gotTheLock) {
       const shouldSyncOpenClawConfig = normalizedExecutionMode !== undefined
         || normalizedAgentEngine !== undefined
         || normalizedOpenClawSessionPolicy?.keepAlive !== undefined
-        || normalizedConfig.workingDirectory !== undefined;
+        || normalizedConfig.workingDirectory !== undefined
+        || Object.values(normalizedEmbedding).some((value) => value !== undefined);
       if (shouldSyncOpenClawConfig) {
         const syncResult = await syncOpenClawConfig({
           reason: 'cowork-config-change',

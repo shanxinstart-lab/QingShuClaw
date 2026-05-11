@@ -1,8 +1,21 @@
 import { describe, expect, test } from 'vitest';
 
-import { __mcpServerManagerTestUtils,McpServerManager } from './mcpServerManager';
+import { __mcpServerManagerTestUtils, McpServerManager } from './mcpServerManager';
 
 describe('mcpServerManager abort handling', () => {
+  test('raceAbortSignal rejects immediately when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      __mcpServerManagerTestUtils.raceAbortSignal(
+        Promise.resolve('too late'),
+        controller.signal,
+        'Tool aborted before start',
+      ),
+    ).rejects.toThrow('Tool aborted before start');
+  });
+
   test('raceAbortSignal rejects when aborted before the tool promise resolves', async () => {
     const controller = new AbortController();
     const slowTool = new Promise<string>((resolve) => {

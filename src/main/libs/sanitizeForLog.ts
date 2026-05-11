@@ -7,6 +7,20 @@ const TRUNCATED_ITEMS_KEY = '__truncatedItems';
 const TRUNCATED_KEYS_KEY = '__truncatedKeys';
 
 export const SENSITIVE_LOG_KEY_PATTERN = /(api[-_]?key|token|secret|password|authorization|cookie|session|refresh[-_]?token|access[-_]?token)/i;
+const INLINE_SENSITIVE_TEXT_PATTERNS: Array<[RegExp, string]> = [
+  [
+    /\b(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;"]+/gi,
+    '$1$2[redacted]',
+  ],
+  [
+    /\b((?:x[-_]?api[-_]?key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|cookie|session(?:id)?)\s*[:=]\s*)[^\s,;"]+/gi,
+    '$1[redacted]',
+  ],
+  [
+    /\b(bearer\s+)[A-Za-z0-9._~+/-]{8,}/gi,
+    '$1[redacted]',
+  ],
+];
 
 const TRANSPORT_ERROR_TEXT_PATTERNS = [
   /fetch failed/i,
@@ -23,11 +37,18 @@ const TRANSPORT_ERROR_TEXT_PATTERNS = [
   /tls/i,
 ] as const;
 
+function redactInlineSensitiveText(value: string): string {
+  return INLINE_SENSITIVE_TEXT_PATTERNS.reduce(
+    (nextValue, [pattern, replacement]) => nextValue.replace(pattern, replacement),
+    value,
+  );
+}
+
 function sanitizeForLogInternal(value: unknown, seen: WeakSet<object>, keyName?: string): unknown {
   if (typeof value === 'string') {
     return SENSITIVE_LOG_KEY_PATTERN.test(keyName || '')
       ? REDACTED_VALUE
-      : truncateForLog(value);
+      : truncateForLog(redactInlineSensitiveText(value));
   }
 
   if (

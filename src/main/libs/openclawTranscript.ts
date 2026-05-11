@@ -6,8 +6,8 @@ import type {
   CoworkSessionStatus,
 } from '../coworkStore';
 import {
+  extractGatewayHistoryEntry,
   extractGatewayMessageText,
-  normalizeGatewayHistoryText,
 } from './openclawHistory';
 import { extractOpenClawAssistantStreamText } from './openclawAssistantText';
 
@@ -131,10 +131,18 @@ const extractTranscriptText = (message: unknown): string => (
   extractOpenClawAssistantStreamText(message) || extractGatewayMessageText(message)
 );
 
+const extractNormalizedTranscriptEntry = (
+  role: 'user' | 'assistant' | 'system',
+  message: unknown,
+): ReturnType<typeof extractGatewayHistoryEntry> => extractGatewayHistoryEntry({
+  role,
+  content: extractTranscriptText(message),
+});
+
 const extractNormalizedTranscriptText = (
   role: 'user' | 'assistant' | 'system',
   message: unknown,
-): string => normalizeGatewayHistoryText(role, extractTranscriptText(message));
+): string => extractNormalizedTranscriptEntry(role, message)?.text ?? '';
 
 const parseToolCallArguments = (value: unknown): Record<string, unknown> => {
   if (isRecord(value)) {
@@ -207,9 +215,17 @@ const parseTranscriptMessages = (fileContent: string): CoworkMessage[] => {
       ?? Date.now();
 
     if (role === 'user') {
-      const text = extractNormalizedTranscriptText('user', message);
-      if (text) {
-        pushMessage('user', text, timestamp, {});
+      const entry = extractNormalizedTranscriptEntry('user', message);
+      if (entry) {
+        pushMessage(entry.role, entry.text, timestamp, {});
+      }
+      continue;
+    }
+
+    if (role === 'system') {
+      const entry = extractNormalizedTranscriptEntry('system', message);
+      if (entry) {
+        pushMessage('system', entry.text, timestamp, {});
       }
       continue;
     }
@@ -237,10 +253,13 @@ const parseTranscriptMessages = (fileContent: string): CoworkMessage[] => {
     const textParts: string[] = [];
     const flushAssistantText = (): void => {
       if (textParts.length === 0) return;
-      const text = textParts.join('\n').trim();
+      const entry = extractGatewayHistoryEntry({
+        role: 'assistant',
+        content: textParts.join('\n'),
+      });
       textParts.length = 0;
-      if (text) {
-        pushMessage('assistant', text, timestamp, buildAssistantMetadata());
+      if (entry) {
+        pushMessage('assistant', entry.text, timestamp, buildAssistantMetadata());
       }
     };
 

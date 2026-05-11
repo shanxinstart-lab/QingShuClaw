@@ -121,6 +121,13 @@ describe('OpenClawConfigSync runtime config output', () => {
         memoryGuardLevel: 'balanced',
         memoryUserMemoriesMaxItems: 100,
         skipMissedJobs: false,
+        embeddingEnabled: false,
+        embeddingProvider: 'openai',
+        embeddingModel: '',
+        embeddingLocalModelPath: '',
+        embeddingVectorWeight: 0.7,
+        embeddingRemoteBaseUrl: '',
+        embeddingRemoteApiKey: '',
         openClawSessionPolicy: { keepAlive: '30d' },
       }),
       getDingTalkInstances: () => [],
@@ -147,6 +154,93 @@ describe('OpenClawConfigSync runtime config output', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(config.agents.defaults.workspace).toBe(path.join(stateDir, 'workspace-main'));
     expect(config.agents.defaults).not.toHaveProperty('cwd');
+  });
+
+  test('does not write memory search config while embedding is disabled', async () => {
+    const sync = await createSync();
+
+    const result = sync.sync('embedding-disabled');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.agents.defaults.memorySearch).toBeUndefined();
+  });
+
+  test('writes memory search config with safe provider and cjk tokenizer', async () => {
+    const sync = await createSync({
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+        embeddingEnabled: true,
+        embeddingProvider: 'legacy-provider',
+        embeddingModel: 'text-embedding-3-small',
+        embeddingLocalModelPath: '',
+        embeddingVectorWeight: 1.25,
+        embeddingRemoteBaseUrl: 'https://embedding.example/v1',
+        embeddingRemoteApiKey: 'embedding-key',
+        openClawSessionPolicy: { keepAlive: '30d' },
+      }),
+    });
+
+    const result = sync.sync('embedding-enabled');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.agents.defaults.memorySearch).toMatchObject({
+      enabled: true,
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      remote: {
+        baseUrl: 'https://embedding.example/v1',
+        apiKey: 'embedding-key',
+      },
+      store: {
+        fts: { tokenizer: 'trigram' },
+      },
+      query: {
+        hybrid: { vectorWeight: 1 },
+      },
+    });
+  });
+
+  test('normalizes supported memory search provider values before writing config', async () => {
+    const sync = await createSync({
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+        embeddingEnabled: true,
+        embeddingProvider: ' Gemini ',
+        embeddingModel: 'gemini-embedding-001',
+        embeddingLocalModelPath: '',
+        embeddingVectorWeight: 0.25,
+        embeddingRemoteBaseUrl: '',
+        embeddingRemoteApiKey: '',
+        openClawSessionPolicy: { keepAlive: '30d' },
+      }),
+    });
+
+    const result = sync.sync('embedding-provider-normalized');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.agents.defaults.memorySearch.provider).toBe('gemini');
+    expect(config.agents.defaults.memorySearch.query.hybrid.vectorWeight).toBe(0.25);
   });
 
   test('stamps openclaw config metadata when writing full config', async () => {

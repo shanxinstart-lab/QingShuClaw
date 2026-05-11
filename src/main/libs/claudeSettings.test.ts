@@ -95,3 +95,36 @@ describe('claudeSettings MiniMax OAuth credentials', () => {
     });
   });
 });
+
+describe('claudeSettings provider model metadata', () => {
+  beforeEach(() => {
+    setStoreGetter(() => null);
+  });
+
+  test('fills missing model display names from model ids', () => {
+    setStoreGetter(() => createStore({
+      model: {
+        defaultModel: 'custom-model',
+        defaultModelProvider: 'custom_0',
+      },
+      providers: {
+        custom_0: {
+          enabled: true,
+          apiKey: 'custom-api-key',
+          baseUrl: 'https://example.com/v1',
+          apiFormat: 'openai',
+          models: [{ id: 'custom-model' }],
+        },
+      },
+    }) as never);
+
+    const raw = resolveRawApiConfig();
+    const providerConfigs = resolveAllEnabledProviderConfigs();
+
+    expect(raw.providerMetadata?.modelName).toBe('custom-model');
+    expect(providerConfigs[0]?.models[0]).toMatchObject({
+      id: 'custom-model',
+      name: 'custom-model',
+    });
+  });
+});

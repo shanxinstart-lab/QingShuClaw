@@ -25,6 +25,21 @@ test('serializeToolContentForLog keeps a readable preview', () => {
   expect(preview).toContain('"type":"text"');
 });
 
+test('serializeToolContentForLog redacts sensitive fields inside tool content', () => {
+  const preview = serializeToolContentForLog([
+    {
+      type: 'text',
+      text: 'ok',
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    },
+  ]);
+
+  expect(preview).toContain('[redacted]');
+  expect(preview).not.toContain('secret-token');
+});
+
 test('getToolTextPreview joins text blocks', () => {
   const preview = getToolTextPreview([
     { type: 'text', text: 'first line' },
@@ -33,6 +48,14 @@ test('getToolTextPreview joins text blocks', () => {
   ]);
 
   expect(preview).toBe('first line second line');
+});
+
+test('getToolTextPreview truncates long text previews', () => {
+  const preview = getToolTextPreview([
+    { type: 'text', text: 'x'.repeat(20) },
+  ], 8);
+
+  expect(preview).toBe('xxxxxxxx...');
 });
 
 test('looksLikeTransportErrorText detects network-style failures', () => {

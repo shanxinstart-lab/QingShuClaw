@@ -36,6 +36,13 @@ describe('openclawModelRef', () => {
     })).toBe('lobsterai-server/qwen3.5-plus');
   });
 
+  test('uses lobster fallback when provider key is missing', () => {
+    expect(toOpenClawModelRef({
+      id: 'unknown-model',
+      providerKey: '',
+    })).toBe('lobster/unknown-model');
+  });
+
   test('resolves exact provider/model refs', () => {
     expect(resolveOpenClawModelRef('anthropic/claude-sonnet-4-6', models)).toBe(models[1]);
   });

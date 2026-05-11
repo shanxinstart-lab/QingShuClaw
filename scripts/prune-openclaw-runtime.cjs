@@ -58,9 +58,11 @@ const DIRS_TO_DELETE = new Set([
 ]);
 
 // ─── Strategy 2: Remove unused bundled extensions ───
-// OpenClaw's plugin discovery scans every directory under dist/extensions/.
-// Physically removing unused bundled extensions keeps the runtime smaller and
-// reduces unnecessary startup scanning.
+// OpenClaw's plugin discovery scans every directory under dist/extensions/,
+// calling realpathSync + readPackageManifest even for plugins later blocked by
+// plugins.deny. On Windows NTFS this can cost seconds of synchronous I/O at
+// startup. Physically removing unused directories is the reliable way to skip
+// that scan and keep the runtime smaller.
 
 const BUNDLED_EXTENSIONS_TO_KEEP = new Set([
   'anthropic', 'deepseek', 'google', 'kimi-coding', 'minimax', 'moonshot',
@@ -81,15 +83,15 @@ function shouldKeepBundledExtension(extensionId) {
 // Callers already have try-catch protection.
 
 const PACKAGES_TO_STUB = [
-  'koffi',            // Windows FFI for terminal PTY — not needed in gateway mode
-  '@tloncorp/tlon-skill',
+  'koffi',                  // Windows FFI for terminal PTY — not needed in gateway mode
+  '@tloncorp/tlon-skill',   // Tlon channel is pruned from dist/extensions
   '@lancedb',
   '@jimp',
   '@napi-rs',
   'pdfjs-dist',
   '@matrix-org',
-  // NOTE: @img 不能被 stub。它包含 sharp 的平台原生绑定，
-  // openclaw 的图片处理和部分 exec-tool 脚本都依赖这些绑定。
+  // NOTE: @img is intentionally NOT stubbed. It contains sharp platform native
+  // bindings required by OpenClaw image handling and some exec-tool scripts.
 ];
 
 const GENERIC_STUB_INDEX_CJS = `// Stub (CJS): this package is not needed for headless gateway operation.
@@ -220,6 +222,29 @@ function getDirSize(dirPath) {
   return total;
 }
 
+function cleanExtensionNodeModules(runtimeRoot, stats) {
+  // Keep third-party-extensions for current packaged runtimes and include
+  // extensions for OpenClaw layouts that place bundled plugins there.
+  const extensionRoots = [
+    path.join(runtimeRoot, 'third-party-extensions'),
+    path.join(runtimeRoot, 'extensions'),
+  ];
+  for (const extensionsDir of extensionRoots) {
+    if (!fs.existsSync(extensionsDir)) continue;
+    try {
+      for (const ext of fs.readdirSync(extensionsDir, { withFileTypes: true })) {
+        if (!ext.isDirectory()) continue;
+        const extNodeModules = path.join(extensionsDir, ext.name, 'node_modules');
+        if (fs.existsSync(extNodeModules)) {
+          cleanDir(extNodeModules, stats);
+        }
+      }
+    } catch {
+      // Best-effort pruning only.
+    }
+  }
+}
+
 // ─── Main ───
 
 function main() {
@@ -331,7 +356,9 @@ function main() {
   }
 
   // Step 2c: Remove openclaw SDK duplicates from third-party-extensions.
-  // The host gateway already provides the SDK, so plugin-local copies are redundant.
+  // Plugins such as QQBot may declare openclaw as a peerDependency, and npm v7+
+  // auto-installs it into the plugin's own node_modules. The host gateway already
+  // provides the SDK on the module path, so plugin-local copies are redundant.
   if (fs.existsSync(thirdPartyDir)) {
     try {
       for (const plugin of fs.readdirSync(thirdPartyDir, { withFileTypes: true })) {
@@ -356,24 +383,7 @@ function main() {
   cleanDir(nodeModulesDir, stats);
 
   // Step 4: Clean node_modules inside extensions (but not extension source files).
-  // Keep third-party-extensions for current packaged runtimes and include
-  // extensions for OpenClaw layouts that place bundled plugins there.
-  const extensionRoots = [
-    path.join(runtimeRoot, 'third-party-extensions'),
-    path.join(runtimeRoot, 'extensions'),
-  ];
-  for (const extensionsDir of extensionRoots) {
-    if (!fs.existsSync(extensionsDir)) continue;
-    try {
-      for (const ext of fs.readdirSync(extensionsDir, { withFileTypes: true })) {
-        if (!ext.isDirectory()) continue;
-        const extNodeModules = path.join(extensionsDir, ext.name, 'node_modules');
-        if (fs.existsSync(extNodeModules)) {
-          cleanDir(extNodeModules, stats);
-        }
-      }
-    } catch { /* ignore */ }
-  }
+  cleanExtensionNodeModules(runtimeRoot, stats);
 
   const mbFreed = (stats.bytesFreed / 1024 / 1024).toFixed(1);
   console.log(
@@ -389,6 +399,8 @@ function main() {
 
 module.exports = {
   BUNDLED_EXTENSIONS_TO_KEEP,
+  PACKAGES_TO_STUB,
+  cleanExtensionNodeModules,
   shouldKeepBundledExtension,
 };
 

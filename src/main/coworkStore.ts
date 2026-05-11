@@ -38,6 +38,13 @@ const DEFAULT_MEMORY_LLM_JUDGE_ENABLED = false;
 const DEFAULT_MEMORY_GUARD_LEVEL: CoworkMemoryGuardLevel = 'strict';
 const DEFAULT_MEMORY_USER_MEMORIES_MAX_ITEMS = 12;
 const DEFAULT_SKIP_MISSED_JOBS = true;
+const DEFAULT_EMBEDDING_ENABLED = false;
+const DEFAULT_EMBEDDING_PROVIDER = 'openai';
+const DEFAULT_EMBEDDING_MODEL = '';
+const DEFAULT_EMBEDDING_LOCAL_MODEL_PATH = '';
+const DEFAULT_EMBEDDING_VECTOR_WEIGHT = 0.7;
+const DEFAULT_EMBEDDING_REMOTE_BASE_URL = '';
+const DEFAULT_EMBEDDING_REMOTE_API_KEY = '';
 const OPENCLAW_SESSION_KEEP_ALIVE_VALUES = ['1d', '7d', '30d', '365d'] as const;
 type OpenClawSessionKeepAlive = typeof OPENCLAW_SESSION_KEEP_ALIVE_VALUES[number];
 type OpenClawSessionPolicyConfig = {
@@ -71,6 +78,13 @@ function clampMemoryUserMemoriesMaxItems(value: number): number {
     MIN_MEMORY_USER_MEMORIES_MAX_ITEMS,
     Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(value))
   );
+}
+
+function parseEmbeddingVectorWeight(value: string | undefined): number {
+  if (!value) return DEFAULT_EMBEDDING_VECTOR_WEIGHT;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_EMBEDDING_VECTOR_WEIGHT;
+  return Math.max(0, Math.min(1, parsed));
 }
 
 function normalizeOpenClawSessionPolicyConfig(value: unknown): OpenClawSessionPolicyConfig {
@@ -490,6 +504,13 @@ export interface CoworkConfig {
   memoryGuardLevel: CoworkMemoryGuardLevel;
   memoryUserMemoriesMaxItems: number;
   skipMissedJobs: boolean;
+  embeddingEnabled: boolean;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingLocalModelPath: string;
+  embeddingVectorWeight: number;
+  embeddingRemoteBaseUrl: string;
+  embeddingRemoteApiKey: string;
   openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
@@ -504,6 +525,13 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
   | 'skipMissedJobs'
+  | 'embeddingEnabled'
+  | 'embeddingProvider'
+  | 'embeddingModel'
+  | 'embeddingLocalModelPath'
+  | 'embeddingVectorWeight'
+  | 'embeddingRemoteBaseUrl'
+  | 'embeddingRemoteApiKey'
   | 'openClawSessionPolicy'
 >>;
 
@@ -1093,6 +1121,13 @@ export class CoworkStore {
       'memoryGuardLevel',
       'memoryUserMemoriesMaxItems',
       'skipMissedJobs',
+      'embeddingEnabled',
+      'embeddingProvider',
+      'embeddingModel',
+      'embeddingLocalModelPath',
+      'embeddingVectorWeight',
+      'embeddingRemoteBaseUrl',
+      'embeddingRemoteApiKey',
       'openClawSessionPolicy',
     ] as const;
     const configRows = this.getAll<ConfigRow>(
@@ -1129,6 +1164,13 @@ export class CoworkStore {
       memoryGuardLevel: normalizeMemoryGuardLevel(configByKey.get('memoryGuardLevel')),
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(configByKey.get('memoryUserMemoriesMaxItems'))),
       skipMissedJobs: parseBooleanConfig(configByKey.get('skipMissedJobs'), DEFAULT_SKIP_MISSED_JOBS),
+      embeddingEnabled: parseBooleanConfig(configByKey.get('embeddingEnabled'), DEFAULT_EMBEDDING_ENABLED),
+      embeddingProvider: configByKey.get('embeddingProvider') || DEFAULT_EMBEDDING_PROVIDER,
+      embeddingModel: configByKey.get('embeddingModel') || DEFAULT_EMBEDDING_MODEL,
+      embeddingLocalModelPath: configByKey.get('embeddingLocalModelPath') || DEFAULT_EMBEDDING_LOCAL_MODEL_PATH,
+      embeddingVectorWeight: parseEmbeddingVectorWeight(configByKey.get('embeddingVectorWeight')),
+      embeddingRemoteBaseUrl: configByKey.get('embeddingRemoteBaseUrl') || DEFAULT_EMBEDDING_REMOTE_BASE_URL,
+      embeddingRemoteApiKey: configByKey.get('embeddingRemoteApiKey') || DEFAULT_EMBEDDING_REMOTE_API_KEY,
       openClawSessionPolicy,
     };
   }
@@ -1225,6 +1267,79 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [config.skipMissedJobs ? '1' : '0', now]);
+    }
+
+    if (config.embeddingEnabled !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingEnabled', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [config.embeddingEnabled ? '1' : '0', now]);
+    }
+
+    if (config.embeddingProvider !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingProvider', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.embeddingProvider), now]);
+    }
+
+    if (config.embeddingModel !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingModel', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.embeddingModel), now]);
+    }
+
+    if (config.embeddingLocalModelPath !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingLocalModelPath', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.embeddingLocalModelPath), now]);
+    }
+
+    if (config.embeddingVectorWeight !== undefined) {
+      const embeddingVectorWeight = Number.isFinite(config.embeddingVectorWeight)
+        ? Math.max(0, Math.min(1, config.embeddingVectorWeight))
+        : DEFAULT_EMBEDDING_VECTOR_WEIGHT;
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingVectorWeight', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(embeddingVectorWeight), now]);
+    }
+
+    if (config.embeddingRemoteBaseUrl !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingRemoteBaseUrl', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.embeddingRemoteBaseUrl), now]);
+    }
+
+    if (config.embeddingRemoteApiKey !== undefined) {
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('embeddingRemoteApiKey', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.embeddingRemoteApiKey), now]);
     }
 
     if (config.openClawSessionPolicy !== undefined) {

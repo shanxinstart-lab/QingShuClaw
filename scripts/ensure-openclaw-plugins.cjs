@@ -622,22 +622,27 @@ function main() {
   }
 
   // --- Post-install patch: openclaw-weixin dmPolicy from config ---
-  // Some openclaw-weixin builds hardcode dmPolicy:"pairing" and
-  // configuredAllowFrom:[] in process-message.ts, ignoring openclaw.json.
-  // Patch the plugin to honor channels.openclaw-weixin.dmPolicy/allowFrom.
+  // The plugin hardcodes dmPolicy:"pairing" and configuredAllowFrom:[] in
+  // process-message.ts, ignoring the channel config from openclaw.json.
+  // This causes all inbound messages from non-bot senders to be silently
+  // dropped as "unauthorized" even when the config specifies dmPolicy:"open"
+  // with allowFrom:["*"]. Patch it to read from deps.config.channels.
   const weixinProcessMsgPath = path.join(runtimeExtensionsDir, 'openclaw-weixin', 'src', 'messaging', 'process-message.ts');
   if (fs.existsSync(weixinProcessMsgPath)) {
     let pmSrc = fs.readFileSync(weixinProcessMsgPath, 'utf8');
     const dmPolicyPatchMarker = 'chanCfg_dmPolicy_patch';
     if (!pmSrc.includes(dmPolicyPatchMarker)) {
-      const oldDmPolicy = 'dmPolicy: "pairing",';
       const oldAllowFrom = 'configuredAllowFrom: [],';
+      // There are two occurrences of dmPolicy: "pairing": one in
+      // resolveSenderCommandAuthorizationWithRuntime and one in
+      // resolveDirectDmAuthorizationOutcome. Both must use the config value.
+      const oldDmPolicy = 'dmPolicy: "pairing",';
       const patchedDmPolicy = `dmPolicy: (() => { /* ${dmPolicyPatchMarker} */ const _cc = (deps.config.channels)?.['openclaw-weixin'] ?? {}; return _cc.dmPolicy || 'pairing'; })(),`;
       if (pmSrc.includes(oldDmPolicy) && pmSrc.includes(oldAllowFrom)) {
         pmSrc = pmSrc.replaceAll(oldDmPolicy, patchedDmPolicy);
         pmSrc = pmSrc.replace(
           oldAllowFrom,
-          `configuredAllowFrom: (() => { const _cc = (deps.config.channels)?.['openclaw-weixin'] ?? {}; return Array.isArray(_cc.allowFrom) ? _cc.allowFrom.map(String) : []; })(),`,
+          `configuredAllowFrom: (() => { const _cc = (deps.config.channels)?.['openclaw-weixin'] ?? {}; return Array.isArray(_cc.allowFrom) ? _cc.allowFrom.map(String) : []; })(),`
         );
         fs.writeFileSync(weixinProcessMsgPath, pmSrc);
         log('Patched openclaw-weixin/src/messaging/process-message.ts: dmPolicy/allowFrom now read from config');
@@ -719,8 +724,11 @@ exports.plugin = {
   }
 
   // --- Post-install patch: openclaw-lark Content-Disposition filename encoding ---
-  // Feishu may return raw UTF-8 bytes in a Latin-1 parsed Content-Disposition
-  // filename. Re-decode these garbled bytes so Chinese attachment names survive.
+  // The Feishu API returns Chinese filenames as raw UTF-8 bytes in the
+  // Content-Disposition header (e.g. filename="recent-news.pdf").
+  // HTTP headers are parsed as Latin-1 by Node.js, so UTF-8 multibyte
+  // sequences get garbled. decodeURIComponent() does nothing because the bytes
+  // are not percent-encoded, so re-decode Latin-1-garbled UTF-8 bytes manually.
   const larkMediaPath = path.join(runtimeExtensionsDir, 'openclaw-lark', 'src', 'messaging', 'outbound', 'media.js');
   if (fs.existsSync(larkMediaPath)) {
     let mediaSrc = fs.readFileSync(larkMediaPath, 'utf8');
@@ -730,18 +738,21 @@ exports.plugin = {
       const idx = mediaSrc.indexOf(target);
       if (idx !== -1) {
         const replacement = `fileName = decodeURIComponent(match[1].trim());
-                // Patched by LobsterAI: fix Latin-1 garbled UTF-8 filenames from Feishu API.
+                // Patched by LobsterAI: fix Latin-1 garbled UTF-8 filenames from Feishu API
                 fileName = ${patchMarker}(fileName);`;
         mediaSrc = mediaSrc.slice(0, idx) + replacement + mediaSrc.slice(idx + target.length);
         const fnMarker = 'async function downloadMessageResourceFeishu(';
         const fnIdx = mediaSrc.indexOf(fnMarker);
         if (fnIdx !== -1) {
           const helperFn = `// Patched by LobsterAI: detect and fix Latin-1 garbled UTF-8 filenames.
+// When Node.js parses HTTP headers as Latin-1, UTF-8 multibyte Chinese
+// characters get split into individual high bytes.
 function ${patchMarker}(name) {
     if (!name) return name;
     try {
         const buf = Buffer.from(name, 'latin1');
         const decoded = buf.toString('utf-8');
+        // If re-decoding produces fewer chars and no replacement chars, it was garbled UTF-8.
         if (decoded.length < name.length && !decoded.includes('\\ufffd')) {
             return decoded;
         }
@@ -752,9 +763,9 @@ function ${patchMarker}(name) {
           mediaSrc = mediaSrc.slice(0, fnIdx) + helperFn + mediaSrc.slice(fnIdx);
         }
         fs.writeFileSync(larkMediaPath, mediaSrc);
-        log('Patched openclaw-lark/media.js: fixed Content-Disposition filename encoding');
+        log('Patched openclaw-lark/media.js: fix Content-Disposition filename encoding for Chinese');
       } else {
-        log('openclaw-lark/media.js: filename assignment pattern not found, skipping patch');
+        log('openclaw-lark/media.js: fileName assignment pattern not found, skipping patch');
       }
     } else {
       log('openclaw-lark/media.js already patched for filename encoding, skipping');
@@ -762,8 +773,11 @@ function ${patchMarker}(name) {
   }
 
   // --- Post-install patch: dingtalk-connector file:// URL fix (Windows only) ---
-  // On Windows, `file://${D:\path\image.jpg}` is parsed with the drive letter
-  // as hostname. Use `file:///D:/path/image.jpg` so local image inputs survive.
+  // On Windows, downloadImageToFile returns paths with backslashes, and
+  // `file://${path}` produces an invalid file URL where the drive letter is
+  // parsed as the hostname. Use `file:///D:/path/image.jpg` so local image
+  // inputs survive. On macOS/Linux paths start with `/`, so no patching is
+  // needed there.
   const dingtalkMsgHandlerPath = path.join(
     runtimeExtensionsDir, 'dingtalk-connector', 'src', 'core', 'message-handler.ts'
   );

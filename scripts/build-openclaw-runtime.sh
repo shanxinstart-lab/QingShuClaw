@@ -134,8 +134,9 @@ pnpm install --frozen-lockfile
 pnpm build
 pnpm ui:build
 # Skip release:check — it validates the openclaw npm package for publishing and
-# is not relevant for LobsterAI embedded runtime builds. On some environments it
-# also fails for reasons unrelated to the bundled runtime output.
+# is not relevant for LobsterAI embedded runtime builds. On Windows it can also
+# fail due to spawnSync/execFileSync not finding npm without shell:true, or npm
+# pack producing truncated tarballs unrelated to the embedded runtime output.
 echo "[openclaw-runtime] Skipping release:check (not needed for embedded builds)"
 
 echo "[2/7] Packing npm tarball"

@@ -60,15 +60,16 @@ describe('enterpriseConfigSync', () => {
     expect(map['all']).toBe('sandbox');
   });
 
-  test('channel key mapping covers all 10 platforms', () => {
+  test('channel key mapping covers all platform aliases used by enterprise import', () => {
     const map: Record<string, string> = {
       telegram: 'telegramOpenClaw', discord: 'discordOpenClaw',
-      feishu: 'feishuOpenClaw', 'dingtalk-connector': 'dingtalkOpenClaw',
+      feishu: 'feishuOpenClaw', dingtalk: 'dingtalkOpenClaw', 'dingtalk-connector': 'dingtalkOpenClaw',
       qqbot: 'qq', wecom: 'wecomOpenClaw', 'moltbot-popo': 'popo',
       nim: 'nim', 'openclaw-weixin': 'weixin', xiaomifeng: 'xiaomifeng',
     };
-    expect(Object.keys(map)).toHaveLength(10);
+    expect(Object.keys(map)).toHaveLength(11);
     expect(map['telegram']).toBe('telegramOpenClaw');
+    expect(map['dingtalk']).toBe('dingtalkOpenClaw');
     expect(map['dingtalk-connector']).toBe('dingtalkOpenClaw');
     expect(map['qqbot']).toBe('qq');
     expect(map['moltbot-popo']).toBe('popo');
@@ -349,6 +350,85 @@ describe('enterpriseConfigSync', () => {
           footer: undefined,
           blockStreamingCoalesce: undefined,
           mediaMaxMb: undefined,
+        },
+      },
+    ]);
+  });
+
+  test('syncEnterpriseConfig preserves wecom websocket url from account maps', async () => {
+    const configDir = path.join(tmpDir, 'enterprise-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'manifest.json'),
+      JSON.stringify({
+        version: '1.0.0',
+        name: 'Test',
+        sync: { openclaw: true, skills: false, agents: false, mcp: false },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'openclaw.json'),
+      JSON.stringify({
+        channels: {
+          wecom: {
+            accounts: {
+              wc001122: {
+                enabled: true,
+                name: 'WeCom Bot',
+                botId: 'bot-id',
+                secret: 'secret',
+                websocketUrl: 'wss://wecom.example/ws',
+                dmPolicy: 'open',
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const mod = await import('./enterpriseConfigSync');
+    const setWecomInstanceConfigCalls: Array<{ instanceId: string; config: Record<string, unknown> }> = [];
+    const imStore = {
+      getWecomInstances: () => [{ instanceId: 'wc001122-existing-id' }],
+      setWecomInstanceConfig: (instanceId: string, config: Record<string, unknown>) => {
+        setWecomInstanceConfigCalls.push({ instanceId, config });
+      },
+      setWecomConfig: () => undefined,
+      setTelegramOpenClawConfig: () => undefined,
+      setDiscordOpenClawConfig: () => undefined,
+      setFeishuOpenClawConfig: () => undefined,
+      setDingTalkOpenClawConfig: () => undefined,
+      setQQConfig: () => undefined,
+      setPopoConfig: () => undefined,
+      setNimConfig: () => undefined,
+      setWeixinConfig: () => undefined,
+      setNeteaseBeeChanConfig: () => undefined,
+    };
+
+    mod.syncEnterpriseConfig(
+      configDir,
+      { get: () => undefined, set: () => undefined } as any,
+      imStore as any,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+      () => undefined,
+    );
+
+    expect(setWecomInstanceConfigCalls).toEqual([
+      {
+        instanceId: 'wc001122-existing-id',
+        config: {
+          enabled: true,
+          instanceName: 'WeCom Bot',
+          botId: 'bot-id',
+          secret: 'secret',
+          websocketUrl: 'wss://wecom.example/ws',
+          dmPolicy: 'open',
+          allowFrom: undefined,
+          groupPolicy: undefined,
+          groupAllowFrom: undefined,
+          sendThinkingMessage: undefined,
         },
       },
     ]);

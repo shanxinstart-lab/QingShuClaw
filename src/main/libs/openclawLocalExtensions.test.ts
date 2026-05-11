@@ -3,7 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 
-import { __openclawLocalExtensionsTestUtils } from './openclawLocalExtensions';
+import {
+  __openclawLocalExtensionsTestUtils,
+  cleanupStaleThirdPartyPluginsFromBundledDir,
+} from './openclawLocalExtensions';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'lobsterai-openclaw-extensions-'));
@@ -62,5 +65,27 @@ describe('openclawLocalExtensions manifest helpers', () => {
 
   test('returns an empty list for missing extension directories', () => {
     expect(__openclawLocalExtensionsTestUtils.listExtensionManifests(null, 'local')).toEqual([]);
+  });
+});
+
+describe('openclawLocalExtensions cleanup helpers', () => {
+  test('removes stale third-party plugins from both legacy scan directories', () => {
+    const runtimeRoot = makeTmpDir();
+    try {
+      const distPluginDir = path.join(runtimeRoot, 'dist', 'extensions', 'openclaw-lark');
+      const rootPluginDir = path.join(runtimeRoot, 'extensions', 'openclaw-lark');
+      fs.mkdirSync(distPluginDir, { recursive: true });
+      fs.mkdirSync(rootPluginDir, { recursive: true });
+      fs.writeFileSync(path.join(distPluginDir, 'openclaw.plugin.json'), '{}', 'utf8');
+      fs.writeFileSync(path.join(rootPluginDir, 'openclaw.plugin.json'), '{}', 'utf8');
+
+      const removed = cleanupStaleThirdPartyPluginsFromBundledDir(runtimeRoot, ['openclaw-lark']);
+
+      expect(removed).toEqual(['openclaw-lark', 'openclaw-lark']);
+      expect(fs.existsSync(distPluginDir)).toBe(false);
+      expect(fs.existsSync(rootPluginDir)).toBe(false);
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
   });
 });

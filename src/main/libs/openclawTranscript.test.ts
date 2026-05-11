@@ -128,6 +128,75 @@ describe('buildTransientSessionFromOpenClawTranscript', () => {
     expect(session?.messages[1]?.content).toBe('我先检查错误日志。');
   });
 
+  test('filters transient gateway status when rebuilding transcript history', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:qingshu-managed:run:66666666-6666-6666-6666-666666666666',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:00:00.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '继续生成飞书文档' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:00:05.000Z',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'output_text',
+                text: '网关正在重启中。等待重启完成后，我将继续创建飞书文档保存杭州和上海老乡鸡的流量供需分析数据。',
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:00:10.000Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '已恢复，我继续处理。' }],
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages.map((message) => message.content)).toEqual([
+      '继续生成飞书文档',
+      '已恢复，我继续处理。',
+    ]);
+  });
+
+  test('remaps scheduled reminder transcript prompts to system messages', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:main:cron:test-job:run:77777777-7777-7777-7777-777777777777',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:00:00.000Z',
+          message: {
+            role: 'user',
+            content: `A scheduled reminder has been triggered. The reminder content is:
+
+⏰ 提醒：检查今日数据同步状态
+
+Handle this reminder internally. Do not relay it to the user unless explicitly requested.
+Current time: Thursday, April 16th, 2026 — 18:00 (Asia/Shanghai)`,
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages).toHaveLength(1);
+    expect(session?.messages[0]?.type).toBe('system');
+    expect(session?.messages[0]?.content).toBe('⏰ 提醒：检查今日数据同步状态');
+  });
+
   test('preserves assistant content stored as nested parts objects', () => {
     const session = buildTransientSessionFromOpenClawTranscript({
       sessionKey: 'agent:qingshu-managed:run:44444444-4444-4444-4444-444444444444',

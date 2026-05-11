@@ -197,5 +197,10 @@ describe('ProviderRegistry', () => {
     test('falls back to provider name for unknown ids', () => {
       expect(ProviderRegistry.getOpenClawProviderId('custom_unknown')).toBe('custom_unknown');
     });
+
+    test('falls back to lobster for empty provider ids', () => {
+      expect(ProviderRegistry.getOpenClawProviderId('')).toBe('lobster');
+      expect(ProviderRegistry.getOpenClawProviderId('   ')).toBe('lobster');
+    });
   });
 });

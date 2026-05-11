@@ -75,4 +75,48 @@ describe('scheduled task helpers', () => {
     });
     expect(channels.some((channel) => channel.label === '钉钉二号')).toBe(false);
   });
+
+  test('derives NIM runtime account ids from token or app account when instance id is unavailable', () => {
+    initScheduledTaskHelpers({
+      getIMGatewayManager: () => ({
+        getConfig: () => ({
+          nim: {
+            instances: [
+              {
+                instanceName: '云信 Token Bot',
+                enabled: true,
+                nimToken: 'app-key|accid-001|token-secret',
+              },
+              {
+                instanceName: '云信账号 Bot',
+                enabled: true,
+                appKey: 'app-key-2',
+                account: 'accid-002',
+              },
+              {
+                instanceName: '云信不可用 Bot',
+                enabled: true,
+              },
+            ],
+          },
+        }),
+      }),
+    });
+
+    const channels = listScheduledTaskChannels();
+
+    expect(channels).toContainEqual({
+      value: 'nim',
+      label: '云信 Token Bot',
+      accountId: 'app-key:accid-001',
+      filterAccountId: 'app-key:accid-001',
+    });
+    expect(channels).toContainEqual({
+      value: 'nim',
+      label: '云信账号 Bot',
+      accountId: 'app-key-2:accid-002',
+      filterAccountId: 'app-key-2:accid-002',
+    });
+    expect(channels.some((channel) => channel.label === '云信不可用 Bot')).toBe(false);
+  });
 });

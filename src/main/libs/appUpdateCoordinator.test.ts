@@ -371,6 +371,30 @@ describe('AppUpdateCoordinator manual check', () => {
     expect(persisted?.filePath).toContain(path.join(tmpDir, 'updates'));
   });
 
+  test('auto check keeps invalid installer urls available instead of failing', async () => {
+    mockElectronState.fetchImpl.mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 0,
+      data: {
+        value: {
+          version: '2026.5.2',
+          macArm: { url: 'not a valid url' },
+        },
+      },
+    }), { status: 200 }));
+    const { store } = createStore({ installation_uuid: 'uuid-test' });
+    const coordinator = new AppUpdateCoordinator(store as never);
+
+    const result = await coordinator.checkNow({ manual: false });
+
+    expect(result.success).toBe(true);
+    expect(result.updateFound).toBe(true);
+    expect(result.state.status).toBe(AppUpdateStatus.Available);
+    expect(result.state.source).toBe(AppUpdateSource.Auto);
+    expect(result.state.readyFilePath).toBeNull();
+    expect(result.state.errorMessage).toBeNull();
+    expect(mockElectronState.fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test('checkNow reuses an already downloaded ready installer for the same version', async () => {
     mockElectronState.fetchImpl
       .mockResolvedValueOnce(new Response(JSON.stringify({

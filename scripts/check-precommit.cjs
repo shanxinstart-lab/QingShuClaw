@@ -70,11 +70,26 @@ function getTargetFiles() {
     ? ['ls-files', '-z']
     : ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'];
   const output = runGit(args);
-  return output
+  const files = output
     .toString('utf8')
     .split('\0')
     .map((item) => item.trim())
     .filter(Boolean);
+
+  if (!scanAllTracked) {
+    return files;
+  }
+
+  const deletedOutput = runGit(['ls-files', '--deleted', '-z']);
+  const deletedFiles = new Set(
+    deletedOutput
+      .toString('utf8')
+      .split('\0')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+
+  return files.filter((file) => !deletedFiles.has(file));
 }
 
 function readTargetFile(filePath) {

@@ -406,7 +406,12 @@ export class AppUpdateCoordinator {
     if (!url || url.includes('#') || url.endsWith('/download-list')) {
       return false;
     }
-    const normalizedPath = new URL(url).pathname.toLowerCase();
+    let normalizedPath: string;
+    try {
+      normalizedPath = new URL(url).pathname.toLowerCase();
+    } catch {
+      return false;
+    }
     if (process.platform === 'darwin') {
       return normalizedPath.endsWith('.dmg');
     }

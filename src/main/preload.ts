@@ -265,6 +265,13 @@ contextBridge.exposeInMainWorld('electron', {
       memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
       memoryUserMemoriesMaxItems?: number;
       skipMissedJobs?: boolean;
+      embeddingEnabled?: boolean;
+      embeddingProvider?: string;
+      embeddingModel?: string;
+      embeddingLocalModelPath?: string;
+      embeddingVectorWeight?: number;
+      embeddingRemoteBaseUrl?: string;
+      embeddingRemoteApiKey?: string;
       openClawSessionPolicy?: { keepAlive: '1d' | '7d' | '30d' | '365d' };
     }) =>
       ipcRenderer.invoke('cowork:config:set', config),

@@ -91,7 +91,13 @@ export function parseChannelSessionKey(sessionKey: string): { platform: Platform
           const platform = PlatformRegistry.platformOfChannel(ctx.channel);
           if (platform) {
             // Build a stable conversationId from the JSON context fields
-            const conversationId = ctx.peerid || ctx.conversationId || ctx.accountid || jsonStr;
+            const accountId = typeof ctx.accountid === 'string' ? ctx.accountid.trim() : '';
+            const peerId = typeof ctx.peerid === 'string' ? ctx.peerid.trim() : '';
+            const contextConversationId = typeof ctx.conversationId === 'string' ? ctx.conversationId.trim() : '';
+            const peerScopedId = peerId || contextConversationId;
+            const conversationId = accountId && peerScopedId
+              ? `${accountId}:${peerScopedId}`
+              : (peerScopedId || accountId || jsonStr);
             return { platform, conversationId };
           }
         }

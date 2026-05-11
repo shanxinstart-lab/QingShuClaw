@@ -72,11 +72,11 @@ describe('serializeForLog', () => {
 
   test('redacts authorization header', () => {
     const result = serializeForLog({
-      Authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.secret',
+      Authorization: 'Bearer <test-token>',
     });
 
     expect(result).toContain('[redacted]');
-    expect(result).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(result).not.toContain('<test-token>');
   });
 
   test('redacts multiple sensitive keys in one object', () => {
@@ -127,5 +127,24 @@ describe('serializeForLog', () => {
     expect(result).toContain('42');
     expect(result).toContain('true');
     expect(result).toContain('null');
+  });
+
+  test('redacts inline authorization tokens in plain text values', () => {
+    const result = serializeForLog({
+      message: 'request failed with Authorization: Bearer secret-token-123',
+    });
+
+    expect(result).toContain('Authorization: Bearer [redacted]');
+    expect(result).not.toContain('secret-token-123');
+  });
+
+  test('redacts inline api keys in plain text values', () => {
+    const result = serializeForLog({
+      message: 'upstream returned api_key=sk-secret-value and status=401',
+    });
+
+    expect(result).toContain('api_key=[redacted]');
+    expect(result).toContain('status=401');
+    expect(result).not.toContain('sk-secret-value');
   });
 });
