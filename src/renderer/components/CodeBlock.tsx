@@ -670,6 +670,7 @@ const baseTheme = EditorView.theme({
     borderRadius: '5px',
     border: '1px solid transparent',
     fontSize: '12px',
+    lineHeight: '1',
     color: 'var(--lobster-text-secondary)',
     cursor: 'pointer',
     userSelect: 'none',
@@ -681,6 +682,10 @@ const baseTheme = EditorView.theme({
     color: 'var(--lobster-foreground)',
   },
   '.cm-search-opt input[type="checkbox"]': {
+    display: 'block',
+    flex: '0 0 auto',
+    width: '13px',
+    height: '13px',
     margin: '0',
     cursor: 'pointer',
     accentColor: 'var(--lobster-primary)',
