@@ -219,6 +219,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         window.dispatchEvent(new CustomEvent('app:showToast', {
           detail: i18nService.t('voiceInputPermissionDenied'),
         }));
+      } else if (!result.success) {
+        window.dispatchEvent(new CustomEvent('app:showToast', {
+          detail: i18nService.t('voiceInputFailed'),
+        }));
       }
     }, []);
 

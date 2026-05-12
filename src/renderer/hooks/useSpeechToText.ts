@@ -11,7 +11,9 @@
  */
 export async function triggerSystemDictation(): Promise<{ success: boolean; error?: string }> {
   try {
+    console.debug('[Voice] Requesting system dictation');
     const result = await window.electron.voice.triggerDictation();
+    console.debug('[Voice] System dictation result:', result);
     if (!result.success) {
       console.warn('[Voice] triggerDictation failed:', result.error);
     }

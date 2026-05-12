@@ -8,11 +8,13 @@ import type {
   ScheduledTaskConversationOption,
   ScheduledTaskInput,
 } from '../../../scheduledTask/types';
+import { triggerSystemDictation } from '../../hooks/useSpeechToText';
 import { i18nService } from '../../services/i18n';
 import { scheduledTaskService } from '../../services/scheduledTask';
 import { RootState } from '../../store';
 import type { Model } from '../../store/slices/modelSlice';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
+import MicrophoneIcon from '../icons/MicrophoneIcon';
 import ModelSelector from '../ModelSelector';
 import { formatScheduleLabel, type PlanType, scheduleToPlanInfo } from './utils';
 
@@ -272,6 +274,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     { ok: true; label: string } | { ok: false } | null
   >(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const payloadTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isDirty = JSON.stringify(form) !== initialFormRef.current;
 
@@ -470,6 +473,20 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
 
   const handleModelChange = (model: Model | null) => {
     updateForm({ modelId: model ? toOpenClawModelRef(model) : '' });
+  };
+
+  const handleVoiceInput = async () => {
+    payloadTextareaRef.current?.focus();
+    const result = await triggerSystemDictation();
+    if (!result.success && result.error === 'permission_denied') {
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('voiceInputPermissionDenied'),
+      }));
+    } else if (!result.success) {
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('voiceInputFailed'),
+      }));
+    }
   };
 
   const timeValue = `${String(form.hour).padStart(2, '0')}:${String(form.minute).padStart(2, '0')}`;
@@ -1260,19 +1277,29 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
           </div>
           <div className="rounded-lg border border-border bg-surface focus-within:ring-2 focus-within:ring-primary/50">
             <textarea
+              ref={payloadTextareaRef}
               value={form.payloadText}
               onChange={event => updateForm({ payloadText: event.target.value })}
               className={`${textareaInputClass} resize-y`}
               style={{ minHeight: '80px', height: '120px' }}
               placeholder={i18nService.t('scheduledTasksFormPromptPlaceholder')}
             />
-            <div className="flex items-center px-2 py-1 border-t border-border/40">
+            <div className="flex items-center justify-between gap-2 px-2 py-1 border-t border-border/40">
               <ModelSelector
                 dropdownDirection="up"
                 value={selectedModelValue}
                 onChange={handleModelChange}
                 defaultLabel={i18nService.t('scheduledTasksFormModelDefault')}
               />
+              <button
+                type="button"
+                onClick={() => void handleVoiceInput()}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
+                title={i18nService.t('voiceInput')}
+                aria-label={i18nService.t('voiceInput')}
+              >
+                <MicrophoneIcon className="h-4 w-4" />
+              </button>
             </div>
           </div>
           <p className={hintClass}>
