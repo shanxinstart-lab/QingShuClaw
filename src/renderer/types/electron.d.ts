@@ -555,6 +555,9 @@ interface IElectronAPI {
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
     openHtmlInBrowser: (htmlContent: string) => Promise<{ success: boolean; error?: string }>;
   };
+  clipboard: {
+    writeImageFromFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+  };
   voice: {
     triggerDictation: () => Promise<{ success: boolean; error?: string }>;
   };
