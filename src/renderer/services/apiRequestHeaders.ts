@@ -4,15 +4,16 @@ export const buildApiRequestHeaders = (
   provider: string,
   apiKey: string,
 ): Record<string, string> => {
+  const normalizedApiKey = apiKey.trim();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  if (apiKey) {
+  if (normalizedApiKey) {
     if (provider === ProviderName.Gemini) {
-      headers['x-goog-api-key'] = apiKey;
+      headers['x-goog-api-key'] = normalizedApiKey;
     } else {
-      headers.Authorization = `Bearer ${apiKey}`;
+      headers.Authorization = `Bearer ${normalizedApiKey}`;
     }
   }
 

@@ -1,5 +1,7 @@
-import { EventEmitter } from 'events';
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { EventEmitter } from 'events';
+
+import type { OpenClawSessionPatch } from '../../../common/openclawSession';
 import type {
   CoworkAgentEngine,
   CoworkContinueOptions,
@@ -8,7 +10,6 @@ import type {
   CoworkStartOptions,
 } from './types';
 import { ENGINE_SWITCHED_CODE } from './types';
-import type { OpenClawSessionPatch } from '../../../common/openclawSession';
 
 type RouterDeps = {
   getCurrentEngine: () => CoworkAgentEngine;
@@ -168,9 +169,9 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
       this.emit('message', sessionId, message);
     });
 
-    runtime.on('messageUpdate', (sessionId, messageId, content) => {
+    runtime.on('messageUpdate', (sessionId, messageId, content, metadata) => {
       this.sessionEngine.set(sessionId, engine);
-      this.emit('messageUpdate', sessionId, messageId, content);
+      this.emit('messageUpdate', sessionId, messageId, content, metadata);
     });
 
     runtime.on('permissionRequest', (sessionId, request) => {

@@ -17,9 +17,14 @@ const WRAPPED_REQUEST_MARKER_PATTERNS = [
 export interface GatewayHistoryEntry {
   role: GatewayHistoryRole;
   text: string;
+  timestamp?: number;
+  usage?: { input?: number; output?: number; cacheRead?: number; totalTokens?: number };
+  model?: string;
 }
 
 const HEARTBEAT_ACK_RE = /^[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}HEARTBEAT_OK[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}$/i;
+const SILENT_REPLY_RE = /^\s*NO_REPLY\s*$/i;
+const SILENT_REPLY_TOKEN = 'NO_REPLY';
 const HEARTBEAT_PROMPT_MARKERS = [
   'read heartbeat.md if it exists',
   'when reading heartbeat.md',
@@ -55,6 +60,12 @@ const collectTextChunks = (value: unknown): string[] => {
   const chunks: string[] = [];
   if (typeof value.text === 'string') {
     const text = value.text.trim();
+    if (text) {
+      chunks.push(text);
+    }
+  }
+  if (typeof value.output_text === 'string') {
+    const text = value.output_text.trim();
     if (text) {
       chunks.push(text);
     }
@@ -100,6 +111,35 @@ export const extractGatewayMessageText = (message: unknown): string => {
   return '';
 };
 
+const parseGatewayTimestamp = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric;
+  }
+
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const extractGatewayTimestamp = (message: Record<string, unknown>): number | undefined => {
+  return parseGatewayTimestamp(message.timestamp)
+    ?? parseGatewayTimestamp(message.createdAt)
+    ?? parseGatewayTimestamp(message.created_at)
+    ?? parseGatewayTimestamp(message.time);
+};
+
 export const normalizeGatewayHistoryText = (
   role: GatewayHistoryRole,
   text: string,
@@ -128,12 +168,35 @@ export const normalizeGatewayHistoryText = (
 
 export const isHeartbeatAckText = (text: string): boolean => HEARTBEAT_ACK_RE.test(text.trim());
 
+export const isSilentReplyText = (text: string): boolean => SILENT_REPLY_RE.test(text.trim());
+
+export const isSilentReplyPrefixText = (text: string): boolean => {
+  const trimmed = text.trimStart();
+  if (!trimmed || trimmed.length < 2) return false;
+  if (trimmed !== trimmed.toUpperCase()) return false;
+  if (/[^A-Z_]/.test(trimmed)) return false;
+  const tokenUpper = SILENT_REPLY_TOKEN.toUpperCase();
+  if (!tokenUpper.startsWith(trimmed)) return false;
+  if (trimmed.includes('_')) return true;
+  return trimmed === 'NO';
+};
+
 export const isHeartbeatPromptText = (text: string): boolean => {
   const normalized = text.trim().toLowerCase();
   if (!normalized) {
     return false;
   }
   return HEARTBEAT_PROMPT_MARKERS.every((marker) => normalized.includes(marker));
+};
+
+export const shouldSuppressHeartbeatText = (role: GatewayHistoryRole, text: string): boolean => {
+  if ((role === 'assistant' || role === 'system') && (isHeartbeatAckText(text) || isSilentReplyText(text))) {
+    return true;
+  }
+  if (role === 'user' && isHeartbeatPromptText(text)) {
+    return true;
+  }
+  return false;
 };
 
 export const isTransientGatewayStatusText = (text: string): boolean => {
@@ -214,10 +277,7 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
   if (!text) {
     return null;
   }
-  if ((role === 'assistant' || role === 'system') && isHeartbeatAckText(text)) {
-    return null;
-  }
-  if (role === 'user' && isHeartbeatPromptText(text)) {
+  if (shouldSuppressHeartbeatText(role, text)) {
     return null;
   }
   if (role === 'assistant' && isTransientGatewayStatusText(text)) {
@@ -227,16 +287,40 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
   const reminderSystemMessage = role === 'user'
     ? buildScheduledReminderSystemMessage(text)
     : null;
+  const timestamp = extractGatewayTimestamp(message);
   if (reminderSystemMessage) {
     return {
       role: 'system',
       text: reminderSystemMessage,
+      ...(timestamp !== undefined && { timestamp }),
     };
   }
+
+  const rawUsage = isRecord(message.usage) ? message.usage : null;
+  const usage = rawUsage
+    ? {
+      ...((typeof rawUsage.input === 'number' || typeof rawUsage.inputTokens === 'number') && {
+        input: typeof rawUsage.input === 'number' ? rawUsage.input : rawUsage.inputTokens as number,
+      }),
+      ...((typeof rawUsage.output === 'number' || typeof rawUsage.outputTokens === 'number') && {
+        output: typeof rawUsage.output === 'number' ? rawUsage.output : rawUsage.outputTokens as number,
+      }),
+      ...((typeof rawUsage.cacheRead === 'number' || typeof rawUsage.cacheReadTokens === 'number') && {
+        cacheRead: typeof rawUsage.cacheRead === 'number' ? rawUsage.cacheRead : rawUsage.cacheReadTokens as number,
+      }),
+      ...(typeof rawUsage.totalTokens === 'number' && { totalTokens: rawUsage.totalTokens }),
+    }
+    : undefined;
+  const model = typeof message.model === 'string' && message.model.trim()
+    ? message.model.trim()
+    : undefined;
 
   return {
     role,
     text,
+    ...(timestamp !== undefined && { timestamp }),
+    ...(usage && Object.keys(usage).length > 0 && { usage }),
+    ...(model && { model }),
   };
 };
 

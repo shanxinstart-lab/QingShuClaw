@@ -1,28 +1,29 @@
-import { store } from '../store';
-import {
-  setLoading,
-  setError,
-  setTasks,
-  addTask,
-  updateTask,
-  removeTask,
-  updateTaskState,
-  setRuns,
-  appendRuns,
-  addOrUpdateRun,
-  setAllRuns,
-  appendAllRuns,
-} from '../store/slices/scheduledTaskSlice';
+import { TaskStatus } from '../../scheduledTask/constants';
 import type {
+  RunFilter,
   ScheduledTask,
   ScheduledTaskChannelOption,
   ScheduledTaskConversationOption,
   ScheduledTaskInput,
-  ScheduledTaskStatusEvent,
   ScheduledTaskRunEvent,
+  ScheduledTaskStatusEvent,
   TaskState,
 } from '../../scheduledTask/types';
-import { TaskStatus } from '../../scheduledTask/constants';
+import { store } from '../store';
+import {
+  addOrUpdateRun,
+  addTask,
+  appendAllRuns,
+  appendRuns,
+  removeTask,
+  setAllRuns,
+  setError,
+  setLoading,
+  setRuns,
+  setTasks,
+  updateTask,
+  updateTaskState,
+} from '../store/slices/scheduledTaskSlice';
 import { i18nService } from './i18n';
 
 function showToast(message: string): void {
@@ -54,9 +55,10 @@ function checkTasksForAnomalies(tasks: ScheduledTask[]): void {
   showToast(message);
 }
 
-class ScheduledTaskService {
+export class ScheduledTaskService {
   private cleanupFns: (() => void)[] = [];
   private initialized = false;
+  private runningManualTaskIds = new Set<string>();
 
   private scheduleTaskRefresh(taskId: string, delaysMs: number[] = [1200, 5000]): void {
     const api = window.electron?.scheduledTasks;
@@ -109,6 +111,7 @@ class ScheduledTaskService {
     const cleanupRun = api.onRunUpdate(
       (event: ScheduledTaskRunEvent) => {
         store.dispatch(addOrUpdateRun(event.run));
+        this.scheduleTaskRefresh(event.run.taskId, [500, 1500]);
       }
     );
     this.cleanupFns.push(cleanupRun);
@@ -216,21 +219,45 @@ class ScheduledTaskService {
     const api = window.electron?.scheduledTasks;
     if (!api) return;
 
+    if (this.runningManualTaskIds.has(id)) {
+      return;
+    }
+
     const task = store.getState().scheduledTask.tasks.find((item) => item.id === id);
+    if (task?.state.runningAtMs) {
+      return;
+    }
+
+    this.runningManualTaskIds.add(id);
     const previousState: TaskState | null = task
       ? { ...task.state }
       : null;
+    let manualStartedAtMs: number | null = null;
 
-    if (task && !task.state.runningAtMs) {
+    if (task) {
+      const now = Date.now();
+      manualStartedAtMs = now;
       store.dispatch(setError(null));
       store.dispatch(updateTaskState({
         taskId: id,
         taskState: {
           ...task.state,
-          runningAtMs: Date.now(),
+          runningAtMs: now,
           lastStatus: TaskStatus.Running,
           lastError: null,
         },
+      }));
+      store.dispatch(addOrUpdateRun({
+        id: `pending-manual-${id}`,
+        taskId: id,
+        taskName: task.name,
+        sessionId: null,
+        sessionKey: task.sessionKey ?? null,
+        status: TaskStatus.Running,
+        startedAt: new Date(now).toISOString(),
+        finishedAt: null,
+        durationMs: null,
+        error: null,
       }));
     }
 
@@ -241,14 +268,33 @@ class ScheduledTaskService {
       }
       this.scheduleTaskRefresh(id);
     } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
       if (previousState) {
         store.dispatch(updateTaskState({
           taskId: id,
           taskState: previousState,
         }));
       }
-      store.dispatch(setError(err instanceof Error ? err.message : String(err)));
+      if (task && manualStartedAtMs !== null) {
+        const finishedAtMs = Date.now();
+        store.dispatch(addOrUpdateRun({
+          id: `pending-manual-${id}`,
+          taskId: id,
+          taskName: task.name,
+          sessionId: null,
+          sessionKey: task.sessionKey ?? null,
+          status: TaskStatus.Error,
+          startedAt: new Date(manualStartedAtMs).toISOString(),
+          finishedAt: new Date(finishedAtMs).toISOString(),
+          durationMs: Math.max(0, finishedAtMs - manualStartedAtMs),
+          error: errorMessage,
+        }));
+      }
+      store.dispatch(setError(errorMessage));
+      showToast(`${i18nService.t('scheduledTasksRunFailed')}：${errorMessage}`);
       throw err;
+    } finally {
+      this.runningManualTaskIds.delete(id);
     }
   }
 
@@ -264,12 +310,12 @@ class ScheduledTaskService {
     }
   }
 
-  async loadRuns(taskId: string, limit = 20, offset?: number): Promise<void> {
+  async loadRuns(taskId: string, limit = 20, offset?: number, filter?: RunFilter): Promise<void> {
     const api = window.electron?.scheduledTasks;
     if (!api) return;
 
     try {
-      const result = await api.listRuns(taskId, limit, offset);
+      const result = await api.listRuns(taskId, limit, offset, filter);
       if (result.success && result.runs) {
         const hasMore = result.runs.length >= limit;
         if (offset && offset > 0) {
@@ -283,17 +329,18 @@ class ScheduledTaskService {
     }
   }
 
-  async loadAllRuns(limit?: number, offset?: number): Promise<void> {
+  async loadAllRuns(limit?: number, offset?: number, filter?: RunFilter): Promise<void> {
     const api = window.electron?.scheduledTasks;
     if (!api) return;
 
     try {
-      const result = await api.listAllRuns(limit, offset);
+      const result = await api.listAllRuns(limit, offset, filter);
       if (result.success && result.runs) {
+        const hasMore = result.runs.length >= (limit ?? 20);
         if (offset && offset > 0) {
-          store.dispatch(appendAllRuns(result.runs));
+          store.dispatch(appendAllRuns({ runs: result.runs, hasMore }));
         } else {
-          store.dispatch(setAllRuns(result.runs));
+          store.dispatch(setAllRuns({ runs: result.runs, hasMore }));
         }
       }
     } catch (err: unknown) {

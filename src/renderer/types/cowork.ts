@@ -43,6 +43,15 @@ export interface CoworkMessageMetadata {
   isFinal?: boolean;
   isThinking?: boolean;
   skillIds?: string[];  // Skills used for this message
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  contextPercent?: number;
+  model?: string;
+  agentName?: string;
   [key: string]: unknown;
 }
 

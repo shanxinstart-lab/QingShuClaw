@@ -4,22 +4,53 @@
  */
 
 import axios from 'axios';
+
+import { buildIMMediaInstruction } from './imMediaInstruction';
 import {
+  IMLLMConfig,
   IMMessage,
   IMSettings,
 } from './types';
-import { buildIMMediaInstruction } from './imMediaInstruction';
 
-// LLM Configuration interface (mirrors app_config structure)
-interface LLMConfig {
-  apiKey: string;
-  baseUrl: string;
-  model?: string;
-  provider?: string;
-}
+type AnthropicMessageBody = {
+  model: string;
+  max_tokens: number;
+  messages: Array<{ role: 'user'; content: string }>;
+  system?: string;
+};
+
+type AnthropicTextBlock = {
+  type?: string;
+  text?: string;
+};
+
+type AnthropicMessageResponse = {
+  content?: AnthropicTextBlock[] | AnthropicTextBlock | string;
+};
+
+type OpenAICompatibleResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+};
+
+type OpenAIResponseContentItem = {
+  text?: string;
+};
+
+type OpenAIResponseOutputItem = {
+  content?: OpenAIResponseContentItem[];
+};
+
+type OpenAIResponsesPayload = {
+  output_text?: string;
+  output?: OpenAIResponseOutputItem[];
+};
 
 export interface IMChatHandlerOptions {
-  getLLMConfig: () => Promise<LLMConfig | null>;
+  getLLMConfig: () => Promise<IMLLMConfig | null>;
   getSkillsPrompt?: () => Promise<string | null>;
   imSettings: IMSettings;
 }
@@ -69,7 +100,7 @@ export class IMChatHandler {
    * Call LLM API and get response (non-streaming for simplicity)
    */
   private async callLLM(
-    config: LLMConfig,
+    config: IMLLMConfig,
     userMessage: string,
     systemPrompt?: string
   ): Promise<string> {
@@ -86,14 +117,14 @@ export class IMChatHandler {
   /**
    * Detect provider from config
    */
-  private detectProvider(config: LLMConfig): 'anthropic' | 'openai' {
+  private detectProvider(config: IMLLMConfig): 'anthropic' | 'openai' {
     if (config.provider === 'anthropic') return 'anthropic';
     if (config.baseUrl.includes('anthropic')) return 'anthropic';
     if (config.model?.startsWith('claude')) return 'anthropic';
     return 'openai';
   }
 
-  private buildOpenAICompatibleChatCompletionsUrl(config: LLMConfig): string {
+  private buildOpenAICompatibleChatCompletionsUrl(config: IMLLMConfig): string {
     const normalized = config.baseUrl.replace(/\/+$/, '');
     if (!normalized) {
       return '/v1/chat/completions';
@@ -125,7 +156,7 @@ export class IMChatHandler {
     return `${normalized}/v1/chat/completions`;
   }
 
-  private buildOpenAIResponsesUrl(config: LLMConfig): string {
+  private buildOpenAIResponsesUrl(config: IMLLMConfig): string {
     const normalized = config.baseUrl.replace(/\/+$/, '');
     if (!normalized) {
       return '/v1/responses';
@@ -139,11 +170,11 @@ export class IMChatHandler {
     return `${normalized}/v1/responses`;
   }
 
-  private shouldUseOpenAIResponsesApi(config: LLMConfig): boolean {
+  private shouldUseOpenAIResponsesApi(config: IMLLMConfig): boolean {
     return config.provider?.toLowerCase() === 'openai';
   }
 
-  private shouldUseMaxCompletionTokens(config: LLMConfig): boolean {
+  private shouldUseMaxCompletionTokens(config: IMLLMConfig): boolean {
     const provider = config.provider?.toLowerCase();
     if (provider !== 'openai') {
       return false;
@@ -162,13 +193,13 @@ export class IMChatHandler {
    * Call Anthropic API
    */
   private async callAnthropicAPI(
-    config: LLMConfig,
+    config: IMLLMConfig,
     userMessage: string,
     systemPrompt?: string
   ): Promise<string> {
     const url = `${config.baseUrl.replace(/\/$/, '')}/v1/messages`;
 
-    const body: any = {
+    const body: AnthropicMessageBody = {
       model: config.model || 'claude-3-5-sonnet-20241022',
       max_tokens: 4096,
       messages: [{ role: 'user', content: userMessage }],
@@ -178,7 +209,7 @@ export class IMChatHandler {
       body.system = systemPrompt;
     }
 
-    const response = await axios.post(url, body, {
+    const response = await axios.post<AnthropicMessageResponse>(url, body, {
       headers: {
         'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',
@@ -190,19 +221,23 @@ export class IMChatHandler {
     const content = response.data.content;
     if (Array.isArray(content)) {
       return content
-        .filter((block: any) => block.type === 'text')
-        .map((block: any) => block.text)
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .filter((text): text is string => typeof text === 'string')
         .join('\n');
     }
 
-    return content?.text || content || '';
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content?.text || '';
   }
 
   /**
    * Call OpenAI-compatible API
    */
   private async callOpenAICompatibleAPI(
-    config: LLMConfig,
+    config: IMLLMConfig,
     userMessage: string,
     systemPrompt?: string
   ): Promise<string> {
@@ -247,26 +282,27 @@ export class IMChatHandler {
       headers.Authorization = `Bearer ${config.apiKey}`;
     }
 
-    const response = await axios.post(url, body, { headers });
+    const response = await axios.post<OpenAICompatibleResponse | OpenAIResponsesPayload>(url, body, { headers });
 
     if (useResponsesApi) {
-      return this.extractResponsesText(response.data);
+      return this.extractResponsesText(response.data as OpenAIResponsesPayload);
     }
-    return response.data.choices?.[0]?.message?.content || '';
+    const data = response.data as OpenAICompatibleResponse;
+    return data.choices?.[0]?.message?.content || '';
   }
 
-  private extractResponsesText(payload: any): string {
+  private extractResponsesText(payload: OpenAIResponsesPayload): string {
     if (typeof payload?.output_text === 'string' && payload.output_text) {
       return payload.output_text;
     }
 
     const output = Array.isArray(payload?.output) ? payload.output : [];
     const chunks: string[] = [];
-    output.forEach((item: any) => {
+    output.forEach((item) => {
       if (!Array.isArray(item?.content)) {
         return;
       }
-      item.content.forEach((contentItem: any) => {
+      item.content.forEach((contentItem) => {
         if (typeof contentItem?.text === 'string' && contentItem.text) {
           chunks.push(contentItem.text);
         }

@@ -1,8 +1,9 @@
 import { PlatformRegistry } from '../../../shared/platform';
+import type { IMGatewayConfig } from '../../im/types';
 
 export interface ScheduledTaskHelperDeps {
   getIMGatewayManager: () => {
-    getConfig: () => Record<string, unknown> | null;
+    getConfig: () => IMGatewayConfig | null;
   } | null;
 }
 
@@ -83,10 +84,9 @@ export function listScheduledTaskChannels(): Array<{
         .filter((instance) => instance && typeof instance === 'object' && (instance as { enabled?: boolean }).enabled)
         .map((instance) => {
           const typedInstance = instance as { instanceId?: string; instanceName?: string };
-          const nimAccountId = key === 'nim'
+          const accountId = key === 'nim'
             ? ((typedInstance.instanceId ?? '').slice(0, 8) || deriveNimRuntimeAccountId(instance))
-            : null;
-          const accountId = nimAccountId ?? (typedInstance.instanceId ?? '').slice(0, 8);
+            : (typedInstance.instanceId ?? '').slice(0, 8);
           return {
             accountId,
             instanceName: typedInstance.instanceName || (accountId ?? (typedInstance.instanceId ?? '').slice(0, 8)),

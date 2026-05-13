@@ -1,16 +1,13 @@
-import { app, utilityProcess, type UtilityProcess } from 'electron';
-import { spawn, type ChildProcess } from 'child_process';
+import { type ChildProcess,spawn } from 'child_process';
 import crypto from 'crypto';
+import { app, type UtilityProcess,utilityProcess } from 'electron';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import { getElectronNodeRuntimePath, ensureElectronNodeShim, getSkillsRoot } from './coworkUtil';
-import {
-  cleanupStaleThirdPartyPluginsFromBundledDir,
-  syncLocalOpenClawExtensionsIntoRuntime,
-} from './openclawLocalExtensions';
+
+import { ensureElectronNodeShim, getElectronNodeRuntimePath, getSkillsRoot } from './coworkUtil';
 import {
   formatGatewayLogDateKey,
   type GatewayLogEntry,
@@ -18,6 +15,12 @@ import {
   getRecentGatewayLogEntries,
   pruneGatewayLogs,
 } from './gatewayLogRotation';
+import { getCodexHomeDir } from './openaiCodexAuth';
+import {
+  cleanupStaleThirdPartyPluginsFromBundledDir,
+  listLocalOpenClawExtensionIds,
+  syncLocalOpenClawExtensionsIntoRuntime,
+} from './openclawLocalExtensions';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
 import { isSystemProxyEnabled, resolveSystemProxyUrlForTargets } from './systemProxy';
 
@@ -38,6 +41,7 @@ const GATEWAY_PORT_SCAN_LIMIT = 80;
 const GATEWAY_BOOT_TIMEOUT_MS = 300 * 1000;
 const GATEWAY_MAX_RESTART_ATTEMPTS = 5;
 const GATEWAY_RESTART_DELAYS = [3_000, 5_000, 10_000, 20_000, 30_000];
+const RENAMED_THIRD_PARTY_PLUGIN_IDS = ['feishu-openclaw-plugin'] as const;
 
 export type OpenClawEnginePhase =
   | 'not_installed'
@@ -71,10 +75,6 @@ type RuntimeMetadata = {
   root: string | null;
   version: string | null;
   expectedPathHint: string;
-};
-
-const sleep = async (ms: number): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, ms));
 };
 
 const parseJsonFile = <T>(filePath: string): T | null => {
@@ -512,6 +512,7 @@ export class OpenClawEngineManager extends EventEmitter {
       OPENCLAW_HOME: this.baseDir,
       OPENCLAW_STATE_DIR: this.stateDir,
       OPENCLAW_CONFIG_PATH: this.configPath,
+      CODEX_HOME: getCodexHomeDir(),
       OPENCLAW_GATEWAY_TOKEN: token,
       OPENCLAW_GATEWAY_PORT: String(port),
       OPENCLAW_NO_RESPAWN: '1',
@@ -753,21 +754,26 @@ export class OpenClawEngineManager extends EventEmitter {
           path.join(process.cwd(), 'package.json'),
         ];
 
+    const pluginIds = new Set<string>([
+      ...listLocalOpenClawExtensionIds(),
+      ...RENAMED_THIRD_PARTY_PLUGIN_IDS,
+    ]);
+
     for (const packageJsonPath of packageJsonCandidates) {
       const packageJson = parseJsonFile<{
         openclaw?: {
           plugins?: Array<{ id?: string }>;
         };
       }>(packageJsonPath);
-      const pluginIds = packageJson?.openclaw?.plugins
+      const configuredIds = packageJson?.openclaw?.plugins
         ?.map((plugin) => plugin?.id?.trim())
         .filter((pluginId): pluginId is string => Boolean(pluginId));
-      if (pluginIds && pluginIds.length > 0) {
-        return pluginIds;
+      for (const pluginId of configuredIds ?? []) {
+        pluginIds.add(pluginId);
       }
     }
 
-    return [];
+    return [...pluginIds];
   }
 
   private ensureBareEntryFiles(runtimeRoot: string): void {

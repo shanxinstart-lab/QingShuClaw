@@ -14,7 +14,11 @@ const DIST_DIFFS_EXTENSION_DIR = path.join(DIST_EXTENSIONS_DIR, 'diffs');
 const BARE_DIST_TOP_LEVEL_TO_KEEP = new Set(['control-ui', 'extensions']);
 
 function normalizeAsarEntry(entry) {
-  return entry.replace(/\\/g, '/');
+  const normalized = entry
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '');
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
 }
 
 function summarizeGatewayAsarEntries(entries) {

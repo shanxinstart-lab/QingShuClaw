@@ -1,22 +1,24 @@
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import type { CoworkConfig, CoworkExecutionMode, Agent } from '../coworkStore';
-import type { TelegramOpenClawConfig, DiscordOpenClawConfig, IMSettings } from '../im/types';
-import type { DingTalkInstanceConfig, FeishuInstanceConfig, QQInstanceConfig, WecomInstanceConfig, PopoOpenClawConfig, NimConfig, WeixinOpenClawConfig, NeteaseBeeChanConfig } from '../im/types';
-import { PlatformRegistry } from '../../shared/platform';
-import { AuthType, ProviderName, OpenClawProviderId, OpenClawApi as OpenClawApiConst, ProviderRegistry } from '../../shared/providers';
-import { resolveRawApiConfig, resolveAllProviderApiKeys, resolveAllEnabledProviderConfigs, getAllServerModelMetadata } from './claudeSettings';
-import type { OpenClawEngineManager } from './openclawEngineManager';
-import { getMainAgentWorkspacePath } from './openclawMemoryFile';
-import { isManagedSessionKey, parseChannelSessionKey } from './openclawChannelSessionSync';
-import type { McpToolManifestEntry } from './mcpServerManager';
-import { getCoworkOpenAICompatProxyBaseURL, getCoworkOpenAICompatProxyToken } from './coworkOpenAICompatProxy';
+
+import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
+import { AuthType, OpenClawApi as OpenClawApiConst, OpenClawProviderId, ProviderName, ProviderRegistry } from '../../shared/providers';
+import type { Agent,CoworkConfig, CoworkExecutionMode } from '../coworkStore';
+import type { DiscordOpenClawConfig, IMSettings,TelegramOpenClawConfig } from '../im/types';
+import type { DingTalkInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig,NimConfig, NimInstanceConfig, PopoInstanceConfig, PopoOpenClawConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
 import {
-  hasBundledOpenClawExtension,
-  resolveOpenClawExtensionConfigId,
-  resolveOpenClawExtensionLoadPath,
-} from './openclawLocalExtensions';
+  type QingShuAgentToolBundleSelection,
+  type QingShuSharedToolCatalog,
+  type QingShuSharedToolCatalogSummary,
+  type QingShuToolBundleId,
+  resolveAgentToolBundleSelections,
+  summarizeQingShuSharedToolCatalog,
+} from '../qingshuModules';
+import { getAllServerModelMetadata,resolveAllEnabledProviderConfigs, resolveAllProviderApiKeys, resolveRawApiConfig } from './claudeSettings';
+import { getCoworkOpenAICompatProxyBaseURL, getCoworkOpenAICompatProxyToken } from './coworkOpenAICompatProxy';
+import type { McpToolManifestEntry } from './mcpServerManager';
+import { readOpenAICodexAuthFile } from './openaiCodexAuth';
 import {
   buildAgentEntry,
   buildManagedAgentEntries,
@@ -24,17 +26,16 @@ import {
   resolveManagedSessionModelTarget,
   resolveQualifiedAgentModelRef,
 } from './openclawAgentModels';
-import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
-import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
+import { isManagedSessionKey, parseChannelSessionKey } from './openclawChannelSessionSync';
 import { enforceLegacyFeishuPluginDisabled } from './openclawConfigGuards';
+import type { OpenClawEngineManager } from './openclawEngineManager';
 import {
-  resolveAgentToolBundleSelections,
-  summarizeQingShuSharedToolCatalog,
-  type QingShuSharedToolCatalog,
-  type QingShuSharedToolCatalogSummary,
-  type QingShuAgentToolBundleSelection,
-  type QingShuToolBundleId,
-} from '../qingshuModules';
+  hasBundledOpenClawExtension,
+  resolveOpenClawExtensionConfigId,
+  resolveOpenClawExtensionLoadPath,
+} from './openclawLocalExtensions';
+import { getMainAgentWorkspacePath } from './openclawMemoryFile';
+import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
 import { isSystemProxyEnabled } from './systemProxy';
 
 export type McpBridgeConfig = {
@@ -65,6 +66,30 @@ const OPENCLAW_SESSION_MAINTENANCE = {
   maxEntries: 1000000,
   rotateBytes: '1gb',
 } as const;
+
+function deriveNimAccountId(instance: Pick<NimInstanceConfig, 'nimToken' | 'appKey' | 'account'>): string | null {
+  const nimToken = instance.nimToken?.trim();
+  if (nimToken) {
+    const delimiter = nimToken.includes('|') ? '|' : '-';
+    const parts = nimToken.split(delimiter).map((part) => part.trim());
+    if (parts.length === 3 && parts[0] && parts[1]) {
+      return `${parts[0]}:${parts[1]}`;
+    }
+  }
+  if (instance.appKey?.trim() && instance.account?.trim()) {
+    return `${instance.appKey.trim()}:${instance.account.trim()}`;
+  }
+  return null;
+}
+
+function deriveNimAccountConfigKey(
+  instance: Pick<NimInstanceConfig, 'instanceId' | 'nimToken' | 'appKey' | 'account'>,
+): string | null {
+  if (instance.instanceId?.trim()) {
+    return instance.instanceId.trim().slice(0, 8);
+  }
+  return deriveNimAccountId(instance);
+}
 
 function shouldUseOpenAIResponsesApi(providerName?: string, baseURL?: string): boolean {
   if (providerName !== ProviderName.OpenAI) return false;
@@ -401,7 +426,12 @@ const sessionSnapshotContainsDisabledManagedSkill = (entry: Record<string, unkno
   return DISABLED_MANAGED_SKILL_NAMES.some((name) => prompt.includes(`<name>${name}</name>`));
 };
 
-type OpenClawProviderApi = 'anthropic-messages' | 'openai-completions' | 'openai-responses' | 'google-generative-ai';
+type OpenClawProviderApi =
+  | 'anthropic-messages'
+  | 'openai-completions'
+  | 'openai-responses'
+  | 'openai-codex-responses'
+  | 'google-generative-ai';
 
 type OpenClawProviderSelection = {
   providerId: string;
@@ -411,8 +441,9 @@ type OpenClawProviderSelection = {
   providerConfig: {
     baseUrl: string;
     api: OpenClawProviderApi;
-    apiKey: string;
+    apiKey?: string;
     auth: typeof AuthType[keyof typeof AuthType];
+    headers?: Record<string, string>;
     request?: {
       proxy: {
         mode: 'env-proxy';
@@ -435,6 +466,8 @@ type OpenClawProviderSelection = {
     }>;
   };
 };
+
+const OPENAI_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 
 const normalizeBaseUrlPath = (rawBaseUrl: string, pathName: string): string => {
   const trimmed = rawBaseUrl.trim();
@@ -493,6 +526,18 @@ const shouldUseEnvProxyForProviderBaseUrl = (rawBaseUrl: string): boolean => (
   isSystemProxyEnabled() && !isLoopbackProviderBaseUrl(rawBaseUrl)
 );
 
+const buildOpenAICodexHeaders = (): Record<string, string> | undefined => {
+  const accountId = readOpenAICodexAuthFile()?.accountId;
+  if (!accountId) {
+    return undefined;
+  }
+  return {
+    'chatgpt-account-id': accountId,
+    originator: 'pi',
+    'OpenAI-Beta': 'responses=experimental',
+  };
+};
+
 const normalizeKimiCodingBaseUrl = (rawBaseUrl: string): string => {
   const trimmed = rawBaseUrl.trim();
   if (!trimmed) {
@@ -513,7 +558,7 @@ type ProviderDescriptor = {
   providerId: string;
   resolveApi: (ctx: { apiType: 'anthropic' | 'openai' | undefined; baseURL: string }) => OpenClawProviderApi;
   normalizeBaseUrl: (rawBaseUrl: string) => string;
-  resolveApiKey?: (ctx: { apiKey: string; providerName: string }) => string;
+  resolveApiKey?: (ctx: { apiKey: string; providerName: string }) => string | undefined;
   resolveSessionModelId?: (modelId: string) => string;
   modelDefaults?: Partial<{
     reasoning: boolean;
@@ -585,6 +630,13 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
         ? OpenClawApiConst.OpenAIResponses as OpenClawProviderApi
         : OpenClawApiConst.OpenAICompletions as OpenClawProviderApi,
     normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
+
+  [`${ProviderName.OpenAI}:oauth`]: {
+    providerId: OpenClawProviderId.OpenAICodex,
+    resolveApi: () => OpenClawApiConst.OpenAICodexResponses as OpenClawProviderApi,
+    normalizeBaseUrl: () => OPENAI_CODEX_BASE_URL,
+    resolveApiKey: () => undefined,
   },
 
   [ProviderName.DeepSeek]: {
@@ -676,7 +728,11 @@ const DEFAULT_DESCRIPTOR: ProviderDescriptor = {
 const resolveDescriptor = (
   providerName: string,
   codingPlanEnabled: boolean,
+  authType?: 'apikey' | 'oauth',
 ): ProviderDescriptor => {
+  if (providerName === ProviderName.OpenAI && authType === 'oauth') {
+    return PROVIDER_REGISTRY[`${ProviderName.OpenAI}:oauth`];
+  }
   if (codingPlanEnabled) {
     const compositeKey = `${providerName}:codingPlan`;
     if (compositeKey in PROVIDER_REGISTRY) {
@@ -704,7 +760,7 @@ export const buildProviderSelection = (options: {
   modelName?: string;
 }): OpenClawProviderSelection => {
   const providerName = options.providerName ?? '';
-  const descriptor = resolveDescriptor(providerName, !!options.codingPlanEnabled);
+  const descriptor = resolveDescriptor(providerName, !!options.codingPlanEnabled, options.authType);
 
   let baseUrl = (() => {
     if (options.providerName !== ProviderName.Copilot) {
@@ -741,11 +797,17 @@ export const buildProviderSelection = (options: {
       ? options.modelId.includes('thinking')
       : undefined;
   const auth = options.providerName === ProviderName.Copilot
-    || (options.providerName === ProviderName.Minimax && options.authType === 'oauth')
+    || (
+      (options.providerName === ProviderName.Minimax || options.providerName === ProviderName.OpenAI)
+      && options.authType === 'oauth'
+    )
     ? AuthType.OAuth
     : AuthType.ApiKey;
   const request = shouldUseEnvProxyForProviderBaseUrl(baseUrl)
     ? { proxy: { mode: 'env-proxy' as const } }
+    : undefined;
+  const headers = descriptor.providerId === OpenClawProviderId.OpenAICodex
+    ? buildOpenAICodexHeaders()
     : undefined;
 
   return {
@@ -756,8 +818,9 @@ export const buildProviderSelection = (options: {
     providerConfig: {
       baseUrl,
       api,
-      apiKey,
+      ...(apiKey ? { apiKey } : {}),
       auth,
+      ...(headers ? { headers } : {}),
       ...(request ? { request } : {}),
       models: [
         {
@@ -927,7 +990,9 @@ type OpenClawConfigSyncDeps = {
   getQQInstances: () => QQInstanceConfig[];
   getWecomInstances: () => WecomInstanceConfig[];
   getPopoConfig: () => PopoOpenClawConfig | null;
+  getPopoInstances?: () => PopoInstanceConfig[];
   getNimConfig: () => NimConfig | null;
+  getNimInstances?: () => NimInstanceConfig[];
   getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
   getWeixinConfig: () => WeixinOpenClawConfig | null;
   getIMSettings?: () => IMSettings | null;
@@ -949,7 +1014,9 @@ export class OpenClawConfigSync {
   private readonly getQQInstances: () => QQInstanceConfig[];
   private readonly getWecomInstances: () => WecomInstanceConfig[];
   private readonly getPopoConfig: () => PopoOpenClawConfig | null;
+  private readonly getPopoInstances?: () => PopoInstanceConfig[];
   private readonly getNimConfig: () => NimConfig | null;
+  private readonly getNimInstances?: () => NimInstanceConfig[];
   private readonly getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
   private readonly getWeixinConfig: () => WeixinOpenClawConfig | null;
   private readonly getIMSettings?: () => IMSettings | null;
@@ -970,7 +1037,9 @@ export class OpenClawConfigSync {
     this.getQQInstances = deps.getQQInstances;
     this.getWecomInstances = deps.getWecomInstances;
     this.getPopoConfig = deps.getPopoConfig;
+    this.getPopoInstances = deps.getPopoInstances;
     this.getNimConfig = deps.getNimConfig;
+    this.getNimInstances = deps.getNimInstances;
     this.getNeteaseBeeChanConfig = deps.getNeteaseBeeChanConfig;
     this.getWeixinConfig = deps.getWeixinConfig;
     this.getIMSettings = deps.getIMSettings;
@@ -1163,7 +1232,6 @@ export class OpenClawConfigSync {
 
     const dingTalkInstances = this.getDingTalkInstances();
     const enabledDingTalkInstances = dingTalkInstances.filter((instance) => instance.enabled && instance.clientId);
-    const hasDingTalkOpenClaw = enabledDingTalkInstances.length > 0;
 
     const feishuInstances = this.getFeishuInstances();
     const enabledFeishuInstances = feishuInstances.filter((instance) => instance.enabled && instance.appId);
@@ -1174,9 +1242,19 @@ export class OpenClawConfigSync {
     const wecomInstances = this.getWecomInstances();
     const enabledWecomInstances = wecomInstances.filter((instance) => instance.enabled && instance.botId);
 
-    const popoConfig = this.getPopoConfig();
+    const popoInstances = this.getPopoInstances?.() ?? (() => {
+      const legacyConfig = this.getPopoConfig();
+      return legacyConfig?.enabled ? [{ ...legacyConfig, instanceId: 'popo', instanceName: 'POPO Bot' }] : [];
+    })();
+    const enabledPopoInstances = popoInstances.filter((instance) => instance.enabled && instance.appKey);
 
-    const nimConfig = this.getNimConfig();
+    const nimInstances = this.getNimInstances?.() ?? (() => {
+      const legacyConfig = this.getNimConfig();
+      return legacyConfig?.enabled ? [{ ...legacyConfig, instanceId: 'nim', instanceName: 'NIM Bot' }] : [];
+    })();
+    const configuredNimInstances = nimInstances.filter((instance) =>
+      Boolean((instance.nimToken && instance.nimToken.trim()) || (instance.appKey && instance.account && instance.token))
+    );
 
     const neteaseBeeChanConfig = this.getNeteaseBeeChanConfig();
 
@@ -1195,15 +1273,11 @@ export class OpenClawConfigSync {
       && resolveExternalPluginConfigId('wecom-openclaw-plugin')
     ) || null;
     const popoPluginId = (
-      popoConfig?.enabled
-      && popoConfig.appKey
+      enabledPopoInstances.length > 0
       && resolveExternalPluginConfigId('moltbot-popo')
     ) || null;
     const nimPluginId = (
-      nimConfig?.enabled
-      && nimConfig.appKey
-      && nimConfig.account
-      && nimConfig.token
+      configuredNimInstances.length > 0
       && resolveExternalPluginConfigId('openclaw-nim-channel')
     ) || null;
     const neteaseBeePluginId = (
@@ -1220,8 +1294,8 @@ export class OpenClawConfigSync {
       enabledDingTalkInstances.length > 0 && !dingTalkPluginId ? 'dingtalk-connector' : null,
       enabledFeishuInstances.length > 0 && !feishuPluginId ? 'openclaw-lark' : null,
       enabledWecomInstances.length > 0 && !wecomPluginId ? 'wecom-openclaw-plugin' : null,
-      popoConfig?.enabled && popoConfig.appKey && !popoPluginId ? 'moltbot-popo' : null,
-      nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token && !nimPluginId ? 'openclaw-nim-channel' : null,
+      enabledPopoInstances.length > 0 && !popoPluginId ? 'moltbot-popo' : null,
+      configuredNimInstances.length > 0 && !nimPluginId ? 'openclaw-nim-channel' : null,
       neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret && !neteaseBeePluginId ? 'openclaw-netease-bee' : null,
       weixinConfig?.enabled && !weixinPluginId ? 'openclaw-weixin' : null,
     ].filter((id): id is string => Boolean(id));
@@ -1244,12 +1318,14 @@ export class OpenClawConfigSync {
       qwenPortalAuthPluginId,
     ].filter((id): id is string => Boolean(id));
     const externalPluginLoadPaths = resolveExternalPluginLoadPaths(enabledExternalPluginIds);
+    const existingGatewayConfig = this.getExistingGatewayConfig(configPath);
     const existingPluginEntries = this.getExistingPluginEntries(configPath);
 
     const hasAnyChannel = !!dingTalkPluginId;
 
     const managedConfig: Record<string, unknown> = {
       gateway: {
+        ...existingGatewayConfig,
         mode: 'local',
         ...(hasAnyChannel ? {
           http: {
@@ -1583,65 +1659,78 @@ export class OpenClawConfigSync {
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), wecom: { enabled: true, accounts } };
     }
 
-    // Sync POPO OpenClaw channel config (via moltbot-popo plugin)
-    if (popoConfig?.enabled && popoConfig.appKey) {
-      // Migration: old configs lack connectionMode. If token is set, the user
-      // was using webhook mode; otherwise default to the new websocket mode.
-      const effectiveConnectionMode = popoConfig.connectionMode
-        || (popoConfig.token ? 'webhook' : 'websocket');
-      const isWebSocket = effectiveConnectionMode === 'websocket';
-      const popoChannel: Record<string, unknown> = {
-        enabled: true,
-        connectionMode: effectiveConnectionMode,
-        appKey: popoConfig.appKey,
-        appSecret: '${LOBSTER_POPO_APP_SECRET}',
-        aesKey: popoConfig.aesKey,
-        dmPolicy: popoConfig.dmPolicy || 'open',
-        allowFrom: (() => {
-          const ids = popoConfig.allowFrom?.length ? [...popoConfig.allowFrom] : [];
-          if (popoConfig.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-        groupPolicy: popoConfig.groupPolicy || 'open',
-        groupAllowFrom: (() => {
-          const ids = popoConfig.groupAllowFrom?.length ? [...popoConfig.groupAllowFrom] : [];
-          if (popoConfig.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
-          return ids;
-        })(),
-      };
-      // Webhook-only fields
-      if (!isWebSocket) {
-        popoChannel.token = '${LOBSTER_POPO_TOKEN}';
-        popoChannel.webhookPort = popoConfig.webhookPort || 3100;
+    // Sync POPO OpenClaw channel config (via moltbot-popo plugin) — multi-instance via accounts
+    if (enabledPopoInstances.length > 0) {
+      const accounts: Record<string, unknown> = {};
+      for (let index = 0; index < enabledPopoInstances.length; index += 1) {
+        const instance = enabledPopoInstances[index];
+        // Migration: old configs lack connectionMode. If token is set, the user
+        // was using webhook mode; otherwise default to the new websocket mode.
+        const effectiveConnectionMode = instance.connectionMode
+          || (instance.token ? 'webhook' : 'websocket');
+        const isWebSocket = effectiveConnectionMode === 'websocket';
+        const appSecretEnvVar = index === 0 ? 'LOBSTER_POPO_APP_SECRET' : `LOBSTER_POPO_APP_SECRET_${index}`;
+        const account: Record<string, unknown> = {
+          enabled: true,
+          name: instance.instanceName,
+          connectionMode: effectiveConnectionMode,
+          appKey: instance.appKey,
+          appSecret: `\${${appSecretEnvVar}}`,
+          aesKey: instance.aesKey,
+          dmPolicy: instance.dmPolicy || 'open',
+          allowFrom: (() => {
+            const ids = instance.allowFrom?.length ? [...instance.allowFrom] : [];
+            if (instance.dmPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+          groupPolicy: instance.groupPolicy || 'open',
+          groupAllowFrom: (() => {
+            const ids = instance.groupAllowFrom?.length ? [...instance.groupAllowFrom] : [];
+            if (instance.groupPolicy === 'open' && !ids.includes('*')) ids.push('*');
+            return ids;
+          })(),
+        };
+        if (!isWebSocket) {
+          const tokenEnvVar = index === 0 ? 'LOBSTER_POPO_TOKEN' : `LOBSTER_POPO_TOKEN_${index}`;
+          account.token = `\${${tokenEnvVar}}`;
+          account.webhookPort = instance.webhookPort || 3100;
+          if (instance.webhookBaseUrl) account.webhookBaseUrl = instance.webhookBaseUrl;
+          if (instance.webhookPath && instance.webhookPath !== '/popo/callback') {
+            account.webhookPath = instance.webhookPath;
+          }
+        }
+        if (instance.textChunkLimit && instance.textChunkLimit !== 3000) {
+          account.textChunkLimit = instance.textChunkLimit;
+        }
+        if (instance.richTextChunkLimit && instance.richTextChunkLimit !== 5000) {
+          account.richTextChunkLimit = instance.richTextChunkLimit;
+        }
+        accounts[instance.instanceId.slice(0, 8)] = account;
       }
-      if (popoConfig.textChunkLimit && popoConfig.textChunkLimit !== 3000) {
-        popoChannel.textChunkLimit = popoConfig.textChunkLimit;
-      }
-      if (popoConfig.richTextChunkLimit && popoConfig.richTextChunkLimit !== 5000) {
-        popoChannel.richTextChunkLimit = popoConfig.richTextChunkLimit;
-      }
-      if (!isWebSocket && popoConfig.webhookBaseUrl) {
-        popoChannel.webhookBaseUrl = popoConfig.webhookBaseUrl;
-      }
-      if (!isWebSocket && popoConfig.webhookPath && popoConfig.webhookPath !== '/popo/callback') {
-        popoChannel.webhookPath = popoConfig.webhookPath;
-      }
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'moltbot-popo': popoChannel };
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'moltbot-popo': { enabled: true, accounts } };
     }
-    // Sync NIM OpenClaw channel config (via openclaw-nim plugin)
-    if (nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token) {
-      const nimChannel: Record<string, unknown> = {
-        enabled: true,
-        appKey: nimConfig.appKey,
-        account: nimConfig.account,
-        token: '${LOBSTER_NIM_TOKEN}',
-      };
-      // Pass structured sub-configs directly — the plugin's Zod schema validates them
-      if (nimConfig.p2p) nimChannel.p2p = nimConfig.p2p;
-      if (nimConfig.team) nimChannel.team = nimConfig.team;
-      if (nimConfig.qchat) nimChannel.qchat = nimConfig.qchat;
-      if (nimConfig.advanced) nimChannel.advanced = nimConfig.advanced;
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'nim': nimChannel };
+    // Sync NIM OpenClaw channel config (via openclaw-nim plugin) — multi-instance via accounts
+    if (configuredNimInstances.length > 0) {
+      const accounts: Record<string, Record<string, unknown>> = {};
+      configuredNimInstances.forEach((instance, index) => {
+        const tokenEnvVar = index === 0 ? 'LOBSTER_NIM_TOKEN' : `LOBSTER_NIM_TOKEN_${index}`;
+        const nimToken = instance.nimToken?.trim()
+          ? instance.nimToken.trim()
+          : `${instance.appKey}|${instance.account}|\${${tokenEnvVar}}`;
+        const account: Record<string, unknown> = {
+          enabled: instance.enabled ?? false,
+          nimToken,
+          antispamEnabled: instance.antispamEnabled ?? true,
+        };
+        if (instance.p2p) account.p2p = instance.p2p;
+        if (instance.team) account.team = instance.team;
+        if (instance.qchat) account.qchat = instance.qchat;
+        if (instance.advanced) account.advanced = instance.advanced;
+        const preferredKey = deriveNimAccountConfigKey(instance) || deriveNimAccountId(instance) || `nim_${index + 1}`;
+        const accountKey = accounts[preferredKey] ? (deriveNimAccountId(instance) || `${preferredKey}_${index + 1}`) : preferredKey;
+        accounts[accountKey] = account;
+      });
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), nim: { accounts } };
     }
 
     // Sync NeteaseBee OpenClaw channel config (via openclaw-netease-bee plugin)
@@ -1760,6 +1849,21 @@ export class OpenClawConfigSync {
     };
   }
 
+  private getExistingGatewayConfig(configPath: string): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+        gateway?: unknown;
+      };
+      const gateway = parsed.gateway;
+      if (!gateway || typeof gateway !== 'object' || Array.isArray(gateway)) {
+        return {};
+      }
+      return gateway as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
   private getExistingPluginEntries(configPath: string): Record<string, unknown> {
     try {
       const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
@@ -1850,23 +1954,25 @@ export class OpenClawConfigSync {
     }
 
     // POPO
-    const popoConfig = this.getPopoConfig();
-    if (popoConfig?.enabled && popoConfig.appSecret) {
-      env.LOBSTER_POPO_APP_SECRET = popoConfig.appSecret;
-    }
-    if (popoConfig?.enabled && popoConfig.token) {
-      env.LOBSTER_POPO_TOKEN = popoConfig.token;
-    } else if (popoConfig?.enabled) {
-      // Provide non-empty fallback so stale openclaw.json files that still
-      // contain ${LOBSTER_POPO_TOKEN} from a previous webhook config
-      // don't crash the gateway with MissingEnvVarError.
-      env.LOBSTER_POPO_TOKEN = 'unconfigured';
+    const enabledPopoInstances = (this.getPopoInstances?.() ?? (() => {
+      const legacyConfig = this.getPopoConfig();
+      return legacyConfig?.enabled ? [{ ...legacyConfig, instanceId: 'popo', instanceName: 'POPO Bot' }] : [];
+    })()).filter((instance) => instance.enabled && instance.appSecret);
+    for (let index = 0; index < enabledPopoInstances.length; index += 1) {
+      const appSecretKey = index === 0 ? 'LOBSTER_POPO_APP_SECRET' : `LOBSTER_POPO_APP_SECRET_${index}`;
+      const tokenKey = index === 0 ? 'LOBSTER_POPO_TOKEN' : `LOBSTER_POPO_TOKEN_${index}`;
+      env[appSecretKey] = enabledPopoInstances[index].appSecret;
+      env[tokenKey] = enabledPopoInstances[index].token || 'unconfigured';
     }
 
     // NIM
-    const nimConfig = this.getNimConfig();
-    if (nimConfig?.enabled && nimConfig.token) {
-      env.LOBSTER_NIM_TOKEN = nimConfig.token;
+    const nimInstances = (this.getNimInstances?.() ?? (() => {
+      const legacyConfig = this.getNimConfig();
+      return legacyConfig?.enabled ? [{ ...legacyConfig, instanceId: 'nim', instanceName: 'NIM Bot' }] : [];
+    })()).filter((instance) => instance.enabled && instance.token);
+    for (let index = 0; index < nimInstances.length; index += 1) {
+      const key = index === 0 ? 'LOBSTER_NIM_TOKEN' : `LOBSTER_NIM_TOKEN_${index}`;
+      env[key] = nimInstances[index].token;
     }
 
     return env;
@@ -1939,6 +2045,7 @@ export class OpenClawConfigSync {
         systemPrompt: '',
         identity: '',
         model: '',
+        workingDirectory: '',
         icon: '',
         skillIds: [],
         toolBundleIds: [],
@@ -2238,11 +2345,13 @@ export class OpenClawConfigSync {
 
     const bindings: Array<Record<string, unknown>> = [];
 
-    const multiInstanceChannels: Record<string, { channel: string; getInstances: () => Array<{ instanceId: string; enabled: boolean }> }> = {
+    const multiInstanceChannels: Record<string, { channel: string; getInstances: () => Array<{ instanceId: string; enabled: boolean; appKey?: string; account?: string; nimToken?: string }> }> = {
       dingtalk: { channel: 'dingtalk', getInstances: () => this.getDingTalkInstances() },
       feishu: { channel: 'feishu', getInstances: () => this.getFeishuInstances() },
       qq: { channel: 'qqbot', getInstances: () => this.getQQInstances() },
+      nim: { channel: 'nim', getInstances: () => this.getNimInstances?.() ?? [] },
       wecom: { channel: 'wecom', getInstances: () => this.getWecomInstances() },
+      popo: { channel: 'moltbot-popo', getInstances: () => this.getPopoInstances?.() ?? [] },
     };
 
     for (const [platform, { channel, getInstances }] of Object.entries(multiInstanceChannels)) {
@@ -2255,11 +2364,15 @@ export class OpenClawConfigSync {
           if (!agentId || agentId === 'main') continue;
           const targetAgent = agents.find((agent) => agent.id === agentId && agent.enabled);
           if (!targetAgent) continue;
+          const accountId = platform === 'nim'
+            ? deriveNimAccountId(instance as NimInstanceConfig)
+            : instance.instanceId.slice(0, 8);
+          if (!accountId) continue;
           bindings.push({
             agentId,
             match: {
               channel,
-              accountId: instance.instanceId.slice(0, 8),
+              accountId,
             },
           });
         }
@@ -2278,8 +2391,6 @@ export class OpenClawConfigSync {
     const singleInstanceChannels: Array<{ getter: () => { enabled: boolean } | null; channel: string; platform: string }> = [
       { getter: () => this.getTelegramOpenClawConfig?.() ?? null, channel: 'telegram', platform: 'telegram' },
       { getter: () => this.getDiscordOpenClawConfig?.() ?? null, channel: 'discord', platform: 'discord' },
-      { getter: () => this.getPopoConfig(), channel: 'moltbot-popo', platform: 'popo' },
-      { getter: () => this.getNimConfig(), channel: 'nim', platform: 'nim' },
       { getter: () => this.getNeteaseBeeChanConfig(), channel: 'netease-bee', platform: 'netease-bee' },
       { getter: () => this.getWeixinConfig(), channel: 'openclaw-weixin', platform: 'weixin' },
     ];

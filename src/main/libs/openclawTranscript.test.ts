@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+
 import { buildTransientSessionFromOpenClawTranscript } from './openclawTranscript';
 
 describe('buildTransientSessionFromOpenClawTranscript', () => {
@@ -224,6 +225,28 @@ Current time: Thursday, April 16th, 2026 — 18:00 (Asia/Shanghai)`,
     expect(session?.messages[0]?.content).toBe('第一段总结。\n第二段补充。');
   });
 
+  test('preserves assistant content stored as top-level output_text', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:qingshu-managed:run:99999999-9999-9999-9999-999999999999',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:01:30.000Z',
+          message: {
+            role: 'assistant',
+            output_text: '这是 Responses 风格的最终回答。',
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages.map((message) => message.type)).toEqual([
+      'assistant',
+    ]);
+    expect(session?.messages[0]?.content).toBe('这是 Responses 风格的最终回答。');
+  });
+
   test('parses native openclaw toolCall and toolResult transcript entries', () => {
     const session = buildTransientSessionFromOpenClawTranscript({
       sessionKey: 'agent:main:cron:test-job:run:55555555-5555-5555-5555-555555555555',
@@ -272,5 +295,92 @@ Current time: Thursday, April 16th, 2026 — 18:00 (Asia/Shanghai)`,
     expect(session?.messages[1]?.metadata?.toolInput).toEqual({ command: 'echo hello' });
     expect(session?.messages[2]?.metadata?.toolUseId).toBe('call-native-1');
     expect(session?.messages[2]?.content).toBe('hello');
+  });
+
+  test('preserves multi-turn assistant and tool transcript history order', () => {
+    const session = buildTransientSessionFromOpenClawTranscript({
+      sessionKey: 'agent:qingshu-managed:run:88888888-8888-8888-8888-888888888888',
+      fileContent: [
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:03:00.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '先查杭州数据，再生成总结' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:03:03.000Z',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: '我先查询杭州供需数据。' },
+              {
+                type: 'tool_use',
+                id: 'tool-query',
+                name: 'qingshu.supplyDemand.query',
+                input: { city: '杭州' },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:03:04.000Z',
+          message: {
+            role: 'tool',
+            tool_call_id: 'tool-query',
+            content: '杭州供给 120，需求 180。',
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:03:08.000Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '杭州当前需求高于供给，建议优先补充骑手。' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:04:00.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '再补一段上海对比' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          timestamp: '2026-04-16T10:04:06.000Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '上海供需更均衡，但晚高峰仍需关注。' }],
+          },
+        }),
+      ].join('\n'),
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.messages.map((message) => message.type)).toEqual([
+      'user',
+      'assistant',
+      'tool_use',
+      'tool_result',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+    expect(session?.messages.map((message) => message.content)).toEqual([
+      '先查杭州数据，再生成总结',
+      '我先查询杭州供需数据。',
+      'Using tool: qingshu.supplyDemand.query',
+      '杭州供给 120，需求 180。',
+      '杭州当前需求高于供给，建议优先补充骑手。',
+      '再补一段上海对比',
+      '上海供需更均衡，但晚高峰仍需关注。',
+    ]);
+    expect(session?.messages[2]?.metadata?.toolName).toBe('qingshu.supplyDemand.query');
+    expect(session?.messages[3]?.metadata?.toolUseId).toBe('tool-query');
   });
 });

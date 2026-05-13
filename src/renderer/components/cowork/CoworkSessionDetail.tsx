@@ -3,6 +3,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   DocumentArrowDownIcon,
+  DocumentTextIcon,
   PhotoIcon,
   SpeakerWaveIcon,
   SpeakerXMarkIcon,
@@ -12,11 +13,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
+import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
+import type { TtsAvailability } from '../../../shared/tts/constants';
 import { DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
 import { configService } from '../../services/config';
-import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
-import type { TtsAvailability } from '../../../shared/tts/constants';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
@@ -28,8 +29,14 @@ import {
   selectLastMessageContent,
   selectRemoteManaged,
 } from '../../store/selectors/coworkSelectors';
+import {
+  addArtifact,
+  selectSessionArtifacts,
+} from '../../store/slices/artifactSlice';
 import { setActiveSkillIds } from '../../store/slices/skillSlice';
-import type { CoworkImageAttachment,CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
+import type { Artifact } from '../../types/artifact';
+import { PREVIEWABLE_ARTIFACT_TYPES } from '../../types/artifact';
+import type { CoworkImageAttachment, CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
 import type { Skill } from '../../types/skill';
 import { getCompactFolderName } from '../../utils/path';
 import { parseUserMessageForDisplay } from '../../utils/userMessageDisplay';
@@ -44,18 +51,20 @@ import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import TrashIcon from '../icons/TrashIcon';
 import MarkdownContent from '../MarkdownContent';
 import WindowTitleBar from '../window/WindowTitleBar';
+import { buildAssistantMetadataItems } from './assistantMetadata';
+import { collectCoworkSessionArtifacts } from './coworkArtifacts';
 import {
   buildConversationTurns,
   buildDisplayItems,
+  type ConversationTurn,
   getToolResultDisplay,
   getVisibleAssistantItems,
   hasRenderableAssistantContent,
   hasText,
-  type ConversationTurn,
   type ToolGroupItem,
 } from './coworkConversationTurns';
-import { buildSpeakableAssistantText } from './coworkTtsText';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
+import { buildSpeakableAssistantText } from './coworkTtsText';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
 
 interface CoworkSessionDetailProps {
@@ -944,6 +953,51 @@ const CopyButton: React.FC<{
   );
 };
 
+const ArtifactBadge: React.FC<{
+  artifact: Artifact;
+}> = ({ artifact }) => {
+  const handleClick = async () => {
+    if (artifact.filePath) {
+      try {
+        const result = await window.electron.shell.openPath(artifact.filePath);
+        if (!result?.success) {
+          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+            detail: result?.error || i18nService.t('artifactOpenFailed'),
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to open artifact:', error);
+        window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+          detail: i18nService.t('artifactOpenFailed'),
+        }));
+      }
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(artifact.content);
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('artifactCopied'),
+      }));
+    } catch (error) {
+      console.error('Failed to copy artifact:', error);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      title={artifact.filePath || artifact.title}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary hover:bg-primary/10 hover:border-primary/30 transition-colors"
+    >
+      <DocumentTextIcon className="h-3.5 w-3.5 flex-shrink-0" />
+      <span className="truncate max-w-[180px]">{artifact.title}</span>
+      <span className="text-[10px] uppercase text-primary/60">{artifact.type}</span>
+    </button>
+  );
+};
+
 // Re-edit button component — lets the user re-fill a sent message back into the input
 const ReEditButton: React.FC<{
   visible: boolean;
@@ -1105,6 +1159,7 @@ const AssistantMessageItem: React.FC<{
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
   showCopyButton?: boolean;
+  turnMetadata?: CoworkMessageMetadata | null;
   showTtsButton?: boolean;
   isTtsPlaying?: boolean;
   onPlayTts?: (message: CoworkMessage) => void;
@@ -1114,6 +1169,7 @@ const AssistantMessageItem: React.FC<{
   resolveLocalFilePath,
   mapDisplayText,
   showCopyButton = false,
+  turnMetadata,
   showTtsButton = false,
   isTtsPlaying = false,
   onPlayTts,
@@ -1122,6 +1178,8 @@ const AssistantMessageItem: React.FC<{
   const [isHovered, setIsHovered] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
+  const metadata = turnMetadata ?? message.metadata;
+  const metadataItems = buildAssistantMetadataItems(metadata);
   const speakableText = buildSpeakableAssistantText(displayContent, {
     skipKeywords: configService.getConfig().voice?.postProcess?.ttsSkipKeywords ?? [],
   });
@@ -1153,6 +1211,13 @@ const AssistantMessageItem: React.FC<{
           onImageClick={setExpandedImage}
         />
       </div>
+      {metadataItems.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-secondary/60 select-none">
+          {metadataItems.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      )}
       {(showCopyButton || showTtsButton) && (
         <div className="absolute -top-2 right-0 flex items-center gap-1.5 opacity-0 group-hover/content:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-border/50">
           {showTtsButton && (
@@ -1341,6 +1406,7 @@ const SystemMessageBlock: React.FC<{ content: string; isError: boolean }> = ({ c
 
 export const AssistantTurnBlock: React.FC<{
   turn: ConversationTurn;
+  artifacts?: Artifact[];
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
   showTypingIndicator?: boolean;
@@ -1351,6 +1417,7 @@ export const AssistantTurnBlock: React.FC<{
   onStopTts?: () => void;
 }> = ({
   turn,
+  artifacts = [],
   resolveLocalFilePath,
   mapDisplayText,
   showTypingIndicator = false,
@@ -1455,6 +1522,7 @@ export const AssistantTurnBlock: React.FC<{
               const hasToolGroupAfter = visibleAssistantItems
                 .slice(index + 1)
                 .some(laterItem => laterItem.type === 'tool_group');
+              const isLastAssistant = showCopyButtons && !hasToolGroupAfter;
 
               return (
                 <AssistantMessageItem
@@ -1462,7 +1530,8 @@ export const AssistantTurnBlock: React.FC<{
                   message={item.message}
                   resolveLocalFilePath={resolveLocalFilePath}
                   mapDisplayText={mapDisplayText}
-                  showCopyButton={showCopyButtons && !hasToolGroupAfter}
+                  showCopyButton={isLastAssistant}
+                  turnMetadata={isLastAssistant ? (item.message.metadata as CoworkMessageMetadata) : undefined}
                   showTtsButton={showTtsButtons}
                   isTtsPlaying={ttsPlayingMessageId === item.message.id}
                   onPlayTts={onPlayTts}
@@ -1503,6 +1572,13 @@ export const AssistantTurnBlock: React.FC<{
             );
           })}
           {showTypingIndicator && <TypingDots />}
+          {artifacts.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {artifacts.map((artifact) => (
+                <ArtifactBadge key={artifact.id} artifact={artifact} />
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1528,6 +1604,10 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const lastMessageContent = useSelector(selectLastMessageContent);
   const messagesLength = useSelector(selectCurrentMessagesLength);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const sessionId = currentSession?.id;
+  const sessionArtifacts = useSelector((state: RootState) =>
+    sessionId ? selectSessionArtifacts(state, sessionId) : []
+  );
   const detailRootRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
@@ -2287,6 +2367,17 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const messages = currentSession?.messages;
   const displayItems = useMemo(() => messages ? buildDisplayItems(messages) : [], [messages]);
   const turns = useMemo(() => buildConversationTurns(displayItems), [displayItems]);
+  const detectedArtifacts = useMemo(() => {
+    if (!messages || !sessionId) return [];
+    return collectCoworkSessionArtifacts(messages, sessionId);
+  }, [messages, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || detectedArtifacts.length === 0) return;
+    for (const artifact of detectedArtifacts) {
+      dispatch(addArtifact({ sessionId, artifact }));
+    }
+  }, [detectedArtifacts, dispatch, sessionId]);
 
   // Cache turn-level DOM elements (data-turn-index, always in DOM even for lazy turns)
   useEffect(() => {
@@ -2368,6 +2459,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               assistantItems: [],
             }}
             resolveLocalFilePath={resolveLocalFilePath}
+            artifacts={[]}
             showTypingIndicator
             showCopyButtons={!isStreaming}
             showTtsButtons={isMac && !!ttsAvailability?.supported}
@@ -2392,6 +2484,24 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       }
       const userRailIdx = turn.userMessage ? railCounter++ : -1;
       const asstRailIdx = asstContent ? railCounter++ : -1;
+      const turnMessageIds = new Set<string>();
+      if (turn.userMessage) {
+        turnMessageIds.add(turn.userMessage.id);
+      }
+      for (const item of turn.assistantItems) {
+        if (item.type === 'assistant' || item.type === 'system' || item.type === 'tool_result') {
+          turnMessageIds.add(item.message.id);
+        }
+        if (item.type === 'tool_group') {
+          turnMessageIds.add(item.group.toolUse.id);
+          if (item.group.toolResult) {
+            turnMessageIds.add(item.group.toolResult.id);
+          }
+        }
+      }
+      const turnArtifacts = sessionArtifacts.filter((artifact) => (
+        turnMessageIds.has(artifact.messageId) && PREVIEWABLE_ARTIFACT_TYPES.has(artifact.type)
+      ));
 
       return (
         <div key={turn.id} data-turn-index={index}>
@@ -2404,6 +2514,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             <div data-export-role="assistant-block" {...(asstRailIdx >= 0 ? { 'data-rail-index': asstRailIdx } : undefined)}>
               <AssistantTurnBlock
                 turn={turn}
+                artifacts={turnArtifacts}
                 resolveLocalFilePath={resolveLocalFilePath}
                 mapDisplayText={mapDisplayText}
                 showTypingIndicator={showTypingIndicator}

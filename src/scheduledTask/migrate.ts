@@ -7,7 +7,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import type { Database } from 'sql.js';
+import type Database from 'better-sqlite3';
 import type { CronJobService } from './cronJobService';
 import { MigrationKey, ScheduleKind, PayloadKind, DeliveryMode, SessionTarget, WakeMode, GatewayStatus, DefaultAgentId } from './constants';
 import type { Schedule, ScheduledTaskDelivery, ScheduledTaskInput } from './types';
@@ -128,8 +128,8 @@ function rowToInput(row: LegacyTaskRow): ScheduledTaskInput | null {
 // ---------------------------------------------------------------------------
 
 interface MigrationDeps {
-  /** Raw sql.js Database instance for reading legacy tables. */
-  db: Database;
+  /** Raw Database instance for reading legacy tables. */
+  db: Database.Database;
   /** Reads a value from the app kv store. */
   getKv: (key: string) => unknown;
   /** Writes a value to the app kv store. */
@@ -146,10 +146,10 @@ export async function migrateScheduledTasksToOpenclaw(deps: MigrationDeps): Prom
 
   // 2. Check if the legacy table exists (new installs won't have it)
   try {
-    const tableCheck = db.exec(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",
-    );
-    if (!tableCheck[0]?.values?.length) {
+    const tableExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'")
+      .get() as { name: string } | undefined;
+    if (!tableExists) {
       // Fresh install — nothing to migrate
       setKv(MigrationKey.TasksToOpenclaw, 'true');
       return;
@@ -162,19 +162,15 @@ export async function migrateScheduledTasksToOpenclaw(deps: MigrationDeps): Prom
   // 3. Read all legacy rows
   let rows: LegacyTaskRow[] = [];
   try {
-    const result = db.exec(
-      'SELECT id, name, description, enabled, schedule_json, prompt, notify_platforms_json FROM scheduled_tasks',
-    );
-    if (!result[0]?.values?.length) {
+    rows = db
+      .prepare(
+        'SELECT id, name, description, enabled, schedule_json, prompt, notify_platforms_json FROM scheduled_tasks',
+      )
+      .all() as LegacyTaskRow[];
+    if (!rows.length) {
       setKv(MigrationKey.TasksToOpenclaw, 'true');
       return;
     }
-    const cols = result[0].columns;
-    rows = result[0].values.map((vals) => {
-      const obj: Record<string, unknown> = {};
-      cols.forEach((col, i) => { obj[col] = vals[i]; });
-      return obj as unknown as LegacyTaskRow;
-    });
   } catch (err) {
     console.warn('[MigrateScheduledTasks] Failed to read legacy tasks, skipping migration:', err);
     return;
@@ -234,7 +230,7 @@ function toGatewayStatus(status: string): GatewayStatus {
 }
 
 interface RunHistoryMigrationDeps {
-  db: Database;
+  db: Database.Database;
   getKv: (key: string) => unknown;
   setKv: (key: string, value: string) => void;
   /** Path to {userData}/openclaw/state — used to locate cron/runs/. */
@@ -251,10 +247,10 @@ export async function migrateScheduledTaskRunsToOpenclaw(
 
   // 2. Check legacy table exists
   try {
-    const tableCheck = db.exec(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_task_runs'",
-    );
-    if (!tableCheck[0]?.values?.length) {
+    const tableExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_task_runs'")
+      .get() as { name: string } | undefined;
+    if (!tableExists) {
       setKv(RUN_HISTORY_MIGRATION_KEY, 'true');
       return;
     }
@@ -266,19 +262,15 @@ export async function migrateScheduledTaskRunsToOpenclaw(
   // 3. Read legacy run rows (use old task_id directly as the JSONL filename)
   let runs: LegacyRunRow[] = [];
   try {
-    const result = db.exec(
-      'SELECT id, task_id, session_id, status, started_at, finished_at, duration_ms, error FROM scheduled_task_runs ORDER BY started_at ASC',
-    );
-    if (!result[0]?.values?.length) {
+    runs = db
+      .prepare(
+        'SELECT id, task_id, session_id, status, started_at, finished_at, duration_ms, error FROM scheduled_task_runs ORDER BY started_at ASC',
+      )
+      .all() as LegacyRunRow[];
+    if (!runs.length) {
       setKv(RUN_HISTORY_MIGRATION_KEY, 'true');
       return;
     }
-    const cols = result[0].columns;
-    runs = result[0].values.map((vals) => {
-      const obj: Record<string, unknown> = {};
-      cols.forEach((col, i) => { obj[col] = vals[i]; });
-      return obj as unknown as LegacyRunRow;
-    });
   } catch (err) {
     console.warn('[MigrateRunHistory] Failed to read legacy runs:', err);
     return;
@@ -287,15 +279,13 @@ export async function migrateScheduledTaskRunsToOpenclaw(
   // 3b. Build taskId → name map for display titles
   const taskIdToName = new Map<string, string>();
   try {
-    const taskResult = db.exec('SELECT id, name FROM scheduled_tasks');
-    if (taskResult[0]?.values) {
-      const cols = taskResult[0].columns;
-      for (const vals of taskResult[0].values) {
-        const row: Record<string, unknown> = {};
-        cols.forEach((col, i) => { row[col] = vals[i]; });
-        if (row['id'] && row['name']) {
-          taskIdToName.set(row['id'] as string, row['name'] as string);
-        }
+    const taskRows = db.prepare('SELECT id, name FROM scheduled_tasks').all() as Array<{
+      id: string;
+      name: string;
+    }>;
+    for (const row of taskRows) {
+      if (row.id && row.name) {
+        taskIdToName.set(row.id, row.name);
       }
     }
   } catch {

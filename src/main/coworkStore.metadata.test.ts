@@ -1,5 +1,8 @@
-import { beforeAll, describe, expect, test, vi } from 'vitest';
-import initSqlJs from 'sql.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('electron', () => ({
   app: {
@@ -9,14 +12,28 @@ vi.mock('electron', () => ({
 
 import { CoworkStore } from './coworkStore';
 
-let SQL: Awaited<ReturnType<typeof initSqlJs>>;
+const tempDirs: string[] = [];
+const dbs: Database.Database[] = [];
 
-beforeAll(async () => {
-  SQL = await initSqlJs();
+const createDb = (): Database.Database => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qingshu-cowork-metadata-'));
+  tempDirs.push(dir);
+  const db = new Database(path.join(dir, 'test.sqlite'));
+  dbs.push(db);
+  return db;
+};
+
+afterEach(() => {
+  for (const db of dbs.splice(0)) {
+    db.close();
+  }
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-const createCoworkTables = (db: initSqlJs.Database): void => {
-  db.run(`
+const createCoworkTables = (db: Database.Database): void => {
+  db.exec(`
     CREATE TABLE cowork_sessions (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -34,7 +51,7 @@ const createCoworkTables = (db: initSqlJs.Database): void => {
     );
   `);
 
-  db.run(`
+  db.exec(`
     CREATE TABLE cowork_messages (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -48,35 +65,34 @@ const createCoworkTables = (db: initSqlJs.Database): void => {
   `);
 };
 
-const insertSession = (db: initSqlJs.Database, id: string): void => {
+const insertSession = (db: Database.Database, id: string): void => {
   const now = Date.now();
-  db.run(
+  db.prepare(
     `INSERT INTO cowork_sessions
       (id, title, claude_session_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, model_override, created_at, updated_at)
      VALUES (?, 'test', NULL, 'idle', 0, '/tmp', '', 'local', '[]', 'main', '', ?, ?)`,
-    [id, now, now],
-  );
+  ).run(id, now, now);
 };
 
 const insertMessage = (
-  db: initSqlJs.Database,
+  db: Database.Database,
   id: string,
   sessionId: string,
   type: string,
   content: string,
   metadata: string | null,
   sequence: number,
+  timestamp = Date.now(),
 ): void => {
-  db.run(
+  db.prepare(
     `INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, sessionId, type, content, metadata, Date.now(), sequence],
-  );
+  ).run(id, sessionId, type, content, metadata, timestamp, sequence);
 };
 
 describe('CoworkStore message metadata resilience', () => {
   test('keeps loading a session when one message metadata row is corrupt', () => {
-    const db = new SQL.Database();
+    const db = createDb();
     createCoworkTables(db);
     insertSession(db, 'session-1');
     insertMessage(db, 'message-ok', 'session-1', 'user', 'hello', '{"skillIds":["demo"]}', 1);
@@ -95,5 +111,71 @@ describe('CoworkStore message metadata resilience', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
 
     warnSpy.mockRestore();
+  });
+
+  test('preserves existing and gateway timestamps when replacing conversation messages', () => {
+    const db = createDb();
+    createCoworkTables(db);
+    insertSession(db, 'session-1');
+    insertMessage(db, 'message-tool', 'session-1', 'tool_use', 'tool stays', '{}', 1, 500);
+    insertMessage(db, 'message-user', 'session-1', 'user', 'old user', '{}', 2, 1_000);
+    insertMessage(db, 'message-assistant', 'session-1', 'assistant', 'old assistant', '{}', 3, 2_000);
+
+    const store = new CoworkStore(db, () => {});
+
+    store.replaceConversationMessages('session-1', [
+      { role: 'user', text: 'old user' },
+      { role: 'assistant', text: 'old assistant' },
+      { role: 'user', text: 'new user', timestamp: 3_000 },
+    ]);
+
+    const session = store.getSession('session-1');
+
+    expect(session?.messages.map((message) => ({
+      type: message.type,
+      content: message.content,
+      timestamp: message.timestamp,
+    }))).toEqual([
+      { type: 'tool_use', content: 'tool stays', timestamp: 500 },
+      { type: 'user', content: 'old user', timestamp: 1_000 },
+      { type: 'assistant', content: 'old assistant', timestamp: 2_000 },
+      { type: 'user', content: 'new user', timestamp: 3_000 },
+    ]);
+    expect(session?.updatedAt).toBe(3_000);
+  });
+
+  test('uses provided timestamps when adding or inserting channel messages', () => {
+    const db = createDb();
+    createCoworkTables(db);
+    insertSession(db, 'session-1');
+    insertMessage(db, 'message-assistant', 'session-1', 'assistant', 'assistant reply', '{}', 1, 2_000);
+
+    const store = new CoworkStore(db, () => {});
+
+    const inserted = store.insertMessageBeforeId('session-1', 'message-assistant', {
+      type: 'user',
+      content: 'channel user',
+      metadata: {},
+      timestamp: 1_000,
+    });
+    const added = store.addMessage('session-1', {
+      type: 'user',
+      content: 'next channel user',
+      metadata: {},
+      timestamp: 3_000,
+    });
+    const session = store.getSession('session-1');
+
+    expect(inserted.timestamp).toBe(1_000);
+    expect(added.timestamp).toBe(3_000);
+    expect(session?.messages.map((message) => ({
+      type: message.type,
+      content: message.content,
+      timestamp: message.timestamp,
+    }))).toEqual([
+      { type: 'user', content: 'channel user', timestamp: 1_000 },
+      { type: 'assistant', content: 'assistant reply', timestamp: 2_000 },
+      { type: 'user', content: 'next channel user', timestamp: 3_000 },
+    ]);
   });
 });

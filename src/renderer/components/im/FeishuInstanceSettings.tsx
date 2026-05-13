@@ -223,7 +223,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   React.useEffect(() => {
     setNameValue(instance.instanceName);
     setEditingName(false);
-  }, [instance.instanceId]);
+  }, [instance.instanceId, instance.instanceName]);
 
   const handleNameBlur = () => {
     setEditingName(false);

@@ -15,10 +15,11 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
+import { NimQrLoginErrorCode, NimQrLoginStatus, pollQrLogin, startQrLogin } from '../../services/nimQrLogin';
 import { RootState } from '../../store';
-import { clearError, setDingTalkInstanceConfig, setDiscordConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimConfig, setPopoConfig, setQQInstanceConfig, setTelegramOpenClawConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
-import type { DiscordOpenClawConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, PopoOpenClawConfig,TelegramOpenClawConfig, WeixinOpenClawConfig } from '../../types/im';
-import { MAX_DINGTALK_INSTANCES, MAX_FEISHU_INSTANCES, MAX_QQ_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
+import { clearError, setDingTalkInstanceConfig, setDiscordConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimInstanceConfig, setPopoInstanceConfig, setQQInstanceConfig, setTelegramOpenClawConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
+import type { DiscordOpenClawConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, NimInstanceConfig, PopoInstanceConfig, PopoOpenClawConfig,TelegramOpenClawConfig, WeixinOpenClawConfig } from '../../types/im';
+import { DEFAULT_NIM_CONFIG, DEFAULT_POPO_CONFIG, MAX_DINGTALK_INSTANCES, MAX_FEISHU_INSTANCES, MAX_NIM_INSTANCES, MAX_POPO_INSTANCES, MAX_QQ_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import Modal from '../common/Modal';
 import DingTalkInstanceSettings from './DingTalkInstanceSettings';
@@ -61,6 +62,258 @@ const PlatformGuide: React.FC<{
     )}
   </div>
 );
+
+type InstanceListItem = {
+  instanceId: string;
+  instanceName: string;
+  enabled: boolean;
+  detail?: string;
+};
+
+const InlineInstanceList: React.FC<{
+  title: string;
+  hint: string;
+  primaryTag: string;
+  emptyText: string;
+  addLabel: string;
+  maxInstances: number;
+  instances: readonly InstanceListItem[];
+  activeInstanceId: string | null;
+  onSelect: (instanceId: string) => void;
+  onAdd: () => void;
+  onRename: (instanceId: string, name: string) => void;
+  onDelete: (instanceId: string) => void;
+}> = ({
+  title,
+  hint,
+  primaryTag,
+  emptyText,
+  addLabel,
+  maxInstances,
+  instances,
+  activeInstanceId,
+  onSelect,
+  onAdd,
+  onRename,
+  onDelete,
+}) => {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [nameValue, setNameValue] = useState('');
+
+  const commitRename = (instance: InstanceListItem) => {
+    const trimmed = nameValue.trim();
+    setEditingId(null);
+    if (trimmed && trimmed !== instance.instanceName) {
+      onRename(instance.instanceId, trimmed);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface-raised/40 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold text-foreground">{title}</div>
+          <div className="text-[11px] text-secondary">{hint}</div>
+        </div>
+        {instances.length < maxInstances && (
+          <button
+            type="button"
+            onClick={onAdd}
+            className="shrink-0 rounded-lg bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/20 transition-colors"
+          >
+            + {addLabel}
+          </button>
+        )}
+      </div>
+
+      {instances.length === 0 ? (
+        <div className="rounded-md bg-surface px-2.5 py-2 text-xs text-secondary">{emptyText}</div>
+      ) : (
+        <div className="space-y-1.5">
+          {instances.map((instance, index) => {
+            const selected = activeInstanceId === instance.instanceId || (!activeInstanceId && index === 0);
+            return (
+              <div
+                key={instance.instanceId}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelect(instance.instanceId)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelect(instance.instanceId);
+                  }
+                }}
+                className={`flex items-center justify-between gap-3 rounded-md px-2.5 py-2 transition-colors ${
+                  selected ? 'bg-primary/10 text-primary' : 'bg-surface text-foreground hover:bg-surface-raised'
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    {editingId === instance.instanceId ? (
+                      <input
+                        type="text"
+                        value={nameValue}
+                        onChange={(event) => setNameValue(event.target.value)}
+                        onBlur={() => commitRename(instance)}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') commitRename(instance);
+                          if (event.key === 'Escape') {
+                            setEditingId(null);
+                            setNameValue(instance.instanceName);
+                          }
+                        }}
+                        autoFocus
+                        className="min-w-0 flex-1 border-b border-primary bg-transparent text-xs font-medium text-foreground outline-none"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSelect(instance.instanceId);
+                          setEditingId(instance.instanceId);
+                          setNameValue(instance.instanceName);
+                        }}
+                        className="truncate border-b border-dashed border-transparent text-left text-xs font-medium hover:border-primary"
+                        title={i18nService.t('renameConversation')}
+                      >
+                        {instance.instanceName}
+                      </button>
+                    )}
+                    {index === 0 && (
+                      <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                        {primaryTag}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] text-secondary">
+                    {instance.detail || instance.instanceId}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                    instance.enabled ? 'bg-green-500/10 text-green-600 dark:text-green-400' : 'bg-gray-500/10 text-gray-500'
+                  }`}>
+                    {instance.enabled ? i18nService.t('enabled') : i18nService.t('disabled')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDelete(instance.instanceId);
+                    }}
+                    className="rounded p-0.5 text-secondary hover:bg-red-500/10 hover:text-red-500 transition-colors"
+                    title={i18nService.t('scheduledTasksDelete')}
+                  >
+                    <XMarkIcon className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const NimInstanceSummary: React.FC<{ instances: readonly NimInstanceConfig[] }> = ({ instances }) => {
+  if (instances.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface-raised/40 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-foreground">
+          {i18nService.t('nimInstancesTitle')}
+        </div>
+        <span className="text-[11px] text-secondary">
+          {i18nService.t('nimInstancesPrimaryHint')}
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {instances.map((instance, index) => (
+          <div
+            key={instance.instanceId}
+            className="flex items-center justify-between gap-3 rounded-md bg-surface px-2.5 py-2"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="truncate text-xs font-medium text-foreground">
+                  {instance.instanceName || `NIM Bot ${index + 1}`}
+                </span>
+                {index === 0 && (
+                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    {i18nService.t('nimInstancesPrimaryTag')}
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 truncate text-[11px] text-secondary">
+                {instance.account || instance.appKey || instance.instanceId}
+              </div>
+            </div>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              instance.enabled ? 'bg-green-500/10 text-green-600 dark:text-green-400' : 'bg-gray-500/10 text-gray-500'
+            }`}>
+              {instance.enabled ? i18nService.t('enabled') : i18nService.t('disabled')}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const PopoInstanceSummary: React.FC<{ instances: readonly PopoInstanceConfig[] }> = ({ instances }) => {
+  if (instances.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface-raised/40 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-foreground">
+          {i18nService.t('popoInstancesTitle')}
+        </div>
+        <span className="text-[11px] text-secondary">
+          {i18nService.t('popoInstancesPrimaryHint')}
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {instances.map((instance, index) => (
+          <div
+            key={instance.instanceId}
+            className="flex items-center justify-between gap-3 rounded-md bg-surface px-2.5 py-2"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="truncate text-xs font-medium text-foreground">
+                  {instance.instanceName || `POPO Bot ${index + 1}`}
+                </span>
+                {index === 0 && (
+                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    {i18nService.t('popoInstancesPrimaryTag')}
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 truncate text-[11px] text-secondary">
+                {instance.appKey || instance.instanceId}
+              </div>
+            </div>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              instance.enabled ? 'bg-green-500/10 text-green-600 dark:text-green-400' : 'bg-gray-500/10 text-gray-500'
+            }`}>
+              {instance.enabled ? i18nService.t('enabled') : i18nService.t('disabled')}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const verdictColorClass: Record<IMConnectivityTestResult['verdict'], string> = {
   pass: 'bg-green-500/15 text-green-600 dark:text-green-400',
@@ -113,6 +366,10 @@ const IMSettings: React.FC = () => {
   const [feishuExpanded, setFeishuExpanded] = useState(false);
   const [activeDingTalkInstanceId, setActiveDingTalkInstanceId] = useState<string | null>(null);
   const [dingtalkExpanded, setDingtalkExpanded] = useState(false);
+  const [activeNimInstanceId, setActiveNimInstanceId] = useState<string | null>(null);
+  const [nimExpanded, setNimExpanded] = useState(false);
+  const [activePopoInstanceId, setActivePopoInstanceId] = useState<string | null>(null);
+  const [popoExpanded, setPopoExpanded] = useState(false);
   const [activeWecomInstanceId, setActiveWecomInstanceId] = useState<string | null>(null);
   const [wecomExpanded, setWecomExpanded] = useState(false);
   const [testingPlatform, setTestingPlatform] = useState<Platform | null>(null);
@@ -139,8 +396,27 @@ const IMSettings: React.FC = () => {
   const [popoQrUrl, setPopoQrUrl] = useState<string>('');
   const [popoQrError, setPopoQrError] = useState<string>('');
   const popoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // NIM QR login state
+  const [nimQrStatus, setNimQrStatus] = useState<'idle' | 'loading' | 'showing' | 'success' | 'error'>('idle');
+  const [nimQrValue, setNimQrValue] = useState<string>('');
+  const [nimQrError, setNimQrError] = useState<string>('');
+  const [nimQrTimeLeft, setNimQrTimeLeft] = useState<number>(0);
+  const nimPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nimCountdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nimActiveUuidRef = useRef<string>('');
   const [localIp, setLocalIp] = useState<string>('');
   const isMountedRef = useRef(true);
+
+  const clearNimQrTimers = () => {
+    if (nimPollTimerRef.current) {
+      clearInterval(nimPollTimerRef.current);
+      nimPollTimerRef.current = null;
+    }
+    if (nimCountdownTimerRef.current) {
+      clearInterval(nimCountdownTimerRef.current);
+      nimCountdownTimerRef.current = null;
+    }
+  };
 
   // OpenClaw config schema for schema-driven forms
   const [openclawSchema, setOpenclawSchema] = useState<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null>(null);
@@ -156,7 +432,10 @@ const IMSettings: React.FC = () => {
   // Track component mounted state for async operations
   useEffect(() => {
     isMountedRef.current = true;
-    return () => { isMountedRef.current = false; };
+    return () => {
+      isMountedRef.current = false;
+      clearNimQrTimers();
+    };
   }, []);
 
   // Fetch local IP for POPO webhook placeholder
@@ -191,6 +470,18 @@ const IMSettings: React.FC = () => {
       setPopoQrStatus('idle');
       setPopoQrUrl('');
       setPopoQrError('');
+    }
+  }, [activePlatform]);
+
+  // Reset NIM QR login state when switching away from nim
+  useEffect(() => {
+    if (activePlatform !== 'nim') {
+      clearNimQrTimers();
+      nimActiveUuidRef.current = '';
+      setNimQrStatus('idle');
+      setNimQrValue('');
+      setNimQrError('');
+      setNimQrTimeLeft(0);
     }
   }, [activePlatform]);
 
@@ -298,6 +589,38 @@ const IMSettings: React.FC = () => {
   const [popoAllowedUserIdInput, setPopoAllowedUserIdInput] = useState('');
   const [popoGroupAllowIdInput, setPopoGroupAllowIdInput] = useState('');
 
+  const nimInstances = config.nim.instances;
+  useEffect(() => {
+    if (nimInstances.length > 0 && !nimInstances.some((instance) => instance.instanceId === activeNimInstanceId)) {
+      setActiveNimInstanceId(nimInstances[0].instanceId);
+    }
+  }, [activeNimInstanceId, nimInstances]);
+  const activeNimInstance = (
+    nimInstances.find((instance) => instance.instanceId === activeNimInstanceId)
+    ?? nimInstances[0]
+  ) as NimInstanceConfig | undefined;
+  const nimConfig: NimInstanceConfig = activeNimInstance ?? {
+    ...DEFAULT_NIM_CONFIG,
+    instanceId: 'nim-draft',
+    instanceName: 'NIM Bot 1',
+  };
+
+  const popoInstances = config.popo.instances;
+  useEffect(() => {
+    if (popoInstances.length > 0 && !popoInstances.some((instance) => instance.instanceId === activePopoInstanceId)) {
+      setActivePopoInstanceId(popoInstances[0].instanceId);
+    }
+  }, [activePopoInstanceId, popoInstances]);
+  const activePopoInstance = (
+    popoInstances.find((instance) => instance.instanceId === activePopoInstanceId)
+    ?? popoInstances[0]
+  ) as PopoInstanceConfig | undefined;
+  const popoConfig: PopoInstanceConfig = activePopoInstance ?? {
+    ...DEFAULT_POPO_CONFIG,
+    instanceId: 'popo-draft',
+    instanceName: 'POPO Bot 1',
+  };
+
 
   // Handle NetEase Bee config change
   const handleNeteaseBeeChanChange = (field: 'clientId' | 'secret', value: string) => {
@@ -317,17 +640,40 @@ const IMSettings: React.FC = () => {
     await imService.persistConfig({ weixin: configToSave });
   };
 
+  const ensurePrimaryNimInstance = async (): Promise<NimInstanceConfig | null> => {
+    if (activeNimInstance) return activeNimInstance;
+    if (nimInstances.length >= MAX_NIM_INSTANCES) return null;
+    const instance = await imService.addNimInstance(`NIM Bot ${nimInstances.length + 1}`);
+    if (instance) {
+      setActiveNimInstanceId(instance.instanceId);
+      setNimExpanded(true);
+    }
+    return instance;
+  };
+
+  const ensurePrimaryPopoInstance = async (): Promise<PopoInstanceConfig | null> => {
+    if (activePopoInstance) return activePopoInstance;
+    if (popoInstances.length >= MAX_POPO_INSTANCES) return null;
+    const instance = await imService.addPopoInstance(`POPO Bot ${popoInstances.length + 1}`);
+    if (instance) {
+      setActivePopoInstanceId(instance.instanceId);
+      setPopoExpanded(true);
+    }
+    return instance;
+  };
+
   // Handle POPO OpenClaw config change
-  const popoConfig = config.popo;
   const handlePopoChange = (update: Partial<PopoOpenClawConfig>) => {
-    dispatch(setPopoConfig(update));
+    dispatch(setPopoInstanceConfig({ instanceId: popoConfig.instanceId, config: update }));
   };
   const handleSavePopoConfig = async (override?: Partial<PopoOpenClawConfig>) => {
     if (!configLoaded) return;
+    const targetInstance = await ensurePrimaryPopoInstance();
+    if (!targetInstance) return;
     const configToSave = override
-      ? { ...popoConfig, ...override }
-      : popoConfig;
-    await imService.persistConfig({ popo: configToSave });
+      ? { ...targetInstance, ...override }
+      : { ...targetInstance, ...popoConfig };
+    await imService.persistPopoInstanceConfig(targetInstance.instanceId, configToSave);
   };
 
   const handleWeixinQrLogin = async () => {
@@ -421,10 +767,12 @@ const IMSettings: React.FC = () => {
           connectionMode: 'websocket',
           enabled: true,
         };
-        handlePopoChange(update);
+        const targetInstance = await ensurePrimaryPopoInstance();
+        if (!targetInstance) return;
+        dispatch(setPopoInstanceConfig({ instanceId: targetInstance.instanceId, config: update }));
         dispatch(clearError());
         // Persist to DB with gateway sync so openclaw.json gets updated and gateway restarts
-        await imService.updateConfig({ popo: { ...popoConfig, ...update } });
+        await imService.updatePopoInstanceConfig(targetInstance.instanceId, { ...targetInstance, ...update });
         // Explicitly trigger config sync to ensure openclaw.json is written immediately
         await window.electron.im.syncConfig();
         await imService.loadStatus();
@@ -437,6 +785,100 @@ const IMSettings: React.FC = () => {
       if (!isMountedRef.current) return;
       setPopoQrStatus('error');
       setPopoQrError(String(err));
+    }
+  };
+
+  const mapNimQrErrorToMessage = (errorCode?: string, fallback?: string) => {
+    if (errorCode === NimQrLoginErrorCode.InvalidUserAgent) {
+      return i18nService.t('imNimQrUnsupported');
+    }
+    if (errorCode === NimQrLoginErrorCode.Timeout) {
+      return i18nService.t('imNimQrExpired');
+    }
+    if (fallback) {
+      if (errorCode === NimQrLoginErrorCode.RequestFailed) {
+        return i18nService.t('imNimQrFailedWithCode').replace('{code}', fallback);
+      }
+      return fallback;
+    }
+    return i18nService.t('imNimQrFailed');
+  };
+
+  const resetNimQrState = () => {
+    clearNimQrTimers();
+    nimActiveUuidRef.current = '';
+    setNimQrStatus('idle');
+    setNimQrValue('');
+    setNimQrError('');
+    setNimQrTimeLeft(0);
+  };
+
+  const handleNimQrLogin = async () => {
+    resetNimQrState();
+    setNimQrStatus('loading');
+    try {
+      const startResult = await startQrLogin();
+      if (!isMountedRef.current) return;
+
+      nimActiveUuidRef.current = startResult.uuid;
+      setNimQrValue(startResult.qrValue);
+      setNimQrTimeLeft(startResult.expiresIn);
+      setNimQrStatus('showing');
+
+      nimCountdownTimerRef.current = setInterval(() => {
+        setNimQrTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearNimQrTimers();
+            nimActiveUuidRef.current = '';
+            setNimQrStatus('error');
+            setNimQrError(i18nService.t('imNimQrExpired'));
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      nimPollTimerRef.current = setInterval(async () => {
+        const currentUuid = nimActiveUuidRef.current;
+        if (!currentUuid) return;
+        const pollResult = await pollQrLogin(currentUuid);
+        if (!isMountedRef.current || nimActiveUuidRef.current !== currentUuid) {
+          return;
+        }
+        if (pollResult.status === NimQrLoginStatus.Pending) {
+          return;
+        }
+
+        clearNimQrTimers();
+        nimActiveUuidRef.current = '';
+        if (pollResult.status === NimQrLoginStatus.Success && pollResult.credentials) {
+          const update = {
+            appKey: pollResult.credentials.appKey,
+            account: pollResult.credentials.account,
+            token: pollResult.credentials.token,
+            enabled: true,
+          };
+          dispatch(clearError());
+          const targetInstance = await ensurePrimaryNimInstance();
+          if (!targetInstance) return;
+          dispatch(setNimInstanceConfig({ instanceId: targetInstance.instanceId, config: update }));
+          await imService.updateNimInstanceConfig(targetInstance.instanceId, { ...targetInstance, ...update });
+          await imService.loadStatus();
+          if (!isMountedRef.current) return;
+          setNimQrStatus('success');
+          setNimQrError('');
+          return;
+        }
+
+        setNimQrStatus('error');
+        setNimQrError(mapNimQrErrorToMessage(pollResult.errorCode, pollResult.error));
+      }, startResult.pollInterval);
+    } catch (err) {
+      clearNimQrTimers();
+      nimActiveUuidRef.current = '';
+      if (!isMountedRef.current) return;
+      setNimQrStatus('error');
+      setNimQrError(mapNimQrErrorToMessage(undefined, err instanceof Error ? err.message : String(err)));
     }
   };
 
@@ -482,7 +924,16 @@ const IMSettings: React.FC = () => {
 
     // For POPO, save popo config directly (OpenClaw mode)
     if (activePlatform === 'popo') {
-      await imService.persistConfig({ popo: popoConfig });
+      await handleSavePopoConfig();
+      return;
+    }
+
+    // For NIM, save active instance config directly (OpenClaw mode)
+    if (activePlatform === 'nim') {
+      const targetInstance = await ensurePrimaryNimInstance();
+      if (targetInstance) {
+        await imService.persistNimInstanceConfig(targetInstance.instanceId, { ...targetInstance, ...nimConfig });
+      }
       return;
     }
 
@@ -599,19 +1050,23 @@ const IMSettings: React.FC = () => {
 
       if (platform === 'popo') {
         const newEnabled = !popoConfig.enabled;
-        const success = await imService.updateConfig({ popo: { ...popoConfig, enabled: newEnabled } });
+        const targetInstance = await ensurePrimaryPopoInstance();
+        if (!targetInstance) return;
+        const success = await imService.updatePopoInstanceConfig(targetInstance.instanceId, { ...targetInstance, ...popoConfig, enabled: newEnabled });
         if (success) {
-          dispatch(setPopoConfig({ enabled: newEnabled }));
+          dispatch(setPopoInstanceConfig({ instanceId: targetInstance.instanceId, config: { enabled: newEnabled } }));
           if (newEnabled) dispatch(clearError());
           await imService.loadStatus();
         }
         return;
       }
       if (platform === 'nim') {
-        const newEnabled = !config.nim.enabled;
-        const success = await imService.updateConfig({ nim: { ...config.nim, enabled: newEnabled } });
+        const newEnabled = !nimConfig.enabled;
+        const targetInstance = await ensurePrimaryNimInstance();
+        if (!targetInstance) return;
+        const success = await imService.updateNimInstanceConfig(targetInstance.instanceId, { ...targetInstance, ...nimConfig, enabled: newEnabled });
         if (success) {
-          dispatch(setNimConfig({ enabled: newEnabled }));
+          dispatch(setNimInstanceConfig({ instanceId: targetInstance.instanceId, config: { enabled: newEnabled } }));
           if (newEnabled) dispatch(clearError());
           await imService.loadStatus();
         }
@@ -675,7 +1130,10 @@ const IMSettings: React.FC = () => {
       return !!config.discord.botToken;
     }
     if (platform === 'nim') {
-      return !!(config.nim.appKey && config.nim.account && config.nim.token);
+      return !!(
+        (nimConfig.nimToken && nimConfig.nimToken.trim())
+        || (nimConfig.appKey && nimConfig.account && nimConfig.token)
+      );
     }
     if (platform === 'netease-bee') {
       return !!(config['netease-bee'].clientId && config['netease-bee'].secret);
@@ -1179,6 +1637,100 @@ const IMSettings: React.FC = () => {
                             isSelected
                               ? 'bg-primary/10 dark:bg-primary/20'
                               : 'hover:bg-surface-raised'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
+                          <span className={`truncate flex-1 ${isSelected ? 'text-primary font-medium' : 'text-foreground'}`}>
+                            {inst.instanceName}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          if (platform === 'nim') {
+            return (
+              <div key="nim">
+                <div
+                  onClick={() => { setActivePlatform('nim'); setActiveNimInstanceId(null); setNimExpanded(!nimExpanded); }}
+                  className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    activePlatform === 'nim'
+                      ? 'bg-primary-muted border border-primary shadow-subtle'
+                      : 'bg-surface hover:bg-surface-raised border border-transparent'
+                  }`}
+                >
+                  <div className="flex flex-1 items-center">
+                    <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                      <img src={PlatformRegistry.logo('nim')} alt="NIM" className="w-6 h-6 object-contain rounded-md" />
+                    </div>
+                    <span className={`text-sm font-medium truncate ${activePlatform === 'nim' ? 'text-primary' : 'text-foreground'}`}>
+                      {i18nService.t('nim')}
+                    </span>
+                  </div>
+                  <span className="text-xs opacity-50">{nimExpanded ? '\u25BC' : '\u25B6'}</span>
+                </div>
+                {nimExpanded && (
+                  <div className="ml-5 mt-1 space-y-1">
+                    {config.nim.instances.map((inst) => {
+                      const isSelected = activePlatform === 'nim' && activeNimInstanceId === inst.instanceId;
+                      const dotColor = !inst.enabled ? 'bg-gray-400' : (nimConnected ? 'bg-green-500' : 'bg-yellow-500');
+                      return (
+                        <div
+                          key={inst.instanceId}
+                          onClick={() => { setActivePlatform('nim'); setActiveNimInstanceId(inst.instanceId); }}
+                          className={`flex items-center p-1.5 pl-2 rounded-lg cursor-pointer transition-colors text-sm ${
+                            isSelected ? 'bg-primary/10 dark:bg-primary/20' : 'hover:bg-surface-raised'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
+                          <span className={`truncate flex-1 ${isSelected ? 'text-primary font-medium' : 'text-foreground'}`}>
+                            {inst.instanceName}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          if (platform === 'popo') {
+            return (
+              <div key="popo">
+                <div
+                  onClick={() => { setActivePlatform('popo'); setActivePopoInstanceId(null); setPopoExpanded(!popoExpanded); }}
+                  className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    activePlatform === 'popo'
+                      ? 'bg-primary-muted border border-primary shadow-subtle'
+                      : 'bg-surface hover:bg-surface-raised border border-transparent'
+                  }`}
+                >
+                  <div className="flex flex-1 items-center">
+                    <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                      <img src={PlatformRegistry.logo('popo')} alt="POPO" className="w-6 h-6 object-contain rounded-md" />
+                    </div>
+                    <span className={`text-sm font-medium truncate ${activePlatform === 'popo' ? 'text-primary' : 'text-foreground'}`}>
+                      {i18nService.t('popo')}
+                    </span>
+                  </div>
+                  <span className="text-xs opacity-50">{popoExpanded ? '\u25BC' : '\u25B6'}</span>
+                </div>
+                {popoExpanded && (
+                  <div className="ml-5 mt-1 space-y-1">
+                    {config.popo.instances.map((inst) => {
+                      const isSelected = activePlatform === 'popo' && activePopoInstanceId === inst.instanceId;
+                      const dotColor = !inst.enabled ? 'bg-gray-400' : (popoConnected ? 'bg-green-500' : 'bg-yellow-500');
+                      return (
+                        <div
+                          key={inst.instanceId}
+                          onClick={() => { setActivePlatform('popo'); setActivePopoInstanceId(inst.instanceId); }}
+                          className={`flex items-center p-1.5 pl-2 rounded-lg cursor-pointer transition-colors text-sm ${
+                            isSelected ? 'bg-primary/10 dark:bg-primary/20' : 'hover:bg-surface-raised'
                           }`}
                         >
                           <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
@@ -2142,6 +2694,79 @@ const IMSettings: React.FC = () => {
         {/* NIM (NetEase IM) Settings */}
         {activePlatform === 'nim' && (
           <div className="space-y-3">
+            <div className="rounded-lg border border-dashed border-border-subtle p-4 text-center space-y-3">
+              {(nimQrStatus === 'idle' || nimQrStatus === 'error') && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleNimQrLogin()}
+                    className="px-4 py-2.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {i18nService.t('imNimQrLogin')}
+                  </button>
+                  <p className="text-xs text-secondary">
+                    {i18nService.t('imNimQrLoginHint')}
+                  </p>
+                  {nimQrStatus === 'error' && nimQrError && (
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="flex items-center justify-center gap-1.5 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
+                        <XCircleIcon className="h-4 w-4 flex-shrink-0" />
+                        {nimQrError}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleNimQrLogin()}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised text-foreground hover:bg-surface transition-colors"
+                      >
+                        {i18nService.t('imNimQrRefresh')}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+              {nimQrStatus === 'loading' && (
+                <div className="flex flex-col items-center gap-2 py-2">
+                  <ArrowPathIcon className="h-7 w-7 text-primary animate-spin" />
+                  <span className="text-xs text-secondary">{i18nService.t('imNimQrGenerating')}</span>
+                </div>
+              )}
+              {nimQrStatus === 'showing' && nimQrValue && (
+                <div className="flex flex-col items-center gap-2">
+                  <div className="p-2 bg-white rounded-lg inline-block">
+                    <QRCodeSVG value={nimQrValue} size={160} />
+                  </div>
+                  <p className="text-xs text-secondary max-w-[240px]">
+                    {i18nService.t('imNimQrScanPrompt')}
+                  </p>
+                  <p className="text-xs text-secondary">
+                    {i18nService.t('imNimQrExpiresIn').replace('{seconds}', String(nimQrTimeLeft))}
+                  </p>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleNimQrLogin()}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised text-foreground hover:bg-surface transition-colors"
+                    >
+                      {i18nService.t('imNimQrRefresh')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetNimQrState}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised text-secondary hover:bg-surface transition-colors"
+                    >
+                      {i18nService.t('imNimQrCancel')}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {nimQrStatus === 'success' && (
+                <div className="flex items-center justify-center gap-1.5 text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
+                  <CheckCircleIcon className="h-4 w-4 flex-shrink-0" />
+                  {i18nService.t('imNimQrSuccess')}
+                </div>
+              )}
+            </div>
+
             <PlatformGuide
               title={i18nService.t('nimCredentialsGuide')}
               steps={[
@@ -2152,14 +2777,51 @@ const IMSettings: React.FC = () => {
               ]}
             />
 
+            <NimInstanceSummary instances={config.nim.instances} />
+
+            <InlineInstanceList
+              title={i18nService.t('nimInstancesTitle')}
+              hint={i18nService.t('nimInstancesEditHint')}
+              primaryTag={i18nService.t('nimInstancesPrimaryTag')}
+              emptyText={i18nService.t('nimInstancesEmpty')}
+              addLabel={i18nService.t('imNimAddInstance')}
+              maxInstances={MAX_NIM_INSTANCES}
+              instances={config.nim.instances.map((instance) => ({
+                instanceId: instance.instanceId,
+                instanceName: instance.instanceName,
+                enabled: instance.enabled,
+                detail: instance.account || instance.appKey || instance.instanceId,
+              }))}
+              activeInstanceId={activeNimInstance?.instanceId ?? null}
+              onSelect={setActiveNimInstanceId}
+              onAdd={async () => {
+                const inst = await imService.addNimInstance(`NIM Bot ${config.nim.instances.length + 1}`);
+                if (inst) {
+                  setActiveNimInstanceId(inst.instanceId);
+                  setNimExpanded(true);
+                }
+              }}
+              onRename={(instanceId, name) => {
+                dispatch(setNimInstanceConfig({ instanceId, config: { instanceName: name } }));
+                void imService.updateNimInstanceConfig(instanceId, { instanceName: name }, { syncGateway: false });
+              }}
+              onDelete={(instanceId) => {
+                void imService.deleteNimInstance(instanceId).then((success) => {
+                  if (!success) return;
+                  const remaining = config.nim.instances.filter((instance) => instance.instanceId !== instanceId);
+                  setActiveNimInstanceId(remaining[0]?.instanceId ?? null);
+                });
+              }}
+            />
+
             {nimSchemaData ? (
               <SchemaForm
                 schema={nimSchemaData.schema}
                 hints={nimSchemaData.hints}
-                value={config.nim as unknown as Record<string, unknown>}
+                value={nimConfig as unknown as Record<string, unknown>}
                 onChange={(path, value) => {
-                  const updated = deepSet({ ...config.nim } as unknown as Record<string, unknown>, path, value);
-                  dispatch(setNimConfig(updated as any));
+                  const updated = deepSet({ ...nimConfig } as unknown as Record<string, unknown>, path, value);
+                  dispatch(setNimInstanceConfig({ instanceId: nimConfig.instanceId, config: updated as Partial<NimInstanceConfig> }));
                 }}
                 onBlur={handleSaveConfig}
                 showSecrets={showSecrets}
@@ -2172,8 +2834,8 @@ const IMSettings: React.FC = () => {
                   <label className="block text-xs font-medium text-secondary">App Key</label>
                   <input
                     type="text"
-                    value={config.nim.appKey}
-                    onChange={(e) => dispatch(setNimConfig({ appKey: e.target.value }))}
+                    value={nimConfig.appKey}
+                    onChange={(e) => dispatch(setNimInstanceConfig({ instanceId: nimConfig.instanceId, config: { appKey: e.target.value } }))}
                     onBlur={handleSaveConfig}
                     className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
                     placeholder="your_app_key"
@@ -2183,8 +2845,8 @@ const IMSettings: React.FC = () => {
                   <label className="block text-xs font-medium text-secondary">Account</label>
                   <input
                     type="text"
-                    value={config.nim.account}
-                    onChange={(e) => dispatch(setNimConfig({ account: e.target.value }))}
+                    value={nimConfig.account}
+                    onChange={(e) => dispatch(setNimInstanceConfig({ instanceId: nimConfig.instanceId, config: { account: e.target.value } }))}
                     onBlur={handleSaveConfig}
                     className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
                     placeholder="bot_account_id"
@@ -2194,8 +2856,8 @@ const IMSettings: React.FC = () => {
                   <label className="block text-xs font-medium text-secondary">Token</label>
                   <input
                     type="password"
-                    value={config.nim.token}
-                    onChange={(e) => dispatch(setNimConfig({ token: e.target.value }))}
+                    value={nimConfig.token}
+                    onChange={(e) => dispatch(setNimInstanceConfig({ instanceId: nimConfig.instanceId, config: { token: e.target.value } }))}
                     onBlur={handleSaveConfig}
                     className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
                     placeholder="••••••••••••"
@@ -2656,6 +3318,43 @@ const IMSettings: React.FC = () => {
                 guideUrl={PlatformRegistry.guideUrl('popo')}
             />
 
+            <PopoInstanceSummary instances={config.popo.instances} />
+
+            <InlineInstanceList
+              title={i18nService.t('popoInstancesTitle')}
+              hint={i18nService.t('popoInstancesEditHint')}
+              primaryTag={i18nService.t('popoInstancesPrimaryTag')}
+              emptyText={i18nService.t('popoInstancesEmpty')}
+              addLabel={i18nService.t('imPopoAddInstance')}
+              maxInstances={MAX_POPO_INSTANCES}
+              instances={config.popo.instances.map((instance) => ({
+                instanceId: instance.instanceId,
+                instanceName: instance.instanceName,
+                enabled: instance.enabled,
+                detail: instance.appKey || instance.instanceId,
+              }))}
+              activeInstanceId={activePopoInstance?.instanceId ?? null}
+              onSelect={setActivePopoInstanceId}
+              onAdd={async () => {
+                const inst = await imService.addPopoInstance(`POPO Bot ${config.popo.instances.length + 1}`);
+                if (inst) {
+                  setActivePopoInstanceId(inst.instanceId);
+                  setPopoExpanded(true);
+                }
+              }}
+              onRename={(instanceId, name) => {
+                dispatch(setPopoInstanceConfig({ instanceId, config: { instanceName: name } }));
+                void imService.updatePopoInstanceConfig(instanceId, { instanceName: name }, { syncGateway: false });
+              }}
+              onDelete={(instanceId) => {
+                void imService.deletePopoInstance(instanceId).then((success) => {
+                  if (!success) return;
+                  const remaining = config.popo.instances.filter((instance) => instance.instanceId !== instanceId);
+                  setActivePopoInstanceId(remaining[0]?.instanceId ?? null);
+                });
+              }}
+            />
+
             {/* Bound status badge */}
             {popoConfig.appKey && (
               <div className="text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
@@ -2975,7 +3674,7 @@ const IMSettings: React.FC = () => {
                             const newIds = [...popoConfig.allowFrom, id];
                             handlePopoChange({ allowFrom: newIds });
                             setPopoAllowedUserIdInput('');
-                            void imService.persistConfig({ popo: { ...popoConfig, allowFrom: newIds } });
+                            void handleSavePopoConfig({ allowFrom: newIds });
                           }
                         }
                       }}
@@ -2990,7 +3689,7 @@ const IMSettings: React.FC = () => {
                           const newIds = [...popoConfig.allowFrom, id];
                           handlePopoChange({ allowFrom: newIds });
                           setPopoAllowedUserIdInput('');
-                          void imService.persistConfig({ popo: { ...popoConfig, allowFrom: newIds } });
+                          void handleSavePopoConfig({ allowFrom: newIds });
                         }
                       }}
                       className="px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
@@ -3011,7 +3710,7 @@ const IMSettings: React.FC = () => {
                             onClick={() => {
                               const newIds = popoConfig.allowFrom.filter((uid) => uid !== id);
                               handlePopoChange({ allowFrom: newIds });
-                              void imService.persistConfig({ popo: { ...popoConfig, allowFrom: newIds } });
+                              void handleSavePopoConfig({ allowFrom: newIds });
                             }}
                             className="text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
                           >
@@ -3061,7 +3760,7 @@ const IMSettings: React.FC = () => {
                             const newIds = [...popoConfig.groupAllowFrom, id];
                             handlePopoChange({ groupAllowFrom: newIds });
                             setPopoGroupAllowIdInput('');
-                            void imService.persistConfig({ popo: { ...popoConfig, groupAllowFrom: newIds } });
+                            void handleSavePopoConfig({ groupAllowFrom: newIds });
                           }
                         }
                       }}
@@ -3076,7 +3775,7 @@ const IMSettings: React.FC = () => {
                           const newIds = [...popoConfig.groupAllowFrom, id];
                           handlePopoChange({ groupAllowFrom: newIds });
                           setPopoGroupAllowIdInput('');
-                          void imService.persistConfig({ popo: { ...popoConfig, groupAllowFrom: newIds } });
+                          void handleSavePopoConfig({ groupAllowFrom: newIds });
                         }
                       }}
                       className="px-3 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
@@ -3097,7 +3796,7 @@ const IMSettings: React.FC = () => {
                             onClick={() => {
                               const newIds = popoConfig.groupAllowFrom.filter((gid) => gid !== id);
                               handlePopoChange({ groupAllowFrom: newIds });
-                              void imService.persistConfig({ popo: { ...popoConfig, groupAllowFrom: newIds } });
+                              void handleSavePopoConfig({ groupAllowFrom: newIds });
                             }}
                             className="text-secondary hover:text-red-500 dark:hover:text-red-400 transition-colors"
                           >

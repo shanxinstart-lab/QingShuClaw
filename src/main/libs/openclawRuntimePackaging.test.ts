@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+
 import { afterEach, expect, test } from 'vitest';
 
 const require = createRequire(import.meta.url);
@@ -38,6 +39,67 @@ test('summarizeGatewayAsarEntries flags bundled extensions inside gateway.asar',
     hasControlUiIndex: true,
     hasGatewayEntry: true,
     hasBundledExtensions: true,
+  });
+});
+
+test('summarizeGatewayAsarEntries handles trailing slash directory entries', () => {
+  const summary = summarizeGatewayAsarEntries([
+    '/openclaw.mjs/',
+    '/dist/entry.mjs/',
+    '/dist/control-ui/index.html/',
+    '/dist/extensions/',
+  ]);
+
+  expect(summary).toEqual({
+    hasOpenClawEntry: true,
+    hasControlUiIndex: true,
+    hasGatewayEntry: true,
+    hasBundledExtensions: true,
+  });
+});
+
+test('summarizeGatewayAsarEntries normalizes relative and duplicate slash entries', () => {
+  const summary = summarizeGatewayAsarEntries([
+    'openclaw.mjs',
+    'dist//entry.js',
+    'dist///control-ui//index.html',
+    'dist//extensions//browser//index.js',
+  ]);
+
+  expect(summary).toEqual({
+    hasOpenClawEntry: true,
+    hasControlUiIndex: true,
+    hasGatewayEntry: true,
+    hasBundledExtensions: true,
+  });
+});
+
+test('summarizeGatewayAsarEntries accepts ESM gateway entry', () => {
+  const summary = summarizeGatewayAsarEntries([
+    '/openclaw.mjs',
+    '/dist/entry.mjs',
+    '/dist/control-ui/index.html',
+  ]);
+
+  expect(summary).toEqual({
+    hasOpenClawEntry: true,
+    hasControlUiIndex: true,
+    hasGatewayEntry: true,
+    hasBundledExtensions: false,
+  });
+});
+
+test('summarizeGatewayAsarEntries reports missing required entries', () => {
+  const summary = summarizeGatewayAsarEntries([
+    '/dist/client.js',
+    '/dist/control-ui/index.html',
+  ]);
+
+  expect(summary).toEqual({
+    hasOpenClawEntry: false,
+    hasControlUiIndex: true,
+    hasGatewayEntry: false,
+    hasBundledExtensions: false,
   });
 });
 

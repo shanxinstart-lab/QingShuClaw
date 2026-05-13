@@ -7,6 +7,7 @@ import {
   buildOpenAICompatibleChatCompletionsUrl as buildProviderOpenAICompatibleChatCompletionsUrl,
   buildOpenAIResponsesUrl as buildProviderOpenAIResponsesUrl,
   getEffectiveProviderApiFormat,
+  resolveProviderRequestCredential,
   shouldUseOpenAIResponsesForProvider,
 } from './providerRequestConfig';
 
@@ -270,9 +271,10 @@ class ApiService {
 
     if (appConfig?.providers?.[provider]) {
       const providerConfig = appConfig.providers[provider];
-      if (providerConfig.enabled && (providerConfig.apiKey || !this.providerRequiresApiKey(provider))) {
-        let baseUrl = providerConfig.baseUrl;
-        let apiFormat = this.getEffectiveApiFormat(provider, providerConfig.apiFormat);
+      const credential = resolveProviderRequestCredential(provider, providerConfig);
+      if (providerConfig.enabled && (credential.apiKey || !this.providerRequiresApiKey(provider))) {
+        let baseUrl = credential.baseUrl;
+        let apiFormat = this.getEffectiveApiFormat(provider, credential.apiFormat);
 
         if (providerConfig.codingPlanEnabled && (apiFormat === 'anthropic' || apiFormat === 'openai')) {
           const resolved = resolveCodingPlanBaseUrl(provider, true, apiFormat, baseUrl);
@@ -281,7 +283,7 @@ class ApiService {
         }
         
         return {
-          apiKey: providerConfig.apiKey,
+          apiKey: credential.apiKey,
           baseUrl,
           provider: provider,
           apiFormat,

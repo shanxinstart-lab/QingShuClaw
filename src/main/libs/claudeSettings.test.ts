@@ -14,10 +14,13 @@ vi.mock('./coworkOpenAICompatProxy', () => ({
 }));
 
 import {
+  clearServerModelMetadata,
+  getAllServerModelMetadata,
   resolveAllEnabledProviderConfigs,
   resolveAllProviderApiKeys,
   resolveRawApiConfig,
   setStoreGetter,
+  updateServerModelMetadata,
 } from './claudeSettings';
 
 const createStore = (appConfig: unknown) => ({
@@ -99,6 +102,7 @@ describe('claudeSettings MiniMax OAuth credentials', () => {
 describe('claudeSettings provider model metadata', () => {
   beforeEach(() => {
     setStoreGetter(() => null);
+    clearServerModelMetadata();
   });
 
   test('fills missing model display names from model ids', () => {
@@ -126,5 +130,32 @@ describe('claudeSettings provider model metadata', () => {
       id: 'custom-model',
       name: 'custom-model',
     });
+  });
+
+  test('does not report server model metadata changes when only order changes', () => {
+    expect(updateServerModelMetadata([
+      { modelId: 'qwen3.6-plus', supportsImage: true },
+      { modelId: 'deepseek-v3.2', supportsImage: false },
+    ])).toBe(true);
+
+    expect(updateServerModelMetadata([
+      { modelId: 'deepseek-v3.2', supportsImage: false },
+      { modelId: 'qwen3.6-plus', supportsImage: true },
+    ])).toBe(false);
+
+    expect(getAllServerModelMetadata()).toEqual(expect.arrayContaining([
+      { modelId: 'qwen3.6-plus', supportsImage: true },
+      { modelId: 'deepseek-v3.2', supportsImage: false },
+    ]));
+  });
+
+  test('reports server model metadata changes when image capability changes', () => {
+    updateServerModelMetadata([
+      { modelId: 'qwen3.6-plus', supportsImage: false },
+    ]);
+
+    expect(updateServerModelMetadata([
+      { modelId: 'qwen3.6-plus', supportsImage: true },
+    ])).toBe(true);
   });
 });

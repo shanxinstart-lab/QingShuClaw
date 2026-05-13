@@ -1,6 +1,6 @@
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { WebContents } from 'electron';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, powerSaveBlocker, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, powerSaveBlocker, protocol, screen, session, shell } from 'electron';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -15,9 +15,9 @@ import { OpenClawSessionIpc, type OpenClawSessionPatch } from '../common/opencla
 import { buildSessionTitleFromInput } from '../common/sessionTitle';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw,migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
-import { AppUpdateIpc, AppUpdateSource, type AppUpdateInfo } from '../shared/appUpdate/constants';
+import { type AppUpdateInfo,AppUpdateIpc, AppUpdateSource } from '../shared/appUpdate/constants';
 import { type Platform as SharedPlatform,PlatformRegistry } from '../shared/platform';
-import { ProviderName } from '../shared/providers';
+import { OpenClawProviderId, ProviderName } from '../shared/providers';
 import {
   getQingShuManagedCapabilityErrorCode,
   QingShuManagedAccessState,
@@ -58,15 +58,16 @@ import {
 } from './auth/adapter';
 import { resolveAuthBackendConfig } from './auth/config';
 import { getAutoLaunchEnabled, isAutoLaunched, setAutoLaunchEnabled } from './autoLaunchManager';
-import { CoworkStore } from './coworkStore';
+import { type CoworkMessage, CoworkStore } from './coworkStore';
 import { setLanguage, t } from './i18n';
-import { IMGatewayConfig,IMGatewayManager } from './im';
+import { IMGatewayConfig,IMGatewayManager, type IMLLMConfig } from './im';
 import {
   approvePairingCode,
   listPairingRequests,
   readAllowFromStore,
   rejectPairingRequest,
 } from './im/imPairingStore';
+import { resolveIMScheduledTaskAgentId } from './im/imScheduledTaskAgent';
 import type { Platform } from './im/types';
 import {
   getCronJobService,
@@ -74,14 +75,16 @@ import {
   initScheduledTaskHelpers,
   registerScheduledTaskHandlers,
 } from './ipcHandlers/scheduledTask';
+import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
 import {
   ClaudeRuntimeAdapter,
   type CoworkAgentEngine,
   CoworkEngineRouter,
   OpenClawRuntimeAdapter,
+  type PermissionRequest,
 } from './libs/agentEngine';
 import { AppUpdateCoordinator } from './libs/appUpdateCoordinator';
-import { cancelActiveDownload,downloadUpdate, installUpdate } from './libs/appUpdateInstaller';
+import { downloadUpdate, installUpdate } from './libs/appUpdateInstaller';
 import { AssistantSpeechGuard } from './libs/assistantSpeechGuard';
 import { clearServerModelMetadata,getAllServerModelMetadata, getCurrentApiConfig, resolveCurrentApiConfig, setAuthTokensGetter, setServerBaseUrlGetter, setStoreGetter, updateServerModelMetadata } from './libs/claudeSettings';
 import {
@@ -92,7 +95,7 @@ import {
 } from './libs/copilotTokenManager';
 import { saveCoworkApiConfig } from './libs/coworkConfigStore';
 import { getCoworkLogPath } from './libs/coworkLogger';
-import { setProxyTokenRefresher,startCoworkOpenAICompatProxy, stopCoworkOpenAICompatProxy } from './libs/coworkOpenAICompatProxy';
+import { registerProxyTokenRefresher,setProxyTokenRefresher,startCoworkOpenAICompatProxy, stopCoworkOpenAICompatProxy } from './libs/coworkOpenAICompatProxy';
 import { CoworkRunner } from './libs/coworkRunner';
 import { generateSessionTitle, probeCoworkModelReadiness } from './libs/coworkUtil';
 import { EdgeTtsService } from './libs/edgeTtsService';
@@ -103,16 +106,15 @@ import { broadcastSpeechState,MacSpeechService } from './libs/macSpeechService';
 import { broadcastTtsState,MacTtsService } from './libs/macTtsService';
 import { McpBridgeServer } from './libs/mcpBridgeServer';
 import { McpServerManager } from './libs/mcpServerManager';
-import { serializeForLog } from './libs/sanitizeForLog';
+import { pollNimQrLogin, startNimQrLogin } from './im/nimQrLoginService';
+import { parsePrimaryModelRef } from './libs/openclawAgentModels';
 import {
   buildManagedSessionKey,
-  DEFAULT_MANAGED_AGENT_ID,
   OpenClawChannelSessionSync,
 } from './libs/openclawChannelSessionSync';
 import type { McpBridgeConfig } from './libs/openclawConfigSync';
 import { OpenClawConfigSync } from './libs/openclawConfigSync';
 import { OpenClawEngineManager, type OpenClawEngineStatus } from './libs/openclawEngineManager';
-import { parsePrimaryModelRef } from './libs/openclawAgentModels';
 import {
   addMemoryEntry,
   deleteMemoryEntry,
@@ -129,6 +131,7 @@ import {
 import { startOpenClawTokenProxy, stopOpenClawTokenProxy } from './libs/openclawTokenProxy';
 import { migrateMainAgentWorkspace } from './libs/openclawWorkspaceMigration';
 import { ensurePythonRuntimeReady } from './libs/pythonRuntime';
+import { serializeForLog } from './libs/sanitizeForLog';
 import {
   type ForegroundSpeechOrigin,
   resolveForegroundSpeechRetryDelayMs,
@@ -143,7 +146,7 @@ import {
 import { TtsRouterService } from './libs/ttsRouterService';
 import { WakeInputService } from './libs/wakeInputService';
 import { getLogFilePath, getRecentMainLogEntries,initLogger } from './logger';
-import { McpStore } from './mcpStore';
+import { type McpServerFormData,McpStore } from './mcpStore';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import { loadOpenClawSessionPolicyConfig, saveOpenClawSessionPolicyConfig } from './openclawSessionPolicy/store';
 import { QingShuManagedCatalogService } from './qingshuManaged/catalogService';
@@ -162,6 +165,13 @@ import { SkillManager } from './skillManager';
 import { getSkillServiceManager } from './skillServices';
 import { SqliteStore } from './sqliteStore';
 import { createTray, destroyTray, updateTrayMenu } from './trayManager';
+import {
+  AppWindowStoreKey,
+  MIN_APP_WINDOW_HEIGHT,
+  MIN_APP_WINDOW_WIDTH,
+  resolveInitialAppWindowState,
+  type WindowRectangle,
+} from './windowState';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -447,7 +457,7 @@ const sanitizeIpcPayload = (value: unknown, depth = 0, seen?: WeakSet<object>): 
   return String(value);
 };
 
-const sanitizeCoworkMessageForIpc = (message: any): any => {
+const sanitizeCoworkMessageForIpc = (message: CoworkMessage): CoworkMessage => {
   if (!message || typeof message !== 'object') {
     return message;
   }
@@ -473,17 +483,17 @@ const sanitizeCoworkMessageForIpc = (message: any): any => {
     content: typeof message.content === 'string'
       ? truncateIpcString(message.content, IPC_MESSAGE_CONTENT_MAX_CHARS)
       : '',
-    metadata: sanitizedMetadata,
+    metadata: sanitizedMetadata as CoworkMessage['metadata'],
   };
 };
 
-const sanitizePermissionRequestForIpc = (request: any): any => {
+const sanitizePermissionRequestForIpc = (request: PermissionRequest): PermissionRequest => {
   if (!request || typeof request !== 'object') {
     return request;
   }
   return {
     ...request,
-    toolInput: sanitizeIpcPayload(request.toolInput ?? {}),
+    toolInput: sanitizeIpcPayload(request.toolInput ?? {}) as PermissionRequest['toolInput'],
   };
 };
 
@@ -644,11 +654,14 @@ const checkCalendarPermission = async (): Promise<string> => {
       await execAsync('osascript -l JavaScript -e \'Application("Calendar").name()\'', { timeout: 5000 });
       console.log('[Permissions] macOS Calendar access: authorized');
       return 'authorized';
-    } catch (error: any) {
+    } catch (error) {
+      const stderr = error && typeof error === 'object' && 'stderr' in error
+        ? String(error.stderr ?? '')
+        : '';
       // Check if it's a permission error
-      if (error.stderr?.includes('不能获取对象') ||
-          error.stderr?.includes('not authorized') ||
-          error.stderr?.includes('Permission denied')) {
+      if (stderr.includes('不能获取对象') ||
+          stderr.includes('not authorized') ||
+          stderr.includes('Permission denied')) {
         console.log('[Permissions] macOS Calendar access: not-determined (needs permission)');
         return 'not-determined';
       }
@@ -805,6 +818,24 @@ let openClawStatusForwarderBound = false;
 let coworkRuntimeForwarderBound = false;
 let memoryMigrationDone = false;
 let preventSleepBlockerId: number | null = null;
+
+type IMProviderConfigSnapshot = {
+  enabled?: boolean;
+  apiKey?: string;
+  baseUrl?: string;
+  models?: Array<{ id?: string }>;
+};
+
+type IMAppConfigSnapshot = {
+  providers?: Record<string, IMProviderConfigSnapshot | undefined>;
+  api?: {
+    key?: string;
+    baseUrl?: string;
+  };
+  model?: {
+    defaultModel?: string;
+  };
+};
 
 function setPreventSleepBlockerEnabled(enabled: boolean): void {
   if (enabled) {
@@ -999,7 +1030,7 @@ const ensureOpenClawRunningForCowork = async () => {
 const getCoworkStore = () => {
   if (!coworkStore) {
     const sqliteStore = getStore();
-    coworkStore = new CoworkStore(sqliteStore.getDatabase(), sqliteStore.getSaveFunction());
+    coworkStore = new CoworkStore(sqliteStore.getNativeDatabase(), sqliteStore.getSaveFunction());
     const cleaned = coworkStore.autoDeleteNonPersonalMemories();
     if (cleaned > 0) {
       console.info(`[cowork-memory] Auto-deleted ${cleaned} non-personal/procedural memories`);
@@ -1016,6 +1047,19 @@ const getAgentManager = () => {
     });
   }
   return agentManager;
+};
+
+const resolveAgentDefaultWorkingDirectory = (agentId?: string): string => {
+  const resolvedAgentId = agentId?.trim() || 'main';
+  const agentWorkingDirectory = getAgentManager().getAgent(resolvedAgentId)?.workingDirectory?.trim();
+  if (agentWorkingDirectory) return agentWorkingDirectory;
+  return getCoworkStore().getConfig().workingDirectory.trim();
+};
+
+const resolveSessionWorkingDirectory = (options: { cwd?: string; agentId?: string }): string => {
+  const explicitWorkingDirectory = options.cwd?.trim();
+  if (explicitWorkingDirectory) return explicitWorkingDirectory;
+  return resolveAgentDefaultWorkingDirectory(options.agentId);
 };
 
 const isLobsteraiServerModelRef = (modelRef: string): boolean => {
@@ -1232,16 +1276,30 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       },
       getPopoConfig: () => {
         try {
-          return getIMGatewayManager().getConfig().popo;
+          return getIMGatewayManager().getIMStore().getPopoConfig();
           } catch {
           return null;
         }
       },
+      getPopoInstances: () => {
+        try {
+          return getIMGatewayManager().getIMStore().getPopoInstances();
+        } catch {
+          return [];
+        }
+      },
       getNimConfig: () => {
         try {
-          return getIMGatewayManager().getConfig().nim;
+          return getIMGatewayManager().getIMStore().getNimConfig();
         } catch {
           return null;
+        }
+      },
+      getNimInstances: () => {
+        try {
+          return getIMGatewayManager().getIMStore().getNimInstances();
+        } catch {
+          return [];
         }
       },
       getNeteaseBeeChanConfig: () => {
@@ -1300,8 +1358,6 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
 // but active cowork sessions or cron jobs exist, we defer the restart until
 // all workloads complete.  Do not force-restart while work is active: doing so
 // pushes OpenClaw into a draining/restart window and causes user turns to fail.
-let deferredRestartTimer: ReturnType<typeof setInterval> | null = null;
-let deferredRestartTimeout: ReturnType<typeof setTimeout> | null = null;
 let deferredHardRestartTimer: ReturnType<typeof setInterval> | null = null;
 let deferredHardRestartTimeout: ReturnType<typeof setTimeout> | null = null;
 const DEFERRED_RESTART_POLL_MS = 3_000;
@@ -1319,48 +1375,9 @@ const hasActiveGatewayWorkloads = (): boolean => {
   return false;
 };
 
-const clearDeferredRestart = () => {
-  if (deferredRestartTimer) { clearInterval(deferredRestartTimer); deferredRestartTimer = null; }
-  if (deferredRestartTimeout) { clearTimeout(deferredRestartTimeout); deferredRestartTimeout = null; }
-};
-
 const clearDeferredHardRestart = () => {
   if (deferredHardRestartTimer) { clearInterval(deferredHardRestartTimer); deferredHardRestartTimer = null; }
   if (deferredHardRestartTimeout) { clearTimeout(deferredHardRestartTimeout); deferredHardRestartTimeout = null; }
-};
-
-const executeDeferredGatewayRestart = async (reason: string) => {
-  if (hasActiveGatewayWorkloads()) {
-    console.log(`[OpenClaw] executeDeferredGatewayRestart: still waiting for active workloads (reason: ${reason})`);
-    return;
-  }
-
-  clearDeferredRestart();
-  console.log(`[OpenClaw] executeDeferredGatewayRestart: performing deferred restart (reason: ${reason})`);
-  await syncOpenClawConfig({ reason: `deferred:${reason}`, restartGatewayIfRunning: true });
-};
-
-const scheduleDeferredGatewayRestart = (reason: string) => {
-  // If already scheduled, the latest config is already on disk — just let
-  // the existing timer handle the restart.
-  if (deferredRestartTimer) {
-    console.log(`[OpenClaw] scheduleDeferredGatewayRestart: already scheduled, skipping (reason: ${reason})`);
-    return;
-  }
-
-  deferredRestartTimer = setInterval(() => {
-    if (!hasActiveGatewayWorkloads()) {
-      void executeDeferredGatewayRestart(reason);
-    }
-  }, DEFERRED_RESTART_POLL_MS);
-
-  deferredRestartTimeout = setTimeout(() => {
-    if (hasActiveGatewayWorkloads()) {
-      console.warn(`[OpenClaw] scheduleDeferredGatewayRestart: still waiting for active workloads, keeping restart deferred (reason: ${reason})`);
-      return;
-    }
-    void executeDeferredGatewayRestart(reason);
-  }, DEFERRED_RESTART_WAIT_LOG_MS);
 };
 
 const performGatewayRestart = async (reason: string): Promise<OpenClawEngineStatus> => {
@@ -1541,7 +1558,7 @@ const bindCoworkRuntimeForwarder = (): void => {
   if (coworkRuntimeForwarderBound) return;
   const runtime = getCoworkEngineRouter();
 
-  runtime.on('message', (sessionId: string, message: any) => {
+  runtime.on('message', (sessionId: string, message: CoworkMessage) => {
     const safeMessage = sanitizeCoworkMessageForIpc(message);
     const windows = BrowserWindow.getAllWindows();
     console.log('[CoworkForwarder] forwarding message: sessionId=', sessionId, 'type=', message?.type, 'windowCount=', windows.length);
@@ -1556,20 +1573,39 @@ const bindCoworkRuntimeForwarder = (): void => {
     broadcastCoworkSessionsChanged();
   });
 
-  runtime.on('messageUpdate', (sessionId: string, messageId: string, content: string) => {
+  runtime.on('messageUpdate', (
+    sessionId: string,
+    messageId: string,
+    content: string,
+    metadata?: Record<string, unknown>,
+  ) => {
     const safeContent = truncateIpcString(content, IPC_UPDATE_CONTENT_MAX_CHARS);
+    const safeMetadata = metadata && typeof metadata === 'object'
+      ? sanitizeCoworkMessageForIpc({
+        id: messageId,
+        type: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        metadata,
+      }).metadata
+      : undefined;
     const windows = BrowserWindow.getAllWindows();
     windows.forEach((win) => {
       if (win.isDestroyed()) return;
       try {
-        win.webContents.send('cowork:stream:messageUpdate', { sessionId, messageId, content: safeContent });
+        win.webContents.send('cowork:stream:messageUpdate', {
+          sessionId,
+          messageId,
+          content: safeContent,
+          ...(safeMetadata ? { metadata: safeMetadata } : {}),
+        });
       } catch (error) {
         console.error('Failed to forward cowork message update:', error);
       }
     });
   });
 
-  runtime.on('permissionRequest', (sessionId: string, request: any) => {
+  runtime.on('permissionRequest', (sessionId: string, request: PermissionRequest) => {
     if (runtime.getSessionConfirmationMode(sessionId) === 'text') {
       return;
     }
@@ -1652,7 +1688,7 @@ const getCoworkEngineRouter = () => {
           const channelSessionSync = new OpenClawChannelSessionSync({
             coworkStore: getCoworkStore(),
             imStore,
-            getDefaultCwd: () => getCoworkStore().getConfig().workingDirectory || os.homedir(),
+            getDefaultCwd: (agentId?: string) => resolveAgentDefaultWorkingDirectory(agentId) || os.homedir(),
             resolveJobName: (jobId) => getCronJobService().getJobNameSync(jobId),
           });
           openClawRuntimeAdapter.setChannelSessionSync(channelSessionSync);
@@ -1680,7 +1716,7 @@ const getSkillManager = () => {
 const getMcpStore = () => {
   if (!mcpStore) {
     const sqliteStore = getStore();
-    mcpStore = new McpStore(sqliteStore.getDatabase(), sqliteStore.getSaveFunction());
+    mcpStore = new McpStore(sqliteStore.getNativeDatabase());
   }
   return mcpStore;
 };
@@ -1851,7 +1887,7 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
   return mcpBridgeRefreshPromise;
 };
 
-const getIMGatewayManager = () => {
+const getIMGatewayManager = (): IMGatewayManager => {
   if (!imGatewayManager) {
     const sqliteStore = getStore();
 
@@ -1860,7 +1896,7 @@ const getIMGatewayManager = () => {
     const store = getCoworkStore();
 
     imGatewayManager = new IMGatewayManager(
-      sqliteStore.getDatabase(),
+      sqliteStore.getNativeDatabase(),
       sqliteStore.getSaveFunction(),
       {
         coworkRuntime: runtime,
@@ -1915,6 +1951,7 @@ const getIMGatewayManager = () => {
               deliveryTo = deliveryTo.slice(colonIdx + 1);
             }
           }
+          const agentId = resolveIMScheduledTaskAgentId(getCoworkStore(), sessionId);
           const task = await getCronJobService().addJob({
             name: request.taskName,
             description: '',
@@ -1933,8 +1970,8 @@ const getIMGatewayManager = () => {
               ...(channelName ? { channel: channelName } : {}),
               ...(hasChannel ? { to: deliveryTo } : message.conversationId ? { to: message.conversationId } : {}),
             },
-            agentId: DEFAULT_MANAGED_AGENT_ID,
-            ...(hasChannel ? {} : { sessionKey: buildManagedSessionKey(sessionId, DEFAULT_MANAGED_AGENT_ID) }),
+            agentId,
+            ...(hasChannel ? {} : { sessionKey: buildManagedSessionKey(sessionId, agentId) }),
           });
           return {
             id: task.id,
@@ -1954,13 +1991,13 @@ const getIMGatewayManager = () => {
 
     // Initialize with LLM config provider
     imGatewayManager.initialize({
-      getLLMConfig: async () => {
-        const appConfig = sqliteStore.get<any>('app_config');
+      getLLMConfig: async (): Promise<IMLLMConfig | null> => {
+        const appConfig = sqliteStore.get<IMAppConfigSnapshot>('app_config');
         if (!appConfig) return null;
 
         // Find first enabled provider
         const providers = appConfig.providers || {};
-        for (const [providerName, providerConfig] of Object.entries(providers) as [string, any][]) {
+        for (const [providerName, providerConfig] of Object.entries(providers)) {
           if (providerConfig.enabled && providerConfig.apiKey) {
             const model = providerConfig.models?.[0]?.id;
             return {
@@ -2064,6 +2101,8 @@ let isQuitting = false;
 const activeStreamControllers = new Map<string, AbortController>();
 let lastReloadAt = 0;
 const MIN_RELOAD_INTERVAL_MS = 5000;
+let windowStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const WINDOW_STATE_SAVE_DEBOUNCE_MS = 300;
 
 type AppConfigSettings = {
   theme?: string;
@@ -2722,6 +2761,45 @@ const emitWindowState = () => {
   });
 };
 
+const getDisplayWorkAreas = (): WindowRectangle[] => {
+  return screen.getAllDisplays().map((display) => display.workArea);
+};
+
+const getCurrentAppWindowState = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+
+  const bounds = mainWindow.isFullScreen()
+    ? mainWindow.getNormalBounds()
+    : mainWindow.isMaximized()
+      ? mainWindow.getNormalBounds()
+      : mainWindow.getBounds();
+
+  return {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    isMaximized: mainWindow.isMaximized(),
+  };
+};
+
+const persistAppWindowState = () => {
+  const state = getCurrentAppWindowState();
+  if (!state) return;
+  getStore().set(AppWindowStoreKey.State, state);
+};
+
+const schedulePersistAppWindowState = () => {
+  if (windowStateSaveTimer) {
+    clearTimeout(windowStateSaveTimer);
+  }
+
+  windowStateSaveTimer = setTimeout(() => {
+    windowStateSaveTimer = null;
+    persistAppWindowState();
+  }, WINDOW_STATE_SAVE_DEBOUNCE_MS);
+};
+
 const showSystemMenu = (position?: { x?: number; y?: number }) => {
   if (!isWindows) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -3040,6 +3118,11 @@ if (!gotTheLock) {
 
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('app:getSystemLocale', () => app.getLocale());
+  ipcMain.handle('app:relaunch', () => {
+    console.log('[Main] app:relaunch requested, scheduling restart.');
+    app.relaunch();
+    app.quit();
+  });
 
   // ── Auth IPC handlers ──
 
@@ -3665,18 +3748,9 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('mcp:create', async (_event, data: {
-    name: string;
-    description: string;
-    transportType: string;
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    url?: string;
-    headers?: Record<string, string>;
-  }) => {
+  ipcMain.handle('mcp:create', async (_event, data: McpServerFormData) => {
     try {
-      getMcpStore().createServer(data as any);
+      getMcpStore().createServer(data);
       const servers = getMcpStore().listServers();
       // Trigger async MCP bridge refresh (don't await — let UI show DB result immediately)
       refreshMcpBridge().catch(err => console.error('[McpBridge] background refresh error:', err));
@@ -3686,18 +3760,9 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('mcp:update', async (_event, id: string, data: {
-    name?: string;
-    description?: string;
-    transportType?: string;
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    url?: string;
-    headers?: Record<string, string>;
-  }) => {
+  ipcMain.handle('mcp:update', async (_event, id: string, data: Partial<McpServerFormData>) => {
     try {
-      getMcpStore().updateServer(id, data as any);
+      getMcpStore().updateServer(id, data);
       const servers = getMcpStore().listServers();
       refreshMcpBridge().catch(err => console.error('[McpBridge] background refresh error:', err));
       return { success: true, servers };
@@ -3806,7 +3871,10 @@ if (!gotTheLock) {
         activeEngine,
         options.systemPrompt ?? config.systemPrompt,
       );
-      const selectedWorkspaceRoot = (options.cwd || config.workingDirectory || '').trim();
+      const selectedWorkspaceRoot = resolveSessionWorkingDirectory({
+        cwd: options.cwd,
+        agentId: options.agentId,
+      });
 
       if (!selectedWorkspaceRoot) {
         return {
@@ -4833,12 +4901,16 @@ if (!gotTheLock) {
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
   });
   initScheduledTaskHelpers({
-    getIMGatewayManager: () => getIMGatewayManager() as any,
+    getIMGatewayManager: () => getIMGatewayManager(),
   });
   registerScheduledTaskHandlers({
     getCronJobService,
-    getIMGatewayManager: () => getIMGatewayManager() as any,
-    getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter as any,
+    getIMGatewayManager: () => getIMGatewayManager(),
+    getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
+  });
+  registerNimQrLoginHandlers({
+    startNimQrLogin,
+    pollNimQrLogin,
   });
 
   // ==================== Permissions IPC Handlers ====================
@@ -5303,6 +5375,104 @@ if (!gotTheLock) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to set QQ instance config',
+      };
+    }
+  });
+
+  ipcMain.handle('im:nim:instance:add', async (_event, name: string) => {
+    try {
+      const { DEFAULT_NIM_CONFIG } = await import('./im/types');
+      const instanceId = crypto.randomUUID();
+      const instance = {
+        ...DEFAULT_NIM_CONFIG,
+        instanceId,
+        instanceName: name || 'NIM Bot',
+      };
+      getIMGatewayManager().getIMStore().setNimInstanceConfig(instanceId, instance);
+      return { success: true, instance };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add NIM instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:nim:instance:delete', async (_event, instanceId: string) => {
+    try {
+      getIMGatewayManager().getIMStore().deleteNimInstance(instanceId);
+      if (getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete NIM instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:nim:instance:config:set', async (_event, instanceId: string, config: Record<string, unknown>, options?: { syncGateway?: boolean }) => {
+    try {
+      getIMGatewayManager().getIMStore().setNimInstanceConfig(instanceId, config as never);
+      if (options?.syncGateway && getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to set NIM instance config',
+      };
+    }
+  });
+
+  ipcMain.handle('im:popo:instance:add', async (_event, name: string) => {
+    try {
+      const { DEFAULT_POPO_CONFIG } = await import('./im/types');
+      const instanceId = crypto.randomUUID();
+      const instance = {
+        ...DEFAULT_POPO_CONFIG,
+        instanceId,
+        instanceName: name || 'POPO Bot',
+      };
+      getIMGatewayManager().getIMStore().setPopoInstanceConfig(instanceId, instance);
+      return { success: true, instance };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add POPO instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:popo:instance:delete', async (_event, instanceId: string) => {
+    try {
+      getIMGatewayManager().getIMStore().deletePopoInstance(instanceId);
+      if (getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete POPO instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:popo:instance:config:set', async (_event, instanceId: string, config: Record<string, unknown>, options?: { syncGateway?: boolean }) => {
+    try {
+      getIMGatewayManager().getIMStore().setPopoInstanceConfig(instanceId, config as never);
+      if (options?.syncGateway && getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to set POPO instance config',
       };
     }
   });
@@ -6046,9 +6216,14 @@ if (!gotTheLock) {
       return;
     }
 
+    const initialWindowState = resolveInitialAppWindowState(
+      getStore().get(AppWindowStoreKey.State),
+      getDisplayWorkAreas(),
+    );
+    const { isMaximized: shouldRestoreMaximized, ...initialWindowBounds } = initialWindowState;
+
     mainWindow = new BrowserWindow({
-      width: 1200,
-      height: 800,
+      ...initialWindowBounds,
       title: APP_NAME,
       icon: getAppIconPath(),
       ...(isMac
@@ -6129,7 +6304,10 @@ if (!gotTheLock) {
     });
 
     // 设置窗口的最小尺寸
-    mainWindow.setMinimumSize(800, 600);
+    mainWindow.setMinimumSize(MIN_APP_WINDOW_WIDTH, MIN_APP_WINDOW_HEIGHT);
+    if (shouldRestoreMaximized) {
+      mainWindow.maximize();
+    }
 
     // 设置窗口加载超时
     const loadTimeout = setTimeout(() => {
@@ -6152,6 +6330,12 @@ if (!gotTheLock) {
 
     // 处理窗口关闭
     mainWindow.on('close', (e) => {
+      if (windowStateSaveTimer) {
+        clearTimeout(windowStateSaveTimer);
+        windowStateSaveTimer = null;
+      }
+      persistAppWindowState();
+
       // In development, close should actually quit so `npm run electron:dev`
       // restarts from a clean process. In production we keep tray behavior.
       if (mainWindow && !isQuitting && !isDev) {
@@ -6210,14 +6394,24 @@ if (!gotTheLock) {
 
     // 当窗口关闭时，清除引用
     mainWindow.on('closed', () => {
+      if (windowStateSaveTimer) {
+        clearTimeout(windowStateSaveTimer);
+        windowStateSaveTimer = null;
+      }
       mainWindow = null;
     });
 
     const forwardWindowState = () => emitWindowState();
-    mainWindow.on('maximize', forwardWindowState);
-    mainWindow.on('unmaximize', forwardWindowState);
-    mainWindow.on('enter-full-screen', forwardWindowState);
-    mainWindow.on('leave-full-screen', forwardWindowState);
+    const forwardAndPersistWindowState = () => {
+      emitWindowState();
+      schedulePersistAppWindowState();
+    };
+    mainWindow.on('resize', schedulePersistAppWindowState);
+    mainWindow.on('move', schedulePersistAppWindowState);
+    mainWindow.on('maximize', forwardAndPersistWindowState);
+    mainWindow.on('unmaximize', forwardAndPersistWindowState);
+    mainWindow.on('enter-full-screen', forwardAndPersistWindowState);
+    mainWindow.on('leave-full-screen', forwardAndPersistWindowState);
     mainWindow.on('focus', forwardWindowState);
     mainWindow.on('blur', forwardWindowState);
 
@@ -6244,7 +6438,7 @@ if (!gotTheLock) {
 
         // One-time migration: move tasks from legacy SQLite tables to OpenClaw gateway.
         migrateScheduledTasksToOpenclaw({
-          db: getStore().getDatabase(),
+          db: getStore().getNativeDatabase(),
           getKv: (key) => getStore().get(key),
           setKv: (key, value) => getStore().set(key, value),
           cronJobService: getCronJobService(),
@@ -6254,7 +6448,7 @@ if (!gotTheLock) {
 
         // One-time migration: copy legacy run history to OpenClaw cron/runs/ JSONL files.
         migrateScheduledTaskRunsToOpenclaw({
-          db: getStore().getDatabase(),
+          db: getStore().getNativeDatabase(),
           getKv: (key) => getStore().get(key),
           setKv: (key, value) => getStore().set(key, value),
           openclawStateDir: getOpenClawEngineManager().getStateDir(),
@@ -6473,6 +6667,15 @@ if (!gotTheLock) {
     // on 401/403 with a fresh accessToken instead of failing immediately.
     // Delegates to the shared refreshOnce() to avoid concurrent refresh races.
     setProxyTokenRefresher(() => refreshOnce('proxy'));
+    registerProxyTokenRefresher(OpenClawProviderId.LobsteraiServer, () => refreshOnce('proxy'));
+    registerProxyTokenRefresher(ProviderName.Copilot, async () => {
+      const state = await refreshCopilotTokenNow();
+      return state.copilotToken;
+    });
+    registerProxyTokenRefresher(OpenClawProviderId.LobsteraiCopilot, async () => {
+      const state = await refreshCopilotTokenNow();
+      return state.copilotToken;
+    });
 
     // Start the lightweight token proxy before OpenClaw config sync so that
     // lobsterai-server provider can use the proxy URL in its config.

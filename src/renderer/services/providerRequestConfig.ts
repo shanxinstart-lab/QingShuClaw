@@ -1,4 +1,10 @@
-import { ProviderName } from '../../shared/providers';
+import { ProviderName, ProviderRegistry, type ProviderConfig } from '../../shared/providers';
+
+type ProviderRequestCredential = {
+  apiKey: string;
+  baseUrl: string;
+  apiFormat?: ProviderConfig['apiFormat'];
+};
 
 const normalizeApiFormat = (apiFormat: unknown): 'anthropic' | 'openai' | 'gemini' => {
   if (apiFormat === 'openai') {
@@ -13,23 +19,13 @@ const normalizeApiFormat = (apiFormat: unknown): 'anthropic' | 'openai' | 'gemin
 export const getFixedApiFormatForProvider = (
   provider: string,
 ): 'anthropic' | 'openai' | 'gemini' | null => {
-  if (
-    provider === ProviderName.OpenAI
-    || provider === ProviderName.StepFun
-    || provider === ProviderName.Youdaozhiyun
-    || provider === ProviderName.Qianfan
-    || provider === ProviderName.Copilot
-    || provider === ProviderName.Moonshot
-  ) {
+  // Moonshot exposes switchable URLs in settings, but its regular Anthropic
+  // endpoint is incomplete for the renderer chat flow.
+  if (provider === ProviderName.Moonshot) {
     return 'openai';
   }
-  if (provider === ProviderName.Anthropic) {
-    return 'anthropic';
-  }
-  if (provider === ProviderName.Gemini) {
-    return 'gemini';
-  }
-  return null;
+  const def = ProviderRegistry.get(provider);
+  return def && !def.switchableBaseUrls ? def.defaultApiFormat : null;
 };
 
 export const getEffectiveProviderApiFormat = (
@@ -42,6 +38,25 @@ export const getEffectiveProviderApiFormat = (
 export const shouldShowProviderApiFormatSelector = (provider: string): boolean => (
   getFixedApiFormatForProvider(provider) === null
 );
+
+export const resolveProviderRequestCredential = (
+  provider: string,
+  providerConfig: Pick<ProviderConfig, 'apiKey' | 'baseUrl' | 'apiFormat' | 'authType' | 'oauthAccessToken' | 'oauthBaseUrl'>,
+): ProviderRequestCredential => {
+  const oauthAccessToken = providerConfig.authType === 'oauth'
+    ? providerConfig.oauthAccessToken?.trim() ?? ''
+    : '';
+  const apiKey = oauthAccessToken || providerConfig.apiKey.trim();
+  const oauthBaseUrl = oauthAccessToken ? providerConfig.oauthBaseUrl?.trim() ?? '' : '';
+
+  return {
+    apiKey,
+    baseUrl: oauthBaseUrl || providerConfig.baseUrl,
+    apiFormat: provider === ProviderName.Minimax && oauthAccessToken
+      ? 'anthropic'
+      : providerConfig.apiFormat,
+  };
+};
 
 export const buildOpenAICompatibleChatCompletionsUrl = (
   baseUrl: string,
@@ -104,7 +119,7 @@ export const shouldUseMaxCompletionTokensForOpenAI = (
   if (provider !== ProviderName.OpenAI) {
     return false;
   }
-  const normalizedModel = (modelId ?? '').toLowerCase();
+  const normalizedModel = (modelId ?? '').trim().toLowerCase();
   const resolvedModel = normalizedModel.includes('/')
     ? normalizedModel.slice(normalizedModel.lastIndexOf('/') + 1)
     : normalizedModel;

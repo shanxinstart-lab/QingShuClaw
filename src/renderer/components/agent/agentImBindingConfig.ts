@@ -24,6 +24,11 @@ type MultiInstanceAgentBindingConfig =
   | FeishuInstanceConfig
   | QQInstanceConfig
   | WecomInstanceConfig;
+type AgentImBindingInstanceConfig = MultiInstanceAgentBindingConfig & {
+  instanceId: string;
+  instanceName: string;
+  enabled?: boolean;
+};
 
 const MULTI_INSTANCE_AGENT_BINDING_PLATFORMS = new Set<Platform>(
   Object.values(MultiInstanceAgentBindingPlatform),
@@ -39,13 +44,15 @@ export const normalizeAgentImBindingPlatform = (
 };
 
 export const normalizeAgentImBindingKey = (bindingKey: string): string => {
-  const separatorIndex = bindingKey.indexOf(':');
+  const normalizedBindingKey = bindingKey.trim();
+  const separatorIndex = normalizedBindingKey.indexOf(':');
   if (separatorIndex === -1) {
-    return normalizeAgentImBindingPlatform(bindingKey);
+    return normalizeAgentImBindingPlatform(normalizedBindingKey);
   }
 
-  const platform = bindingKey.slice(0, separatorIndex);
-  return `${normalizeAgentImBindingPlatform(platform)}${bindingKey.slice(separatorIndex)}`;
+  const platform = normalizedBindingKey.slice(0, separatorIndex).trim();
+  const instanceId = normalizedBindingKey.slice(separatorIndex + 1).trim();
+  return `${normalizeAgentImBindingPlatform(platform)}:${instanceId}`;
 };
 
 export const isMultiInstanceAgentBindingPlatform = (
@@ -76,11 +83,46 @@ const getMultiInstanceAgentBindingConfigs = (
   return config.wecom.instances;
 };
 
+const getAgentImBindingInstanceConfigs = (
+  config: IMGatewayConfig | null,
+  platform: AgentImBindingPlatform | string,
+): AgentImBindingInstanceConfig[] => {
+  if (!config) {
+    return [];
+  }
+
+  const normalizedPlatform = normalizeAgentImBindingPlatform(platform);
+  if (isMultiInstanceAgentBindingPlatform(normalizedPlatform)) {
+    return getMultiInstanceAgentBindingConfigs(config, normalizedPlatform) as AgentImBindingInstanceConfig[];
+  }
+
+  const platformConfig = (
+    config as unknown as Record<string, { instances?: unknown } | undefined>
+  )[normalizedPlatform];
+  if (!platformConfig || !Array.isArray(platformConfig.instances)) {
+    return [];
+  }
+
+  return platformConfig.instances.filter((instance): instance is AgentImBindingInstanceConfig => (
+    Boolean(
+      instance
+      && typeof instance === 'object'
+      && typeof (instance as { instanceId?: unknown }).instanceId === 'string'
+      && typeof (instance as { instanceName?: unknown }).instanceName === 'string',
+    )
+  ));
+};
+
+export const hasAgentImBindingInstanceConfigs = (
+  config: IMGatewayConfig | null,
+  platform: AgentImBindingPlatform | string,
+): boolean => getAgentImBindingInstanceConfigs(config, platform).length > 0;
+
 export const getAgentImBindingEnabledInstances = (
   config: IMGatewayConfig | null,
-  platform: MultiInstanceAgentBindingPlatform,
-): MultiInstanceAgentBindingConfig[] => (
-  getMultiInstanceAgentBindingConfigs(config, platform).filter((instance) => instance.enabled)
+  platform: AgentImBindingPlatform | string,
+): AgentImBindingInstanceConfig[] => (
+  getAgentImBindingInstanceConfigs(config, platform).filter((instance) => instance.enabled)
 );
 
 export const isAgentImBindingPlatformConfigured = (
@@ -92,7 +134,7 @@ export const isAgentImBindingPlatformConfigured = (
   }
 
   const normalizedPlatform = normalizeAgentImBindingPlatform(platform);
-  if (isMultiInstanceAgentBindingPlatform(normalizedPlatform)) {
+  if (hasAgentImBindingInstanceConfigs(config, normalizedPlatform)) {
     return getAgentImBindingEnabledInstances(config, normalizedPlatform).length > 0;
   }
 
@@ -105,9 +147,20 @@ export const collectAgentBoundBindingKeys = <TPlatform extends AgentImBindingPla
   bindings: Record<string, string> | undefined,
   agentId: string,
   visiblePlatforms?: readonly TPlatform[],
+  config?: IMGatewayConfig | null,
 ): Set<string> => {
   const normalizedVisiblePlatforms = visiblePlatforms
     ? new Set(visiblePlatforms.map((platform) => normalizeAgentImBindingPlatform(platform)))
+    : null;
+  const enabledInstanceKeys = config
+    ? new Set(
+        Object.keys(config as unknown as Record<string, unknown>).flatMap((platform) => {
+          const normalizedPlatform = normalizeAgentImBindingPlatform(platform);
+          return getAgentImBindingEnabledInstances(config, normalizedPlatform).map(
+            (instance) => `${normalizedPlatform}:${instance.instanceId}`,
+          );
+        }),
+      )
     : null;
 
   const boundKeys = new Set<string>();
@@ -124,6 +177,14 @@ export const collectAgentBoundBindingKeys = <TPlatform extends AgentImBindingPla
         : normalizedBindingKey.slice(0, separatorIndex),
     );
     if (normalizedVisiblePlatforms && !normalizedVisiblePlatforms.has(normalizedPlatform)) {
+      continue;
+    }
+    if (
+      enabledInstanceKeys
+      && separatorIndex !== -1
+      && hasAgentImBindingInstanceConfigs(config ?? null, normalizedPlatform)
+      && !enabledInstanceKeys.has(normalizedBindingKey)
+    ) {
       continue;
     }
 

@@ -1,11 +1,15 @@
+import { ArrowPathIcon, PlayIcon } from '@heroicons/react/24/outline';
 import React, { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { PlayIcon } from '@heroicons/react/24/outline';
+
+import type { ScheduledTask } from '../../../scheduledTask/types';
+import { i18nService } from '../../services/i18n';
+import { scheduledTaskService } from '../../services/scheduledTask';
 import { RootState } from '../../store';
 import { setViewMode } from '../../store/slices/scheduledTaskSlice';
-import { scheduledTaskService } from '../../services/scheduledTask';
-import { i18nService } from '../../services/i18n';
-import type { ScheduledTask } from '../../../scheduledTask/types';
+import { resolveOpenClawModelRef } from '../../utils/openclawModelRef';
+import PencilIcon from '../icons/PencilIcon';
+import TrashIcon from '../icons/TrashIcon';
 import TaskRunHistory from './TaskRunHistory';
 import {
   formatDateTime,
@@ -15,8 +19,6 @@ import {
   getStatusLabelKey,
   getStatusTone,
 } from './utils';
-import PencilIcon from '../icons/PencilIcon';
-import TrashIcon from '../icons/TrashIcon';
 
 interface TaskDetailProps {
   task: ScheduledTask;
@@ -26,6 +28,7 @@ interface TaskDetailProps {
 const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
   const dispatch = useDispatch();
   const runs = useSelector((state: RootState) => state.scheduledTask.runs[task.id] ?? []);
+  const availableModels = useSelector((state: RootState) => state.model.availableModels);
 
   useEffect(() => {
     void scheduledTaskService.loadRuns(task.id);
@@ -33,7 +36,12 @@ const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
 
   const statusLabel = i18nService.t(getStatusLabelKey(task.state.lastStatus));
   const statusTone = getStatusTone(task.state.lastStatus);
+  const isRunning = Boolean(task.state.runningAtMs);
   const promptText = task.payload.kind === 'systemEvent' ? task.payload.text : task.payload.message;
+  const taskModelRef = task.payload.kind === 'agentTurn' ? task.payload.model : undefined;
+  const taskModelLabel = taskModelRef
+    ? resolveOpenClawModelRef(taskModelRef, availableModels)?.name ?? taskModelRef
+    : undefined;
 
   const sectionClass = 'rounded-lg border border-border p-4';
   const sectionTitleClass = 'text-sm font-semibold text-foreground mb-3';
@@ -65,11 +73,25 @@ const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
           <button
             type="button"
             onClick={() => void scheduledTaskService.runManually(task.id)}
-            disabled={Boolean(task.state.runningAtMs)}
-            className="p-2 rounded-lg text-secondary hover:bg-surface-raised transition-colors disabled:opacity-50"
-            title={i18nService.t('scheduledTasksRun')}
+            disabled={isRunning}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors disabled:cursor-wait ${
+              isRunning
+                ? 'bg-primary/10 text-primary'
+                : 'text-secondary hover:bg-surface-raised'
+            }`}
+            title={i18nService.t(isRunning ? 'scheduledTasksStatusRunning' : 'scheduledTasksRun')}
           >
-            <PlayIcon className="w-4 h-4" />
+            {isRunning ? (
+              <>
+                <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                <span>{i18nService.t('scheduledTasksStatusRunning')}</span>
+              </>
+            ) : (
+              <>
+                <PlayIcon className="w-4 h-4" />
+                <span>{i18nService.t('scheduledTasksRun')}</span>
+              </>
+            )}
           </button>
           <button
             type="button"
@@ -100,6 +122,12 @@ const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
             <div className={labelClass}>{i18nService.t('scheduledTasksDetailNotify')}</div>
             <div className={valueClass}>{formatDeliveryLabel(task.delivery)}</div>
           </div>
+          {taskModelLabel && (
+            <div>
+              <div className={labelClass}>{i18nService.t('scheduledTasksDetailModel')}</div>
+              <div className={valueClass}>{taskModelLabel}</div>
+            </div>
+          )}
           {task.sessionKey && (
             <div className="col-span-2">
               <div className={labelClass}>{i18nService.t('scheduledTasksSessionKey')}</div>

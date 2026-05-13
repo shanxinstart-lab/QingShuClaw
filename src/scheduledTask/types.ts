@@ -1,8 +1,8 @@
 import type {
   DeliveryMode,
   SessionTarget,
-  WakeMode,
   TaskStatus,
+  WakeMode,
 } from './constants';
 
 export interface ScheduleAt {
@@ -117,7 +117,13 @@ export interface ScheduledTaskRunEvent {
 export interface ScheduledTaskChannelOption {
   value: string;
   label: string;
+  /** Multi-instance platforms use this stable instance selector as
+   *  `delivery.accountId`. Plugins may internally map it to a protocol-level
+   *  account identity such as appKey:accid. */
   accountId?: string;
+  /** Optional account identifier used only when querying local conversation
+   *  mappings. Some plugins persist a different routing-safe account prefix
+   *  than the delivery-time accountId expected by OpenClaw. */
   filterAccountId?: string;
 }
 
@@ -126,6 +132,15 @@ export interface ScheduledTaskConversationOption {
   platform: string;
   coworkSessionId: string;
   lastActiveAt: number;
+}
+
+export interface RunFilter {
+  /** ISO date string (YYYY-MM-DD), inclusive lower bound for startedAt. */
+  startDate?: string;
+  /** ISO date string (YYYY-MM-DD), inclusive upper bound for startedAt. */
+  endDate?: string;
+  /** Filter by task run status. */
+  status?: string;
 }
 
 export type ScheduledTaskViewMode = 'list' | 'create' | 'edit' | 'detail';

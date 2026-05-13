@@ -40,6 +40,18 @@ test('serializeToolContentForLog redacts sensitive fields inside tool content', 
   expect(preview).not.toContain('secret-token');
 });
 
+test('serializeToolContentForLog redacts inline bearer tokens inside text content', () => {
+  const preview = serializeToolContentForLog([
+    {
+      type: 'text',
+      text: 'fetch failed with Bearer secret-token-123456',
+    },
+  ]);
+
+  expect(preview).toContain('Bearer [redacted]');
+  expect(preview).not.toContain('secret-token-123456');
+});
+
 test('getToolTextPreview joins text blocks', () => {
   const preview = getToolTextPreview([
     { type: 'text', text: 'first line' },

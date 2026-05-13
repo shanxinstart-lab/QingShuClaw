@@ -1,5 +1,6 @@
 import type { AuthConfig } from '../common/auth';
 import { DEFAULT_AUTH_CONFIG } from '../common/auth';
+import type { ProviderConfig } from '../shared/providers';
 import { ProviderRegistry } from '../shared/providers';
 import { TtsEngine } from '../shared/tts/constants';
 import type { WakeInputConfig } from '../shared/wakeInput/constants';
@@ -9,6 +10,10 @@ export interface VoicePostProcessConfig {
   ttsLlmRewriteEnabled: boolean;
   ttsSkipKeywords: string[];
 }
+
+type AppProviderConfig = Omit<ProviderConfig, 'apiFormat'> & {
+  apiFormat?: 'anthropic' | 'openai' | 'gemini';
+};
 
 // 配置类型定义
 export interface AppConfig {
@@ -25,204 +30,13 @@ export interface AppConfig {
       id: string;
       name: string;
       supportsImage?: boolean;
+      openClawProviderId?: string;
     }>;
     defaultModel: string;
     defaultModelProvider?: string;
   };
   // 多模型提供商配置
-  providers?: {
-    openai: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      // API 协议格式：anthropic 为 Anthropic 兼容，openai 为 OpenAI 兼容
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    deepseek: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    moonshot: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 Moonshot Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    zhipu: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 GLM Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    minimax: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** OAuth auth type: 'apikey' (default) or 'oauth' (MiniMax Portal OAuth) */
-      authType?: 'apikey' | 'oauth';
-      /** OAuth refresh token for automatic token renewal */
-      oauthRefreshToken?: string;
-      /** OAuth token expiry as Unix timestamp in milliseconds */
-      oauthTokenExpiresAt?: number;
-      /** OAuth access token used by the runtime. */
-      oauthAccessToken?: string;
-      /** OAuth resource base URL returned by MiniMax. */
-      oauthBaseUrl?: string;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    youdaozhiyun: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    qwen: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 Qwen Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    openrouter: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    gemini: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    anthropic: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    volcengine: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      /** 是否启用 Volcengine Coding Plan 模式（使用专属 Coding API 端点） */
-      codingPlanEnabled?: boolean;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    xiaomi: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    stepfun: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    ollama: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-    [key: string]: {
-      enabled: boolean;
-      apiKey: string;
-      baseUrl: string;
-      apiFormat?: 'anthropic' | 'openai' | 'gemini';
-      codingPlanEnabled?: boolean;
-      authType?: 'apikey' | 'oauth';
-      oauthRefreshToken?: string;
-      oauthTokenExpiresAt?: number;
-      oauthAccessToken?: string;
-      oauthBaseUrl?: string;
-      displayName?: string;
-      models?: Array<{
-        id: string;
-        name: string;
-        supportsImage?: boolean;
-      }>;
-    };
-  };
+  providers?: Record<string, AppProviderConfig>;
   // 主题配置
   theme: 'light' | 'dark' | 'system';
   // 语言配置
@@ -304,14 +118,7 @@ export const DEFAULT_VOICE_POST_PROCESS_CONFIG: VoicePostProcessConfig = {
  * The 'custom' provider is not in the registry and is hardcoded separately.
  */
 const buildDefaultProviders = (): AppConfig['providers'] => {
-  const providers: Record<string, {
-    enabled: boolean;
-    apiKey: string;
-    baseUrl: string;
-    apiFormat?: 'anthropic' | 'openai' | 'gemini';
-    codingPlanEnabled?: boolean;
-    models?: Array<{ id: string; name: string; supportsImage?: boolean }>;
-  }> = {};
+  const providers: Record<string, AppProviderConfig> = {};
 
   for (const id of ProviderRegistry.providerIds) {
     const def = ProviderRegistry.get(id)!;

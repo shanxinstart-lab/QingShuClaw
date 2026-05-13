@@ -1,11 +1,11 @@
-import type { IMMediaAttachment, IMMessage } from './types';
-import { IMChatHandler } from './imChatHandler';
-import { buildOpenClawLocalTimeContextPrompt } from '../libs/openclawLocalTimeContextPrompt';
 import {
-  parseSimpleScheduledReminderText,
   parseLegacyScheduledReminderSystemMessage,
   parseScheduledReminderPrompt,
+  parseSimpleScheduledReminderText,
 } from '../../scheduledTask/reminderText';
+import { buildOpenClawLocalTimeContextPrompt } from '../libs/openclawLocalTimeContextPrompt';
+import { IMChatHandler } from './imChatHandler';
+import type { IMLLMConfig, IMMediaAttachment, IMMessage } from './types';
 
 function pad(value: number): string {
   return String(value).padStart(2, '0');
@@ -16,7 +16,7 @@ function formatLocalClock(date: Date): string {
 }
 
 function extractClockFromIsoWithOffset(value: string): string | null {
-  const match = value.match(/T(\d{2}:\d{2})(?::\d{2})?(?:[zZ]|[+-]\d{2}:\d{2})$/u);
+  const match = value.match(/T(\d{2}:\d{2})(?::\d{2}(?:\.\d{1,9})?)?(?:[zZ]|[+-]\d{2}:\d{2})$/u);
   return match?.[1] ?? null;
 }
 
@@ -63,13 +63,6 @@ const SCHEDULED_TASK_CANDIDATE_RE =
   /(?:提醒|定时|闹钟|通知|叫我|叫醒|稍后|之后|到点|分钟后|小时后|秒后|天后|明天|后天|今晚|later|remind|reminder|alarm|timer|schedule|scheduled|tomorrow|tonight|in\s+\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?))/iu;
 
 const ISO_WITH_TIMEZONE_RE = /(?:[zZ]|[+-]\d{2}:\d{2})$/u;
-
-interface LLMConfig {
-  apiKey: string;
-  baseUrl: string;
-  model?: string;
-  provider?: string;
-}
 
 interface RawScheduledTaskDetection {
   shouldCreateTask?: boolean;
@@ -230,7 +223,7 @@ function buildScheduledTaskDetectionPrompt(now: Date): string {
 }
 
 export function createIMScheduledTaskRequestDetector(options: {
-  getLLMConfig: () => Promise<LLMConfig | null>;
+  getLLMConfig: () => Promise<IMLLMConfig | null>;
 }): IMScheduledTaskRequestDetector {
   return async (message: IMMessage): Promise<ParsedIMScheduledTaskRequest | null> => {
     if (!looksLikeIMScheduledTaskCandidate(message.content, message.attachments)) {

@@ -37,8 +37,8 @@ import {
   buildAgentBindingKeyBindings,
   collectAgentBoundBindingKeys,
   getAgentImBindingEnabledInstances,
+  hasAgentImBindingInstanceConfigs,
   isAgentImBindingPlatformConfigured,
-  isMultiInstanceAgentBindingPlatform,
 } from './agentImBindingConfig';
 import { buildPersistedUpdateAgentRequest } from './agentPersistedDraft';
 import AgentSkillSelector from './AgentSkillSelector';
@@ -132,6 +132,8 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         const bound = collectAgentBoundBindingKeys(
           cfg.settings?.platformAgentBindings,
           agentId,
+          undefined,
+          cfg,
         );
         setBoundBindingKeys(bound);
         setInitialBoundBindingKeys(new Set(bound));
@@ -842,7 +844,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                     const logo = PlatformRegistry.logo(platform);
                     const bindings = imConfig?.settings?.platformAgentBindings || {};
 
-                    if (isMultiInstanceAgentBindingPlatform(platform)) {
+                    if (hasAgentImBindingInstanceConfigs(imConfig, platform)) {
                       const enabledInstances = getAgentImBindingEnabledInstances(imConfig, platform);
                       if (enabledInstances.length === 0) {
                         return (

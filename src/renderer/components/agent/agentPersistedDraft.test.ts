@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+
 import {
   buildPersistedCreateAgentRequest,
   buildPersistedUpdateAgentRequest,
@@ -11,6 +12,7 @@ describe('agentPersistedDraft', () => {
       description: '  desc  ',
       systemPrompt: '  prompt  ',
       identity: '  identity  ',
+      workingDirectory: '  /tmp/qingshu  ',
       icon: '  🤖  ',
       skillIds: ['skill-a'],
       toolBundleIds: ['order-basic'],
@@ -22,6 +24,7 @@ describe('agentPersistedDraft', () => {
       description: 'desc',
       systemPrompt: 'prompt',
       identity: 'identity',
+      workingDirectory: '/tmp/qingshu',
       icon: '🤖',
       skillIds: ['skill-a'],
       toolBundleIds: ['order-basic'],
@@ -35,6 +38,7 @@ describe('agentPersistedDraft', () => {
       description: '  desc  ',
       systemPrompt: '  prompt  ',
       identity: '  identity  ',
+      workingDirectory: '  /tmp/agent  ',
       icon: '  🤖  ',
       skillIds: ['skill-a'],
       toolBundleIds: ['inventory-readonly'],
@@ -46,6 +50,7 @@ describe('agentPersistedDraft', () => {
       description: 'desc',
       systemPrompt: 'prompt',
       identity: 'identity',
+      workingDirectory: '/tmp/agent',
       icon: '🤖',
       skillIds: ['skill-a'],
       toolBundleIds: ['inventory-readonly'],
@@ -59,6 +64,7 @@ describe('agentPersistedDraft', () => {
       description: '',
       systemPrompt: '',
       identity: '',
+      workingDirectory: '   ',
       icon: '   ',
       skillIds: [],
       toolBundleIds: [],
@@ -68,6 +74,7 @@ describe('agentPersistedDraft', () => {
       description: '',
       systemPrompt: '',
       identity: '',
+      workingDirectory: '   ',
       icon: '   ',
       skillIds: [],
       toolBundleIds: [],
@@ -75,6 +82,8 @@ describe('agentPersistedDraft', () => {
 
     expect(createResult.icon).toBeUndefined();
     expect(updateResult.icon).toBe('');
+    expect(createResult.workingDirectory).toBe('');
+    expect(updateResult.workingDirectory).toBe('');
     expect(createResult.toolBundleIds).toEqual([]);
     expect(updateResult.toolBundleIds).toEqual([]);
   });

@@ -212,6 +212,7 @@ export class QingShuManagedCatalogService {
         systemPrompt: agent.systemPrompt?.trim() || '',
         identity: agent.identity?.trim() || '',
         model: '',
+        workingDirectory: '',
         icon: '🦞',
         skillIds: mergedSkillIds,
         toolBundleIds: [] as string[],

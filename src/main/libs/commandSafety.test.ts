@@ -63,6 +63,10 @@ describe('commandSafety', () => {
       level: 'destructive',
       reason: 'git-force-push',
     });
+    expect(getCommandDangerLevel('git push --force-with-lease origin main')).toEqual({
+      level: 'destructive',
+      reason: 'git-force-push',
+    });
     expect(getCommandDangerLevel('git push -f origin feat/fix')).toEqual({
       level: 'destructive',
       reason: 'git-force-push',

@@ -13,9 +13,14 @@ const normalizeDraftText = (value: string | undefined): string => (value ?? '').
 const normalizeSelection = <T>(value: readonly T[] | undefined): readonly T[] => (
   value ?? ([] as readonly T[])
 );
-const normalizeBindingSet = <T>(value: Iterable<T> | undefined): Set<T> => (
-  value ? new Set(value) : new Set<T>()
-);
+const normalizeBindingSet = (value: Iterable<string> | undefined): Set<string> => {
+  if (!value) return new Set<string>();
+  return new Set(
+    [...value]
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+};
 
 export const hasOrderedSelectionChanges = <T>(
   current: readonly T[] | undefined,
@@ -29,9 +34,9 @@ export const hasOrderedSelectionChanges = <T>(
   );
 };
 
-export const hasBindingSelectionChanges = <T>(
-  current: Iterable<T> | undefined,
-  initial: Iterable<T> | undefined,
+export const hasBindingSelectionChanges = (
+  current: Iterable<string> | undefined,
+  initial: Iterable<string> | undefined,
 ): boolean => {
   const nextCurrent = normalizeBindingSet(current);
   const nextInitial = normalizeBindingSet(initial);

@@ -21,6 +21,39 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+function getNormalizedPatchTempPath(patchFile, options = {}) {
+  const tmpDir = options.tmpDir || os.tmpdir();
+  const pid = options.pid || process.pid;
+  const safePatchFile = path.basename(patchFile);
+  return path.join(tmpDir, `lobsterai-patch-${pid}-${safePatchFile}`);
+}
+
+function preparePatchForGitApply(originalPatchPath, patchFile, options = {}) {
+  const rawPatch = fs.readFileSync(originalPatchPath, 'utf8');
+  const needsNormalize = rawPatch.includes('\r');
+  if (!needsNormalize) {
+    return {
+      needsNormalize,
+      patchPath: originalPatchPath,
+    };
+  }
+
+  const patchPath = getNormalizedPatchTempPath(patchFile, options);
+  fs.writeFileSync(patchPath, rawPatch.replace(/\r/g, ''), 'utf8');
+  return {
+    needsNormalize,
+    patchPath,
+  };
+}
+
+if (process.env.APPLY_OPENCLAW_PATCHES_TEST_MODE === '1') {
+  module.exports = {
+    getNormalizedPatchTempPath,
+    preparePatchForGitApply,
+  };
+  return;
+}
+
 const rootDir = path.resolve(__dirname, '..');
 const openclawSrc = process.argv[2]
   ? path.resolve(process.argv[2])
@@ -83,13 +116,7 @@ for (const patchFile of patchFiles) {
 
   // Normalize line endings: strip \r so CRLF-checked-out patches do not make
   // `git apply` report "corrupt patch" on Windows.
-  const rawPatch = fs.readFileSync(originalPatchPath, 'utf8');
-  const needsNormalize = rawPatch.includes('\r');
-  let patchPath = originalPatchPath;
-  if (needsNormalize) {
-    patchPath = path.join(os.tmpdir(), `lobsterai-patch-${process.pid}-${patchFile}`);
-    fs.writeFileSync(patchPath, rawPatch.replace(/\r/g, ''), 'utf8');
-  }
+  const { needsNormalize, patchPath } = preparePatchForGitApply(originalPatchPath, patchFile);
 
   try {
     // Check if patch is already applied.

@@ -11,7 +11,7 @@ const OSASCRIPT_DELETE_RE = /\bosascript\b[\s\S]*\bdelete\b/i;
 
 // Destructive patterns (high severity)
 const RM_RECURSIVE_RE = /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f?|--recursive)\b/i;
-const GIT_PUSH_FORCE_RE = /\bgit\s+push\s+.*(?:--force|-f)\b/i;
+const GIT_PUSH_FORCE_RE = /\bgit\s+push\s+.*(?:--force(?:-with-lease)?|-f)\b/i;
 const GIT_RESET_HARD_RE = /\bgit\s+reset\s+--hard\b/i;
 const DD_COMMAND_RE = /\bdd\b/i;
 const MKFS_COMMAND_RE = /\bmkfs\b/i;

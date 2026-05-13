@@ -7,7 +7,7 @@ import { IMCoworkHandler } from './imCoworkHandler';
 class FakeRuntime extends EventEmitter {
   public readonly startCalls: Array<{ sessionId: string; prompt: string }> = [];
   public readonly stoppedSessionIds: string[] = [];
-  private firstStartShouldFail = true;
+  public firstStartShouldFail = false;
 
   async startSession(sessionId: string, prompt: string): Promise<void> {
     this.startCalls.push({ sessionId, prompt });
@@ -111,14 +111,18 @@ class FakeIMStore {
     imConversationId: string;
     platform: string;
     coworkSessionId: string;
+    agentId: string;
+    openClawSessionKey?: string;
     createdAt: number;
     lastActiveAt: number;
   }> = [];
 
+  constructor(private readonly platformAgentBindings: Record<string, string> = {}) {}
+
   getIMSettings() {
     return {
       skillsEnabled: false,
-      platformAgentBindings: {},
+      platformAgentBindings: this.platformAgentBindings,
     };
   }
 
@@ -136,11 +140,19 @@ class FakeIMStore {
     return this.mappings.find((entry) => entry.coworkSessionId === coworkSessionId) ?? null;
   }
 
-  createSessionMapping(imConversationId: string, platform: string, coworkSessionId: string) {
+  createSessionMapping(
+    imConversationId: string,
+    platform: string,
+    coworkSessionId: string,
+    agentId: string = 'main',
+    openClawSessionKey: string = '',
+  ) {
     const mapping = {
       imConversationId,
       platform,
       coworkSessionId,
+      agentId,
+      ...(openClawSessionKey ? { openClawSessionKey } : {}),
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
     };
@@ -164,6 +176,7 @@ class FakeIMStore {
 
 test('payload too large 400 from IM cowork retries with a fresh session', async () => {
   const runtime = new FakeRuntime();
+  runtime.firstStartShouldFail = true;
   const coworkStore = new FakeCoworkStore();
   const imStore = new FakeIMStore();
 
@@ -188,6 +201,35 @@ test('payload too large 400 from IM cowork retries with a fresh session', async 
   expect(runtime.startCalls.map((item) => item.sessionId)).toEqual(['session-1', 'session-2']);
   expect(runtime.stoppedSessionIds).toEqual(['session-1']);
   expect(imStore.getSessionMapping('conv-1', 'nim')?.coworkSessionId).toBe('session-2');
+
+  handler.destroy();
+});
+
+test('native IM cowork mapping stores the platform-bound agent id', async () => {
+  const runtime = new FakeRuntime();
+  const coworkStore = new FakeCoworkStore();
+  const imStore = new FakeIMStore({ nim: 'qingshu-nim-agent' });
+
+  const handler = new IMCoworkHandler({
+    coworkRuntime: runtime,
+    coworkStore: coworkStore as never,
+    imStore: imStore as never,
+  });
+
+  await handler.processMessage({
+    platform: 'nim',
+    messageId: 'im-msg-agent',
+    conversationId: 'conv-agent',
+    senderId: 'user-1',
+    senderName: 'Tester',
+    content: '请处理这条消息',
+    chatType: 'direct',
+    timestamp: Date.now(),
+  });
+
+  const mapping = imStore.getSessionMapping('conv-agent', 'nim');
+  expect(mapping?.agentId).toBe('qingshu-nim-agent');
+  expect(coworkStore.getSession(mapping!.coworkSessionId)?.agentId).toBe('qingshu-nim-agent');
 
   handler.destroy();
 });

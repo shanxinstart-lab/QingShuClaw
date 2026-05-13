@@ -1,5 +1,23 @@
 import { BrowserWindow } from 'electron';
+
+import { parseChannelSessionKey } from '../main/libs/openclawChannelSessionSync';
+import { PlatformRegistry } from '../shared/platform';
 import type {
+  DeliveryMode as DeliveryModeType,
+  GatewayStatus as GatewayStatusType,
+  SessionTarget as SessionTargetType,
+  WakeMode as WakeModeType,
+} from './constants';
+import {
+  DeliveryMode,
+  GatewayStatus,
+  IpcChannel,
+  PayloadKind,
+  ScheduleKind,
+  TaskStatus,
+} from './constants';
+import type {
+  RunFilter,
   Schedule,
   ScheduledTask,
   ScheduledTaskDelivery,
@@ -9,24 +27,6 @@ import type {
   ScheduledTaskRunWithName,
   TaskState,
 } from './types';
-import { parseChannelSessionKey } from '../main/libs/openclawChannelSessionSync';
-import { PlatformRegistry } from '../shared/platform';
-import {
-  ScheduleKind,
-  PayloadKind,
-  DeliveryMode,
-  SessionTarget,
-  WakeMode,
-  TaskStatus,
-  GatewayStatus,
-  IpcChannel,
-} from './constants';
-import type {
-  SessionTarget as SessionTargetType,
-  WakeMode as WakeModeType,
-  DeliveryMode as DeliveryModeType,
-  GatewayStatus as GatewayStatusType,
-} from './constants';
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -235,21 +235,17 @@ function toGatewayPayload(payload: ScheduledTaskPayload): GatewayPayload {
 }
 
 function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | undefined {
-  console.log('[CronJobService][toGatewayDelivery] input delivery:', JSON.stringify(delivery, null, 2));
   if (!delivery) {
-    console.log('[CronJobService][toGatewayDelivery] no delivery, returning undefined');
     return undefined;
   }
   if (delivery.mode === DeliveryMode.None) {
     // Preserve channel/to even with mode='none' so IM notification target round-trips
     // through the gateway for the edit form to display.
-    const result: GatewayDelivery = {
+    return {
       mode: DeliveryMode.None,
       ...(delivery.channel ? { channel: delivery.channel } : {}),
       ...(delivery.to ? { to: delivery.to } : {}),
     } as GatewayDelivery;
-    console.log('[CronJobService][toGatewayDelivery] mode=none with preserved channel/to:', JSON.stringify(result));
-    return result;
   }
 
   // Translate logical UI channel names to OpenClaw channel names.
@@ -261,7 +257,7 @@ function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | 
       })()
     : undefined;
 
-  const result: GatewayDelivery = {
+  return {
     mode: delivery.mode,
     ...(openclawChannel ? { channel: openclawChannel } : {}),
     ...(delivery.to ? { to: delivery.to } : {}),
@@ -270,8 +266,6 @@ function toGatewayDelivery(delivery?: ScheduledTaskDelivery): GatewayDelivery | 
       ? { bestEffort: delivery.bestEffort }
       : {}),
   };
-  console.log('[CronJobService][toGatewayDelivery] output gatewayDelivery:', JSON.stringify(result, null, 2));
-  return result;
 }
 
 export function mapGatewayTaskState(
@@ -451,18 +445,8 @@ export class CronJobService {
   }
 
   async addJob(input: ScheduledTaskInput): Promise<ScheduledTask> {
-    console.log('[CronJobService][addJob] full input:', JSON.stringify(input, null, 2));
-    console.log('[CronJobService][addJob] delivery details:', JSON.stringify({
-      deliveryMode: input.delivery?.mode,
-      deliveryChannel: input.delivery?.channel,
-      deliveryTo: input.delivery?.to,
-      deliveryAccountId: input.delivery?.accountId,
-      sessionTarget: input.sessionTarget,
-      sessionKey: input.sessionKey,
-    }, null, 2));
     const client = await this.client();
     const gatewayDelivery = toGatewayDelivery(input.delivery);
-    console.log('[CronJobService][addJob] resolved gatewayDelivery:', JSON.stringify(gatewayDelivery));
     const job = await client.request<GatewayJob>('cron.add', {
       name: input.name,
       description: input.description || undefined,
@@ -477,20 +461,10 @@ export class CronJobService {
     });
     const mapped = mapGatewayJob(job);
     this.jobNameCache.set(mapped.id, mapped.name);
-    console.log('[CronJobService][addJob] created job id:', mapped.id, 'name:', mapped.name);
     return mapped;
   }
 
   async updateJob(id: string, input: Partial<ScheduledTaskInput>): Promise<ScheduledTask> {
-    console.log('[CronJobService][updateJob] id:', id, 'input:', JSON.stringify(input, null, 2));
-    console.log('[CronJobService][updateJob] delivery details:', JSON.stringify({
-      deliveryMode: input.delivery?.mode,
-      deliveryChannel: input.delivery?.channel,
-      deliveryTo: input.delivery?.to,
-      deliveryAccountId: input.delivery?.accountId,
-      sessionTarget: input.sessionTarget,
-      sessionKey: input.sessionKey,
-    }, null, 2));
     const client = await this.client();
     const patch: Record<string, unknown> = {};
 
@@ -507,10 +481,8 @@ export class CronJobService {
     if (input.agentId !== undefined) patch.agentId = input.agentId?.trim() || null;
     if (input.sessionKey !== undefined) patch.sessionKey = input.sessionKey?.trim() || null;
 
-    console.log('[CronJobService][updateJob] final patch:', JSON.stringify(patch, null, 2));
     const job = await client.request<GatewayJob>('cron.update', { id, patch });
     const mapped = mapGatewayJob(job);
-    console.log('[CronJobService][updateJob] updated job id:', mapped.id, 'name:', mapped.name);
     return mapped;
   }
 
@@ -560,7 +532,7 @@ export class CronJobService {
     await client.request('cron.run', { id });
   }
 
-  async listRuns(jobId: string, limit = 20, offset = 0): Promise<ScheduledTaskRun[]> {
+  async listRuns(jobId: string, limit = 20, offset = 0, filter?: RunFilter): Promise<ScheduledTaskRun[]> {
     const client = await this.client();
     const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {
       scope: 'job',
@@ -568,6 +540,9 @@ export class CronJobService {
       limit,
       offset,
       sortDir: 'desc',
+      ...(filter?.startDate && { startMs: new Date(`${filter.startDate}T00:00:00`).getTime() }),
+      ...(filter?.endDate && { endMs: new Date(`${filter.endDate}T23:59:59`).getTime() }),
+      ...(filter?.status && { status: filter.status }),
     });
     return Array.isArray(result.entries) ? result.entries.map(mapGatewayRun) : [];
   }
@@ -582,13 +557,16 @@ export class CronJobService {
     return typeof result.total === 'number' ? result.total : 0;
   }
 
-  async listAllRuns(limit = 20, offset = 0): Promise<ScheduledTaskRunWithName[]> {
+  async listAllRuns(limit = 20, offset = 0, filter?: RunFilter): Promise<ScheduledTaskRunWithName[]> {
     const client = await this.client();
     const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {
       scope: 'all',
       limit,
       offset,
       sortDir: 'desc',
+      ...(filter?.startDate && { startMs: new Date(`${filter.startDate}T00:00:00`).getTime() }),
+      ...(filter?.endDate && { endMs: new Date(`${filter.endDate}T23:59:59`).getTime() }),
+      ...(filter?.status && { status: filter.status }),
     });
     if (!Array.isArray(result.entries) || result.entries.length === 0) return [];
 

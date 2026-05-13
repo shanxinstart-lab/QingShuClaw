@@ -54,8 +54,17 @@ describe('ProviderRegistry', () => {
   });
 
   test('includes latest public default model metadata', () => {
+    expect(ProviderRegistry.get(ProviderName.Qwen)?.defaultModels[0]).toMatchObject({
+      id: 'qwen3.6-plus',
+      supportsImage: true,
+    });
+    expect(ProviderRegistry.get(ProviderName.Volcengine)?.defaultModels[0]).toMatchObject({
+      id: 'doubao-seed-2-0-pro-260215',
+      supportsImage: true,
+    });
     expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.DeepSeek, 'deepseek-v4-flash', true)).toBe(false);
     expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Moonshot, 'kimi-k2.6', false)).toBe(true);
+    expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Volcengine, 'ark-code-latest', false)).toBe(true);
     expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Xiaomi, 'mimo-v2.5', false)).toBe(true);
     expect(ProviderRegistry.resolveModelSupportsImage(ProviderName.Xiaomi, 'mimo-v2.5-pro', true)).toBe(false);
   });
@@ -124,6 +133,14 @@ describe('ProviderRegistry', () => {
     for (const id of ProviderRegistry.providerIds) {
       const def = ProviderRegistry.get(id)!;
       expect(def.defaultBaseUrl.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('every definition has required UI label and OpenClaw provider id', () => {
+    for (const id of ProviderRegistry.providerIds) {
+      const def = ProviderRegistry.get(id)!;
+      expect(def.label.trim().length).toBeGreaterThan(0);
+      expect(def.openClawProviderId.trim().length).toBeGreaterThan(0);
     }
   });
 
@@ -196,6 +213,18 @@ describe('ProviderRegistry', () => {
 
     test('falls back to provider name for unknown ids', () => {
       expect(ProviderRegistry.getOpenClawProviderId('custom_unknown')).toBe('custom_unknown');
+    });
+
+    test('uses canonical OpenClaw provider ids for public providers', () => {
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.Gemini)).toBe('google');
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.Copilot)).toBe('lobsterai-copilot');
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.OpenAI)).toBe('openai');
+      expect(ProviderRegistry.getOpenClawProviderId(ProviderName.OpenRouter)).toBe('openrouter');
+    });
+
+    test('trims provider ids before resolving OpenClaw provider mappings', () => {
+      expect(ProviderRegistry.getOpenClawProviderId(` ${ProviderName.Qwen} `)).toBe('qwen-portal');
+      expect(ProviderRegistry.getOpenClawProviderId(' custom_unknown ')).toBe('custom_unknown');
     });
 
     test('falls back to lobster for empty provider ids', () => {

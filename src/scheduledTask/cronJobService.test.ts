@@ -1,6 +1,7 @@
-import { test, expect, describe, vi } from 'vitest';
-import { CronJobService, mapGatewayJob, mapGatewayRun, mapGatewayTaskState } from './cronJobService';
+import { describe, expect, test, vi } from 'vitest';
+
 import { DeliveryChannel, DeliveryMode, GatewayStatus, PayloadKind, ScheduleKind, SessionTarget, TaskStatus, WakeMode } from './constants';
+import { CronJobService, mapGatewayJob, mapGatewayRun, mapGatewayTaskState } from './cronJobService';
 
 describe('mapGatewayRun', () => {
   const baseEntry = {
@@ -223,5 +224,146 @@ describe('CronJobService polling', () => {
     service.stopPolling();
 
     expect(ensureGatewayReady).not.toHaveBeenCalled();
+  });
+});
+
+describe('CronJobService run history filters', () => {
+  test('passes date and status filters to job run history requests', async () => {
+    const request = vi.fn(async () => ({ entries: [] }));
+    const service = new CronJobService({
+      getGatewayClient: () => ({ request }),
+      ensureGatewayReady: vi.fn(async () => {}),
+    });
+
+    await service.listRuns('job-1', 25, 50, {
+      startDate: '2026-05-01',
+      endDate: '2026-05-11',
+      status: TaskStatus.Success,
+    });
+
+    expect(request).toHaveBeenCalledWith('cron.runs', {
+      scope: 'job',
+      id: 'job-1',
+      limit: 25,
+      offset: 50,
+      sortDir: 'desc',
+      startMs: new Date('2026-05-01T00:00:00').getTime(),
+      endMs: new Date('2026-05-11T23:59:59').getTime(),
+      status: TaskStatus.Success,
+    });
+  });
+
+  test('passes date and status filters to all run history requests', async () => {
+    const request = vi.fn(async () => ({ entries: [] }));
+    const service = new CronJobService({
+      getGatewayClient: () => ({ request }),
+      ensureGatewayReady: vi.fn(async () => {}),
+    });
+
+    await service.listAllRuns(10, 20, {
+      startDate: '2026-05-03',
+      endDate: '2026-05-04',
+      status: TaskStatus.Error,
+    });
+
+    expect(request).toHaveBeenCalledWith('cron.runs', {
+      scope: 'all',
+      limit: 10,
+      offset: 20,
+      sortDir: 'desc',
+      startMs: new Date('2026-05-03T00:00:00').getTime(),
+      endMs: new Date('2026-05-04T23:59:59').getTime(),
+      status: TaskStatus.Error,
+    });
+  });
+});
+
+describe('CronJobService gateway delivery', () => {
+  const makeGatewayJob = (overrides: Partial<Parameters<typeof mapGatewayJob>[0]> = {}) => ({
+    id: 'job-1',
+    name: 'Notify IM',
+    description: '',
+    enabled: true,
+    schedule: { kind: ScheduleKind.Cron, expr: '0 9 * * *' },
+    sessionTarget: SessionTarget.Isolated,
+    wakeMode: WakeMode.NextHeartbeat,
+    payload: {
+      kind: PayloadKind.AgentTurn,
+      message: 'Send a summary',
+    },
+    delivery: {
+      mode: DeliveryMode.Announce,
+      channel: 'dingtalk',
+      to: 'conversation-1',
+      accountId: 'dingtalk',
+    },
+    agentId: 'main',
+    sessionKey: null,
+    state: {},
+    createdAtMs: 1700000000000,
+    updatedAtMs: 1700000000000,
+    ...overrides,
+  } as Parameters<typeof mapGatewayJob>[0]);
+
+  test('passes multi-instance accountId when adding an announce task', async () => {
+    const request = vi.fn(async () => makeGatewayJob());
+    const service = new CronJobService({
+      getGatewayClient: () => ({ request }),
+      ensureGatewayReady: vi.fn(async () => {}),
+    });
+
+    await service.addJob({
+      name: 'Notify IM',
+      description: '',
+      enabled: true,
+      schedule: { kind: ScheduleKind.Cron, expr: '0 9 * * *' },
+      sessionTarget: SessionTarget.Isolated,
+      wakeMode: WakeMode.NextHeartbeat,
+      payload: { kind: PayloadKind.AgentTurn, message: 'Send a summary' },
+      delivery: {
+        mode: DeliveryMode.Announce,
+        channel: 'dingtalk',
+        to: 'conversation-1',
+        accountId: 'dingtalk',
+      },
+    });
+
+    expect(request).toHaveBeenCalledWith('cron.add', expect.objectContaining({
+      delivery: {
+        mode: DeliveryMode.Announce,
+        channel: 'dingtalk',
+        to: 'conversation-1',
+        accountId: 'dingtalk',
+      },
+    }));
+  });
+
+  test('passes multi-instance accountId when updating an announce task', async () => {
+    const request = vi.fn(async () => makeGatewayJob());
+    const service = new CronJobService({
+      getGatewayClient: () => ({ request }),
+      ensureGatewayReady: vi.fn(async () => {}),
+    });
+
+    await service.updateJob('job-1', {
+      delivery: {
+        mode: DeliveryMode.Announce,
+        channel: 'feishu',
+        to: 'conversation-2',
+        accountId: 'feishu-a',
+      },
+    });
+
+    expect(request).toHaveBeenCalledWith('cron.update', {
+      id: 'job-1',
+      patch: {
+        delivery: {
+          mode: DeliveryMode.Announce,
+          channel: 'feishu',
+          to: 'conversation-2',
+          accountId: 'feishu-a',
+        },
+      },
+    });
   });
 });

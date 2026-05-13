@@ -22,12 +22,12 @@ import {
   updateCurrentSessionModelOverride,
 } from '../../store/slices/coworkSlice';
 import type { Model } from '../../store/slices/modelSlice';
-import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
+import { setActiveSkillIds, setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
+import type { LocalizedQuickAction } from '../../types/quickAction';
 import { Skill } from '../../types/skill';
 import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { getCompactFolderName } from '../../utils/path';
-import AttachmentCard from './AttachmentCard';
 import PaperClipIcon from '../icons/PaperClipIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import ModelSelector from '../ModelSelector';
@@ -36,9 +36,15 @@ import {
   WakeActivationOverlayPhase,
   type WakeActivationOverlayStateChange,
 } from '../wakeActivationOverlayHelpers';
-import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
 import { resolveAgentModelSelection, resolveEffectiveModel, shouldRepairAgentModelAfterSessionModelChange } from './agentModelSelection';
+import AttachmentCard from './AttachmentCard';
+import { buildSpeechDraftText, resolveSpeechVoiceCommand, SpeechVoiceCommandAction } from './coworkSpeechText';
 import FolderSelectorPopover from './FolderSelectorPopover';
+import {
+  addPromptInputHistoryEntry,
+  canNavigatePromptInputHistory,
+} from './promptInputHistory';
+import { applyPromptSlashCommand, filterPromptSlashCommands, type PromptSlashCommandMatch } from './promptSlashCommands';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -46,6 +52,8 @@ type CoworkAttachment = DraftAttachment;
 
 const INPUT_FILE_LABEL = '输入文件';
 const EMPTY_ATTACHMENTS: CoworkAttachment[] = [];
+const EMPTY_PROMPT_HISTORY: string[] = [];
+const EMPTY_SLASH_COMMAND_MATCHES: PromptSlashCommandMatch[] = [];
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
 
@@ -59,6 +67,41 @@ const isImagePath = (filePath: string): boolean => {
 const isImageMimeType = (mimeType: string): boolean => {
   return mimeType.startsWith('image/');
 };
+
+const SlashCommandMenu: React.FC<{
+  matches: PromptSlashCommandMatch[];
+  onSelect: (match: PromptSlashCommandMatch) => void;
+}> = ({ matches, onSelect }) => (
+  <div className="absolute bottom-full left-3 right-3 z-30 mb-2 overflow-hidden rounded-xl border border-border bg-surface shadow-popover">
+    <div className="border-b border-border px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-secondary">
+      Slash commands
+    </div>
+    <div className="max-h-64 overflow-y-auto py-1">
+      {matches.map((match) => (
+        <button
+          key={match.action.id}
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => onSelect(match)}
+          className="flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-raised"
+        >
+          <span className="mt-0.5 rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
+            /
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-foreground">
+              {match.action.label}
+            </span>
+            <span className="mt-0.5 block truncate text-xs text-secondary">
+              {match.prompt.label}
+              {match.prompt.description ? ` · ${match.prompt.description}` : ''}
+            </span>
+          </span>
+        </button>
+      ))}
+    </div>
+  </div>
+);
 
 const extractBase64FromDataUrl = (dataUrl: string): { mimeType: string; base64Data: string } | null => {
   const match = /^data:(.+);base64,(.*)$/.exec(dataUrl);
@@ -162,6 +205,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [speechVisible, setSpeechVisible] = useState(window.electron.platform === 'darwin');
     const [speechCommandNonce, setSpeechCommandNonce] = useState(0);
     const [isPatchingModel, setIsPatchingModel] = useState(false);
+    const [promptHistory, setPromptHistory] = useState<string[]>(EMPTY_PROMPT_HISTORY);
+    const [promptHistoryIndex, setPromptHistoryIndex] = useState(-1);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const folderButtonRef = useRef<HTMLButtonElement>(null);
@@ -175,6 +220,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const pendingWakeDictationStartRef = useRef<WakeDictationCommandConfig | null>(null);
     const activeWakeOverlayRef = useRef(false);
     const modelPatchRequestIdRef = useRef(0);
+    const promptHistoryDraftRef = useRef('');
 
     const isLarge = size === 'large';
     const minHeight = isLarge ? 44 : 24;
@@ -212,6 +258,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const quickActions = useSelector((state: RootState) => state.quickAction.actions) as LocalizedQuickAction[];
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const agents = useSelector((state: RootState) => state.agent.agents);
   const coworkAgentEngine = useSelector((state: RootState) => state.cowork.config.agentEngine);
@@ -715,6 +762,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
     armWakeFollowUpDictation(getFollowUpDictationConfig(wakeConfigOverride ?? wakeDictationConfigRef.current));
     hideWakeActivationOverlay();
+    if (trimmedValue) {
+      setPromptHistory((history) => addPromptInputHistoryEntry(history, trimmedValue));
+    }
+    setPromptHistoryIndex(-1);
+    promptHistoryDraftRef.current = '';
     setValue('');
     speechBaseValueRef.current = '';
     pendingSpeechVoiceCommandRef.current = null;
@@ -815,6 +867,33 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [onManageSkills]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+      && !event.nativeEvent.isComposing
+      && !event.shiftKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && !event.altKey
+      && promptHistory.length > 0
+      && canNavigatePromptInputHistory(event.currentTarget, value)
+    ) {
+      const currentIndex = promptHistoryIndex;
+      const nextIndex = event.key === 'ArrowUp'
+        ? Math.min(currentIndex + 1, promptHistory.length - 1)
+        : currentIndex <= 0
+          ? -1
+          : currentIndex - 1;
+      if (nextIndex !== currentIndex) {
+        event.preventDefault();
+        if (currentIndex === -1) {
+          promptHistoryDraftRef.current = value;
+        }
+        setPromptHistoryIndex(nextIndex);
+        setValue(nextIndex === -1 ? promptHistoryDraftRef.current : promptHistory[nextIndex]);
+      }
+      return;
+    }
+
     // Enter to submit, any modifier+Enter (Shift/Ctrl/Cmd/Alt) for new line
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
     if (event.key === 'Enter' && !isComposing) {
@@ -857,6 +936,23 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   };
 
   const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
+  const slashCommandMatches = !remoteManaged && !isSpeechActive
+    ? filterPromptSlashCommands(quickActions, value)
+    : EMPTY_SLASH_COMMAND_MATCHES;
+  const showSlashCommands = slashCommandMatches.length > 0 && !disabled && !isStreaming;
+
+  const applySlashCommand = useCallback((match: PromptSlashCommandMatch) => {
+    const nextValue = applyPromptSlashCommand(value, match.prompt.prompt);
+    setValue(nextValue);
+    setPromptHistoryIndex(-1);
+    promptHistoryDraftRef.current = '';
+    if (match.action.skillMapping) {
+      dispatch(setActiveSkillIds([match.action.skillMapping]));
+    }
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }, [dispatch, value]);
 
   function extractSpeechErrorReason(message?: string): string | null {
     const normalized = message?.trim();
@@ -1285,6 +1381,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               className={textareaClass}
               style={{ minHeight: `${minHeight}px` }}
             />
+            {showSlashCommands && (
+              <SlashCommandMenu matches={slashCommandMatches} onSelect={applySlashCommand} />
+            )}
             <div className="flex items-center justify-between px-3 pb-3 pt-2">
               <div className="flex items-center gap-3 relative">
                 {showFolderSelector && (
@@ -1459,6 +1558,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               rows={1}
               className={textareaClass}
             />
+            {showSlashCommands && (
+              <SlashCommandMenu matches={slashCommandMatches} onSelect={applySlashCommand} />
+            )}
 
             {!remoteManaged && (
               <div className="flex items-center gap-1">

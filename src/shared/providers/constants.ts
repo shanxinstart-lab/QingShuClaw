@@ -107,7 +107,7 @@ interface ProviderDefInput {
   /** Provider identifier (e.g. 'openai', 'moonshot') */
   readonly id: string;
   /** Human-readable display name shown in UI */
-  readonly label?: string;
+  readonly label: string;
   /** Provider console / product website URL */
   readonly website?: string;
   /** API key creation page URL */
@@ -161,8 +161,8 @@ interface ProviderDefInput {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
-  /** OpenClaw provider ID override when it differs from provider id */
-  readonly openClawProviderId?: OpenClawProviderId;
+  /** OpenClaw gateway provider ID used when building runtime model refs */
+  readonly openClawProviderId: OpenClawProviderId;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -537,7 +537,7 @@ export interface ProviderDef {
   /** Provider identifier (e.g. 'openai', 'moonshot') */
   readonly id: string;
   /** Human-readable display name shown in UI */
-  readonly label?: string;
+  readonly label: string;
   /** Provider console / product website URL */
   readonly website?: string;
   /** API key creation page URL */
@@ -576,8 +576,8 @@ export interface ProviderDef {
     readonly name: string;
     readonly supportsImage: boolean;
   }[];
-  /** OpenClaw provider ID override when it differs from provider id */
-  readonly openClawProviderId?: OpenClawProviderId;
+  /** OpenClaw gateway provider ID used when building runtime model refs */
+  readonly openClawProviderId: OpenClawProviderId;
 }
 
 // ═══════════════════════════════════════════════════════

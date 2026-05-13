@@ -1,8 +1,9 @@
-import { test, expect, describe } from 'vitest';
+import { describe,expect, test } from 'vitest';
+
 import {
-  ProviderName,
-  OpenClawProviderId,
   OpenClawApi,
+  OpenClawProviderId,
+  ProviderName,
 } from '../../shared/providers';
 
 const providerApiKeyEnvVar = (providerName: string): string => {
@@ -94,7 +95,12 @@ describe('env var stability on model switch', () => {
 // the registry mapping correctness.
 // ═══════════════════════════════════════════════════════
 
-type OpenClawProviderApi = 'anthropic-messages' | 'openai-completions' | 'openai-responses' | 'google-generative-ai';
+type OpenClawProviderApi =
+  | 'anthropic-messages'
+  | 'openai-completions'
+  | 'openai-responses'
+  | 'openai-codex-responses'
+  | 'google-generative-ai';
 
 const mapApiTypeToOpenClawApi = (
   apiType: 'anthropic' | 'openai' | undefined,
@@ -164,6 +170,11 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     providerId: OpenClawProviderId.OpenAI,
     resolveApi: () => OpenClawApi.OpenAICompletions as OpenClawProviderApi,
     normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
+  [`${ProviderName.OpenAI}:oauth`]: {
+    providerId: OpenClawProviderId.OpenAICodex,
+    resolveApi: () => OpenClawApi.OpenAICodexResponses as OpenClawProviderApi,
+    normalizeBaseUrl: () => 'https://chatgpt.com/backend-api/codex',
   },
   [ProviderName.DeepSeek]: {
     providerId: OpenClawProviderId.DeepSeek,
@@ -236,7 +247,11 @@ const DEFAULT_DESCRIPTOR: ProviderDescriptor = {
 const resolveDescriptor = (
   providerName: string,
   codingPlanEnabled: boolean,
+  authType?: 'apikey' | 'oauth',
 ): ProviderDescriptor => {
+  if (providerName === ProviderName.OpenAI && authType === 'oauth') {
+    return PROVIDER_REGISTRY[`${ProviderName.OpenAI}:oauth`];
+  }
   if (codingPlanEnabled) {
     const compositeKey = `${providerName}:codingPlan`;
     if (compositeKey in PROVIDER_REGISTRY) {
@@ -268,6 +283,13 @@ describe('resolveDescriptor', () => {
   test('openai maps to openai providerId', () => {
     const d = resolveDescriptor(ProviderName.OpenAI, false);
     expect(d.providerId).toBe(OpenClawProviderId.OpenAI);
+  });
+
+  test('openai oauth maps to openai-codex providerId', () => {
+    const d = resolveDescriptor(ProviderName.OpenAI, false, 'oauth');
+    expect(d.providerId).toBe(OpenClawProviderId.OpenAICodex);
+    expect(d.resolveApi({ apiType: 'openai', baseURL: '' })).toBe(OpenClawApi.OpenAICodexResponses);
+    expect(d.normalizeBaseUrl('https://api.openai.com/v1')).toBe('https://chatgpt.com/backend-api/codex');
   });
 
   test('moonshot without codingPlan uses moonshot providerId', () => {

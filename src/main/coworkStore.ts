@@ -3,7 +3,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { Database } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 
 import type { Platform } from '../shared/platform';
@@ -318,6 +318,10 @@ function parseTimeToMs(input?: string | null): number | null {
   return timestamp;
 }
 
+function normalizeMessageTimestamp(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
 function shouldAutoDeleteMemoryText(text: string): boolean {
   const normalized = normalizeMemoryText(text);
   if (!normalized) return false;
@@ -341,6 +345,7 @@ export interface Agent {
   systemPrompt: string;
   identity: string;
   model: string;
+  workingDirectory: string;
   icon: string;
   skillIds: string[];
   toolBundleIds: string[];
@@ -367,6 +372,7 @@ export interface CreateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  workingDirectory?: string;
   icon?: string;
   skillIds?: string[];
   toolBundleIds?: string[];
@@ -380,6 +386,7 @@ export interface UpdateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  workingDirectory?: string;
   icon?: string;
   skillIds?: string[];
   toolBundleIds?: string[];
@@ -406,6 +413,13 @@ export interface CoworkMessageMetadata {
   isFinal?: boolean;
   skillIds?: string[];
   [key: string]: unknown;
+}
+
+export interface CoworkConversationReplacementEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  metadata?: CoworkMessageMetadata;
+  timestamp?: number;
 }
 
 export interface CoworkMessage {
@@ -608,37 +622,27 @@ const parseJsonStringArray = (value?: string | null): string[] => {
 };
 
 export class CoworkStore {
-  private db: Database;
+  private db: Database.Database;
   private saveDb: () => void;
+  private lastChanges = 0;
 
-  constructor(db: Database, saveDb: () => void) {
+  constructor(db: Database.Database, saveDb: () => void) {
     this.db = db;
     this.saveDb = saveDb;
   }
 
   private getOne<T>(sql: string, params: (string | number | null)[] = []): T | undefined {
-    const result = this.db.exec(sql, params);
-    if (!result[0]?.values[0]) return undefined;
-    const columns = result[0].columns;
-    const values = result[0].values[0];
-    const row: Record<string, unknown> = {};
-    columns.forEach((col, i) => {
-      row[col] = values[i];
-    });
-    return row as T;
+    return this.db.prepare(sql).get(...params) as T | undefined;
   }
 
   private getAll<T>(sql: string, params: (string | number | null)[] = []): T[] {
-    const result = this.db.exec(sql, params);
-    if (!result[0]?.values) return [];
-    const columns = result[0].columns;
-    return result[0].values.map((values) => {
-      const row: Record<string, unknown> = {};
-      columns.forEach((col, i) => {
-        row[col] = values[i];
-      });
-      return row as T;
-    });
+    return this.db.prepare(sql).all(...params) as T[];
+  }
+
+  private run(sql: string, params: (string | number | null)[] = []): number {
+    const result = this.db.prepare(sql).run(...params);
+    this.lastChanges = result.changes;
+    return result.changes;
   }
 
   createSession(
@@ -653,7 +657,7 @@ export class CoworkStore {
     const id = uuidv4();
     const now = Date.now();
 
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
       VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `, [id, title, cwd, systemPrompt, modelOverride, executionMode, JSON.stringify(activeSkillIds), agentId, now, now]);
@@ -771,7 +775,7 @@ export class CoworkStore {
     }
 
     values.push(id);
-    this.db.run(`
+    this.run(`
       UPDATE cowork_sessions
       SET ${setClauses.join(', ')}
       WHERE id = ?
@@ -782,7 +786,7 @@ export class CoworkStore {
 
   deleteSession(id: string): void {
     this.markMemorySourcesInactiveBySession(id);
-    this.db.run('DELETE FROM cowork_sessions WHERE id = ?', [id]);
+    this.run('DELETE FROM cowork_sessions WHERE id = ?', [id]);
     this.markOrphanImplicitMemoriesStale();
     this.saveDb();
   }
@@ -793,13 +797,13 @@ export class CoworkStore {
       this.markMemorySourcesInactiveBySession(id);
     }
     const placeholders = ids.map(() => '?').join(',');
-    this.db.run(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`, ids);
+    this.run(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`, ids);
     this.markOrphanImplicitMemoriesStale();
     this.saveDb();
   }
 
   setSessionPinned(id: string, pinned: boolean): void {
-    this.db.run('UPDATE cowork_sessions SET pinned = ? WHERE id = ?', [pinned ? 1 : 0, id]);
+    this.run('UPDATE cowork_sessions SET pinned = ? WHERE id = ?', [pinned ? 1 : 0, id]);
     this.saveDb();
   }
 
@@ -855,15 +859,14 @@ export class CoworkStore {
 
   resetRunningSessions(): number {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE cowork_sessions
       SET status = 'idle', updated_at = ?
       WHERE status = 'running'
     `, [now]);
     this.saveDb();
 
-    const changes = this.db.getRowsModified?.();
-    return typeof changes === 'number' ? changes : 0;
+    return this.lastChanges;
   }
 
   listRecentCwds(limit: number = 8): string[] {
@@ -927,18 +930,21 @@ export class CoworkStore {
     });
   }
 
-  addMessage(sessionId: string, message: Omit<CoworkMessage, 'id' | 'timestamp'>): CoworkMessage {
+  addMessage(
+    sessionId: string,
+    message: Omit<CoworkMessage, 'id' | 'timestamp'> & { timestamp?: number },
+  ): CoworkMessage {
     const id = uuidv4();
-    const now = Date.now();
+    const timestamp = normalizeMessageTimestamp(message.timestamp) ?? Date.now();
 
-    const sequenceRow = this.db.exec(`
+    const sequenceRow = this.getOne<{ next_seq: number }>(`
       SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq
       FROM cowork_messages
       WHERE session_id = ?
     `, [sessionId]);
-    const sequence = sequenceRow[0]?.values[0]?.[0] as number || 1;
+    const sequence = Number(sequenceRow?.next_seq) || 1;
 
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `, [
@@ -947,11 +953,11 @@ export class CoworkStore {
       message.type,
       message.content,
       message.metadata ? JSON.stringify(message.metadata) : null,
-      now,
+      timestamp,
       sequence,
     ]);
 
-    this.db.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+    this.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [timestamp, sessionId]);
 
     this.saveDb();
 
@@ -959,7 +965,7 @@ export class CoworkStore {
       id,
       type: message.type,
       content: message.content,
-      timestamp: now,
+      timestamp,
       metadata: message.metadata,
     };
   }
@@ -969,16 +975,20 @@ export class CoworkStore {
    * Used for channel-originated sessions where user messages need to appear
    * before assistant messages that were created during streaming.
    */
-  insertMessageBeforeId(sessionId: string, beforeMessageId: string, message: Omit<CoworkMessage, 'id' | 'timestamp'>): CoworkMessage {
+  insertMessageBeforeId(
+    sessionId: string,
+    beforeMessageId: string,
+    message: Omit<CoworkMessage, 'id' | 'timestamp'> & { timestamp?: number },
+  ): CoworkMessage {
     const id = uuidv4();
-    const now = Date.now();
+    const timestamp = normalizeMessageTimestamp(message.timestamp) ?? Date.now();
 
     // Get the target message's sequence
-    const targetRow = this.db.exec(
+    const targetRow = this.getOne<{ sequence: number | null }>(
       'SELECT sequence FROM cowork_messages WHERE id = ? AND session_id = ?',
       [beforeMessageId, sessionId],
     );
-    const targetSequence = targetRow[0]?.values[0]?.[0] as number | undefined;
+    const targetSequence = typeof targetRow?.sequence === 'number' ? targetRow.sequence : undefined;
 
     if (targetSequence === undefined) {
       // Fallback to normal append if the target message is not found
@@ -986,13 +996,13 @@ export class CoworkStore {
     }
 
     // Shift all messages with sequence >= target up by 1
-    this.db.run(
+    this.run(
       'UPDATE cowork_messages SET sequence = sequence + 1 WHERE session_id = ? AND sequence >= ?',
       [sessionId, targetSequence],
     );
 
     // Insert at the target's original sequence
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `, [
@@ -1001,18 +1011,18 @@ export class CoworkStore {
       message.type,
       message.content,
       message.metadata ? JSON.stringify(message.metadata) : null,
-      now,
+      timestamp,
       targetSequence,
     ]);
 
-    this.db.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+    this.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [timestamp, sessionId]);
     this.saveDb();
 
     return {
       id,
       type: message.type,
       content: message.content,
-      timestamp: now,
+      timestamp,
       metadata: message.metadata,
     };
   }
@@ -1022,11 +1032,11 @@ export class CoworkStore {
    * Used by reconciliation to remove duplicate or spurious messages.
    */
   deleteMessage(sessionId: string, messageId: string): boolean {
-    this.db.run(
+    this.run(
       'DELETE FROM cowork_messages WHERE id = ? AND session_id = ?',
       [messageId, sessionId],
     );
-    const deleted = (this.db.getRowsModified?.() || 0) > 0;
+    const deleted = this.lastChanges > 0;
     if (deleted) {
       this.saveDb();
     }
@@ -1040,27 +1050,58 @@ export class CoworkStore {
    */
   replaceConversationMessages(
     sessionId: string,
-    authoritative: Array<{ role: 'user' | 'assistant'; text: string }>,
+    authoritative: CoworkConversationReplacementEntry[],
   ): void {
     const now = Date.now();
+    const existingRows = this.getAll<{
+      type: string;
+      content: string;
+      created_at: number;
+    }>(
+      `
+      SELECT type, content, created_at
+      FROM cowork_messages
+      WHERE session_id = ? AND type IN ('user', 'assistant')
+      ORDER BY COALESCE(sequence, created_at) ASC, created_at ASC, ROWID ASC
+    `,
+      [sessionId],
+    );
+    const existingTimestamps = new Map<string, number[]>();
+    for (const row of existingRows) {
+      if ((row.type !== 'user' && row.type !== 'assistant') || typeof row.content !== 'string') continue;
+      const timestamp = normalizeMessageTimestamp(Number(row.created_at));
+      if (timestamp == null) continue;
+      const key = `${row.type}\x1f${row.content}`;
+      const timestamps = existingTimestamps.get(key) ?? [];
+      timestamps.push(timestamp);
+      existingTimestamps.set(key, timestamps);
+    }
 
     // Delete all existing user/assistant messages for this session
-    this.db.run(
+    this.run(
       "DELETE FROM cowork_messages WHERE session_id = ? AND type IN ('user', 'assistant')",
       [sessionId],
     );
 
     // Re-insert authoritative messages with correct sequence numbers
     // First, get the current max sequence from remaining messages (tool_use, tool_result, system)
-    const seqRow = this.db.exec(
+    const seqRow = this.getOne<{ max_seq: number }>(
       'SELECT COALESCE(MAX(sequence), 0) as max_seq FROM cowork_messages WHERE session_id = ?',
       [sessionId],
     );
-    let nextSeq = ((seqRow[0]?.values[0]?.[0] as number) || 0) + 1;
+    let nextSeq = (Number(seqRow?.max_seq) || 0) + 1;
+    const insertedTimestamps: number[] = [];
 
     for (const entry of authoritative) {
       const id = uuidv4();
-      this.db.run(`
+      const existingKey = `${entry.role}\x1f${entry.text}`;
+      const matchingExistingTimestamps = existingTimestamps.get(existingKey);
+      const existingTimestamp = matchingExistingTimestamps?.shift();
+      const messageTimestamp = normalizeMessageTimestamp(entry.timestamp)
+        ?? existingTimestamp
+        ?? now;
+      insertedTimestamps.push(messageTimestamp);
+      this.run(`
         INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [
@@ -1068,13 +1109,16 @@ export class CoworkStore {
         sessionId,
         entry.role,
         entry.text,
-        JSON.stringify({ isStreaming: false, isFinal: true }),
-        now,
+        JSON.stringify({ isStreaming: false, isFinal: true, ...(entry.metadata ?? {}) }),
+        messageTimestamp,
         nextSeq++,
       ]);
     }
 
-    this.db.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+    const updatedAt = insertedTimestamps.length > 0
+      ? insertedTimestamps[insertedTimestamps.length - 1]
+      : now;
+    this.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [updatedAt, sessionId]);
     this.saveDb();
   }
 
@@ -1095,7 +1139,7 @@ export class CoworkStore {
 
     values.push(messageId);
     values.push(sessionId);
-    this.db.run(`
+    this.run(`
       UPDATE cowork_messages
       SET ${setClauses.join(', ')}
       WHERE id = ? AND session_id = ?
@@ -1179,7 +1223,7 @@ export class CoworkStore {
     const now = Date.now();
 
     if (config.workingDirectory !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('workingDirectory', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1189,7 +1233,7 @@ export class CoworkStore {
     }
 
     if (config.executionMode !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('executionMode', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1200,7 +1244,7 @@ export class CoworkStore {
 
     if (config.agentEngine !== undefined) {
       const normalizedAgentEngine = normalizeCoworkAgentEngineValue(config.agentEngine);
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('agentEngine', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1210,7 +1254,7 @@ export class CoworkStore {
     }
 
     if (config.memoryEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1220,7 +1264,7 @@ export class CoworkStore {
     }
 
     if (config.memoryImplicitUpdateEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryImplicitUpdateEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1230,7 +1274,7 @@ export class CoworkStore {
     }
 
     if (config.memoryLlmJudgeEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryLlmJudgeEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1240,7 +1284,7 @@ export class CoworkStore {
     }
 
     if (config.memoryGuardLevel !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryGuardLevel', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1250,7 +1294,7 @@ export class CoworkStore {
     }
 
     if (config.memoryUserMemoriesMaxItems !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryUserMemoriesMaxItems', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1260,7 +1304,7 @@ export class CoworkStore {
     }
 
     if (config.skipMissedJobs !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('skipMissedJobs', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1270,7 +1314,7 @@ export class CoworkStore {
     }
 
     if (config.embeddingEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1280,7 +1324,7 @@ export class CoworkStore {
     }
 
     if (config.embeddingProvider !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingProvider', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1290,7 +1334,7 @@ export class CoworkStore {
     }
 
     if (config.embeddingModel !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingModel', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1300,7 +1344,7 @@ export class CoworkStore {
     }
 
     if (config.embeddingLocalModelPath !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingLocalModelPath', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1313,7 +1357,7 @@ export class CoworkStore {
       const embeddingVectorWeight = Number.isFinite(config.embeddingVectorWeight)
         ? Math.max(0, Math.min(1, config.embeddingVectorWeight))
         : DEFAULT_EMBEDDING_VECTOR_WEIGHT;
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingVectorWeight', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1323,7 +1367,7 @@ export class CoworkStore {
     }
 
     if (config.embeddingRemoteBaseUrl !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingRemoteBaseUrl', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1333,7 +1377,7 @@ export class CoworkStore {
     }
 
     if (config.embeddingRemoteApiKey !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('embeddingRemoteApiKey', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1343,7 +1387,7 @@ export class CoworkStore {
     }
 
     if (config.openClawSessionPolicy !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('openClawSessionPolicy', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1388,7 +1432,7 @@ export class CoworkStore {
 
   private addMemorySource(memoryId: string, source?: CoworkUserMemorySourceInput): void {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       INSERT INTO user_memory_sources (id, memory_id, session_id, message_id, role, is_active, created_at)
       VALUES (?, ?, ?, ?, ?, 1, ?)
     `, [
@@ -1455,7 +1499,7 @@ export class CoworkStore {
       const mergedText = choosePreferredMemoryText(existing.text, normalizedText);
       const mergedExplicit = existing.is_explicit ? 1 : explicitFlag;
       const mergedConfidence = Math.max(Number(existing.confidence) || 0, confidence);
-      this.db.run(`
+      this.run(`
         UPDATE user_memories
         SET text = ?, fingerprint = ?, confidence = ?, is_explicit = ?, status = 'created', updated_at = ?
         WHERE id = ?
@@ -1473,7 +1517,7 @@ export class CoworkStore {
     }
 
     const id = uuidv4();
-    this.db.run(`
+    this.run(`
       INSERT INTO user_memories (
         id, text, fingerprint, confidence, is_explicit, status, created_at, updated_at, last_used_at
       ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, NULL)
@@ -1571,7 +1615,7 @@ export class CoworkStore {
       : current.status;
     const nextExplicit = input.isExplicit !== undefined ? (input.isExplicit ? 1 : 0) : current.is_explicit;
 
-    this.db.run(`
+    this.run(`
       UPDATE user_memories
       SET text = ?, fingerprint = ?, confidence = ?, is_explicit = ?, status = ?, updated_at = ?
       WHERE id = ?
@@ -1589,15 +1633,14 @@ export class CoworkStore {
 
   deleteUserMemory(id: string): boolean {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE user_memories
       SET status = 'deleted', updated_at = ?
       WHERE id = ?
     `, [now, id]);
-    // sql.js 的 getRowsModified() 只返回最近一次 db.run() 的影响行数；
-    // 这里要先记录主表删除结果，避免后续 sources 表无记录时误判删除失败。
-    const memoryUpdated = (this.db.getRowsModified?.() || 0) > 0;
-    this.db.run(`
+    // 先记录主表删除结果，避免后续 sources 表无记录时误判删除失败。
+    const memoryUpdated = this.lastChanges > 0;
+    this.run(`
       UPDATE user_memory_sources
       SET is_active = 0
       WHERE memory_id = ?
@@ -1651,12 +1694,12 @@ export class CoworkStore {
       if (!shouldAutoDeleteMemoryText(row.text)) {
         continue;
       }
-      this.db.run(`
+      this.run(`
         UPDATE user_memories
         SET status = 'deleted', updated_at = ?
         WHERE id = ?
       `, [now, row.id]);
-      this.db.run(`
+      this.run(`
         UPDATE user_memory_sources
         SET is_active = 0
         WHERE memory_id = ?
@@ -1671,7 +1714,7 @@ export class CoworkStore {
   }
 
   markMemorySourcesInactiveBySession(sessionId: string): void {
-    this.db.run(`
+    this.run(`
       UPDATE user_memory_sources
       SET is_active = 0
       WHERE session_id = ? AND is_active = 1
@@ -1680,7 +1723,7 @@ export class CoworkStore {
 
   markOrphanImplicitMemoriesStale(): void {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE user_memories
       SET status = 'stale', updated_at = ?
       WHERE is_explicit = 0
@@ -1951,6 +1994,7 @@ export class CoworkStore {
       system_prompt: string;
       identity: string;
       model: string;
+      working_directory?: string | null;
       icon: string;
       skill_ids: string;
       tool_bundle_ids: string | null;
@@ -1977,6 +2021,7 @@ export class CoworkStore {
       system_prompt: string;
       identity: string;
       model: string;
+      working_directory?: string | null;
       icon: string;
       skill_ids: string;
       tool_bundle_ids: string | null;
@@ -2004,9 +2049,9 @@ export class CoworkStore {
       return this.createAgent({ ...request, id: `${id}-${Date.now()}` });
     }
 
-    this.db.run(`
-      INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, tool_bundle_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+    this.run(`
+      INSERT INTO agents (id, name, description, system_prompt, identity, model, working_directory, icon, skill_ids, tool_bundle_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
     `, [
       id,
       request.name,
@@ -2014,6 +2059,7 @@ export class CoworkStore {
       request.systemPrompt || '',
       request.identity || '',
       request.model || '',
+      request.workingDirectory || '',
       request.icon || '',
       JSON.stringify(request.skillIds || []),
       JSON.stringify(request.toolBundleIds || []),
@@ -2055,6 +2101,10 @@ export class CoworkStore {
       setClauses.push('model = ?');
       values.push(updates.model);
     }
+    if (updates.workingDirectory !== undefined) {
+      setClauses.push('working_directory = ?');
+      values.push(updates.workingDirectory);
+    }
     if (updates.icon !== undefined) {
       setClauses.push('icon = ?');
       values.push(updates.icon);
@@ -2073,7 +2123,7 @@ export class CoworkStore {
     }
 
     values.push(id);
-    this.db.run(`UPDATE agents SET ${setClauses.join(', ')} WHERE id = ?`, values);
+    this.run(`UPDATE agents SET ${setClauses.join(', ')} WHERE id = ?`, values);
     this.saveDb();
 
     return this.getAgent(id);
@@ -2081,7 +2131,7 @@ export class CoworkStore {
 
   deleteAgent(id: string): boolean {
     if (id === 'main') return false; // Cannot delete default agent
-    this.db.run('DELETE FROM agents WHERE id = ? AND is_default = 0', [id]);
+    this.run('DELETE FROM agents WHERE id = ? AND is_default = 0', [id]);
     this.saveDb();
     return true;
   }
@@ -2093,6 +2143,7 @@ export class CoworkStore {
     system_prompt: string;
     identity: string;
     model: string;
+    working_directory?: string | null;
     icon: string;
     skill_ids: string;
     tool_bundle_ids?: string | null;
@@ -2112,6 +2163,7 @@ export class CoworkStore {
       systemPrompt: row.system_prompt,
       identity: row.identity,
       model: row.model,
+      workingDirectory: row.working_directory || '',
       icon: row.icon,
       skillIds,
       toolBundleIds,

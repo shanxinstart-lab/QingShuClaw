@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { describe, expect, test } from 'vitest';
 
 import {
@@ -17,6 +19,7 @@ describe('buildAgentEntry', () => {
       systemPrompt: '',
       identity: '',
       model: 'lobsterai-server/deepseek-v3.2',
+      workingDirectory: '',
       icon: '',
       skillIds: [],
       toolBundleIds: [],
@@ -43,6 +46,7 @@ describe('buildAgentEntry', () => {
       systemPrompt: '',
       identity: '',
       model: 'deepseek-v3.2',
+      workingDirectory: '',
       icon: '',
       skillIds: [],
       toolBundleIds: [],
@@ -68,6 +72,7 @@ describe('buildAgentEntry', () => {
       systemPrompt: '',
       identity: '',
       model: 'openai/gpt-5.3-codex',
+      workingDirectory: '',
       icon: '',
       skillIds: [],
       toolBundleIds: [],
@@ -88,6 +93,85 @@ describe('buildAgentEntry', () => {
       model: { primary: 'openai-codex/gpt-5.3-codex' },
     });
   });
+
+  test('为配置了工作目录的 agent 输出显式 cwd', () => {
+    const result = buildAgentEntry({
+      id: 'docs',
+      name: 'Docs',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: '',
+      workingDirectory: '/tmp/docs-project',
+      icon: '',
+      skillIds: [],
+      toolBundleIds: [],
+      enabled: true,
+      isDefault: false,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'anthropic/claude-sonnet-4');
+
+    expect(result).toMatchObject({
+      id: 'docs',
+      cwd: path.resolve('/tmp/docs-project'),
+    });
+  });
+
+  test('不会把设计头像编码作为 OpenClaw emoji 透传', () => {
+    const result = buildAgentEntry({
+      id: 'designer',
+      name: 'Designer',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: '',
+      workingDirectory: '',
+      icon: 'agent-avatar-svg:lobster',
+      skillIds: [],
+      toolBundleIds: [],
+      enabled: true,
+      isDefault: false,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'anthropic/claude-sonnet-4');
+
+    const identity = result.identity as Record<string, unknown>;
+    expect(identity.name).toBe('Designer');
+    expect(identity.emoji).toBeUndefined();
+  });
+
+  test('普通 emoji 仍会作为 OpenClaw emoji 透传', () => {
+    const result = buildAgentEntry({
+      id: 'emoji-agent',
+      name: 'EmojiAgent',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: '',
+      workingDirectory: '',
+      icon: '🤖',
+      skillIds: [],
+      toolBundleIds: [],
+      enabled: true,
+      isDefault: false,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }, 'anthropic/claude-sonnet-4');
+
+    expect(result).toMatchObject({
+      identity: {
+        name: 'EmojiAgent',
+        emoji: '🤖',
+      },
+    });
+  });
 });
 
 describe('buildManagedAgentEntries', () => {
@@ -101,6 +185,7 @@ describe('buildManagedAgentEntries', () => {
           systemPrompt: '',
           identity: '',
           model: 'openai/gpt-4o',
+          workingDirectory: '',
           icon: '✍️',
           skillIds: ['docx'],
           toolBundleIds: [],
@@ -132,6 +217,7 @@ describe('buildManagedAgentEntries', () => {
           systemPrompt: '',
           identity: '',
           model: '',
+          workingDirectory: '',
           icon: '✍️',
           skillIds: [],
           toolBundleIds: [],
@@ -162,6 +248,7 @@ describe('buildManagedAgentEntries', () => {
           systemPrompt: '',
           identity: '',
           model: 'openai/gpt-4o',
+          workingDirectory: '',
           icon: '🦀',
           skillIds: [],
           toolBundleIds: [],

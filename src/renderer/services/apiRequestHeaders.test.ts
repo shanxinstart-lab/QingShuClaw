@@ -11,8 +11,15 @@ describe('buildApiRequestHeaders', () => {
     });
   });
 
+  test('trims api keys before building auth headers', () => {
+    expect(buildApiRequestHeaders(ProviderName.OpenAI, '  test-key  ')).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer test-key',
+    });
+  });
+
   test('uses x-goog-api-key for gemini', () => {
-    expect(buildApiRequestHeaders(ProviderName.Gemini, 'gemini-key')).toEqual({
+    expect(buildApiRequestHeaders(ProviderName.Gemini, ' gemini-key ')).toEqual({
       'Content-Type': 'application/json',
       'x-goog-api-key': 'gemini-key',
     });

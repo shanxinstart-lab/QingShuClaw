@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { join } from 'path';
 
+import type { ProviderConfig as SharedProviderConfig, ProviderModelConfig } from '../../shared/providers';
 import { ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
 import type { SqliteStore } from '../sqliteStore';
 import type { CoworkApiConfig } from './coworkConfigStore';
@@ -14,22 +15,10 @@ import {
 
 const LOBSTERAI_SERVER_PROXY_PATH = '/api/qingshu-claw/proxy/v1';
 
-type ProviderModel = {
-  id: string;
-  name?: string;
-  supportsImage?: boolean;
-};
-
-type ProviderConfig = {
-  enabled: boolean;
-  apiKey: string;
-  baseUrl: string;
+type ProviderModelInputConfig = Omit<ProviderModelConfig, 'name'> & { name?: string };
+type ProviderConfig = Omit<SharedProviderConfig, 'apiFormat' | 'models'> & {
   apiFormat?: 'anthropic' | 'openai' | 'native';
-  codingPlanEnabled?: boolean;
-  authType?: 'apikey' | 'oauth';
-  oauthAccessToken?: string;
-  oauthBaseUrl?: string;
-  models?: ProviderModel[];
+  models?: ProviderModelInputConfig[];
 };
 
 type AppConfig = {
@@ -129,7 +118,7 @@ function buildServerFallbackModels(effectiveModelId: string): NonNullable<Provid
   return models;
 }
 
-function normalizeProviderModels(providerName: string, models?: ProviderModel[]): Array<Required<Pick<ProviderModel, 'id' | 'name'>> & Pick<ProviderModel, 'supportsImage'>> {
+function normalizeProviderModels(providerName: string, models?: ProviderModelInputConfig[]): ProviderModelConfig[] {
   return (models ?? [])
     .filter(model => model.id?.trim())
     .map(model => ({
@@ -544,7 +533,7 @@ export type ProviderRawConfig = {
   apiType: 'anthropic' | 'openai';
   authType?: ProviderConfig['authType'];
   codingPlanEnabled: boolean;
-  models: Array<{ id: string; name?: string; supportsImage?: boolean }>;
+  models: ProviderModelConfig[];
 };
 
 export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {

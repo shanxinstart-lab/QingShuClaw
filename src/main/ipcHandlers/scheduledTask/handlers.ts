@@ -9,7 +9,7 @@ import {
   SessionTarget as STSessionTarget,
 } from '../../../scheduledTask/constants';
 import { type CronJobService,mapGatewayJob } from '../../../scheduledTask/cronJobService';
-import type { ScheduledTask } from '../../../scheduledTask/types';
+import type { RunFilter, ScheduledTask, ScheduledTaskInput } from '../../../scheduledTask/types';
 import { PlatformRegistry } from '../../../shared/platform';
 import { listScheduledTaskChannels } from './helpers';
 
@@ -44,7 +44,7 @@ export interface ScheduledTaskHandlerDeps {
  * Mutates `normalizedInput` in place to preserve the existing IPC contract.
  */
 async function applyAnnounceDeliveryNormalization(
-  normalizedInput: Record<string, any>,
+  normalizedInput: Partial<ScheduledTaskInput>,
   getIMGatewayManager: ScheduledTaskHandlerDeps['getIMGatewayManager'],
 ): Promise<void> {
   const delivery = normalizedInput.delivery;
@@ -130,9 +130,11 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     }
   });
 
-  ipcMain.handle(ScheduledTaskIpc.Create, async (_event, input: any) => {
+  ipcMain.handle(ScheduledTaskIpc.Create, async (_event, input: ScheduledTaskInput) => {
     try {
-      const normalizedInput = input && typeof input === 'object' ? { ...input } : {};
+      const normalizedInput = (
+        input && typeof input === 'object' ? { ...input } : {}
+      ) as ScheduledTaskInput;
       console.debug('[ScheduledTask] create input received.');
       await applyAnnounceDeliveryNormalization(normalizedInput, getIMGatewayManager);
 
@@ -144,9 +146,11 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     }
   });
 
-  ipcMain.handle(ScheduledTaskIpc.Update, async (_event, id: string, input: any) => {
+  ipcMain.handle(ScheduledTaskIpc.Update, async (_event, id: string, input: Partial<ScheduledTaskInput>) => {
     try {
-      const normalizedInput = input && typeof input === 'object' ? { ...input } : {};
+      const normalizedInput = (
+        input && typeof input === 'object' ? { ...input } : {}
+      ) as Partial<ScheduledTaskInput>;
       console.debug('[ScheduledTask] update input received.');
       await applyAnnounceDeliveryNormalization(normalizedInput, getIMGatewayManager);
 
@@ -193,9 +197,15 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     return { success: true, result: false };
   });
 
-  ipcMain.handle(ScheduledTaskIpc.ListRuns, async (_event, taskId: string, limit?: number, offset?: number) => {
+  ipcMain.handle(ScheduledTaskIpc.ListRuns, async (
+    _event,
+    taskId: string,
+    limit?: number,
+    offset?: number,
+    filter?: RunFilter,
+  ) => {
     try {
-      const runs = await getCronJobService().listRuns(taskId, limit, offset);
+      const runs = await getCronJobService().listRuns(taskId, limit, offset, filter);
       return { success: true, runs };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list runs' };
@@ -211,9 +221,14 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     }
   });
 
-  ipcMain.handle(ScheduledTaskIpc.ListAllRuns, async (_event, limit?: number, offset?: number) => {
+  ipcMain.handle(ScheduledTaskIpc.ListAllRuns, async (
+    _event,
+    limit?: number,
+    offset?: number,
+    filter?: RunFilter,
+  ) => {
     try {
-      const runs = await getCronJobService().listAllRuns(limit, offset);
+      const runs = await getCronJobService().listAllRuns(limit, offset, filter);
       return { success: true, runs };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list all runs' };
@@ -246,27 +261,21 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     filterAccountId?: string,
   ) => {
     try {
-      console.log('[IPC][listChannelConversations] channel:', channel);
       const platform = PlatformRegistry.platformOfChannel(channel);
-      console.log('[IPC][listChannelConversations] resolved platform:', platform);
       if (!platform) {
-        console.log('[IPC][listChannelConversations] no platform mapping, returning empty');
         return { success: true, conversations: [] };
       }
       const imStore = getIMGatewayManager()?.getIMStore();
       if (!imStore) {
-        console.log('[IPC][listChannelConversations] no imStore available, returning empty');
         return { success: true, conversations: [] };
       }
       const mappings = imStore.listSessionMappings(platform, filterAccountId ?? accountId);
-      console.log('[IPC][listChannelConversations] found', mappings.length, 'session mappings for platform:', platform);
       const conversations = mappings.map((m) => ({
         conversationId: m.imConversationId,
         platform: m.platform,
         coworkSessionId: m.coworkSessionId,
         lastActiveAt: m.lastActiveAt,
       }));
-      console.log('[IPC][listChannelConversations] conversations:', JSON.stringify(conversations, null, 2));
       return { success: true, conversations };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list conversations' };

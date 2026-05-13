@@ -8,12 +8,12 @@ import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
-import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { addMessage, clearCurrentSession, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
 import { setSelectedModel } from '../../store/slices/modelSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { CoworkImageAttachment, CoworkSession, OpenClawEngineStatus } from '../../types/cowork';
+import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import ComposeIcon from '../icons/ComposeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import ModelSelector from '../ModelSelector';
@@ -427,7 +427,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
     const runningSessionId = currentSession.id;
     const handleWindowFocus = () => {
-      void coworkService.loadSession(runningSessionId);
+      void coworkService.loadSession(runningSessionId, { preserveSelection: true });
     };
 
     window.addEventListener('focus', handleWindowFocus);

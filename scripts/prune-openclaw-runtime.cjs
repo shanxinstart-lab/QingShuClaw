@@ -245,6 +245,44 @@ function cleanExtensionNodeModules(runtimeRoot, stats) {
   }
 }
 
+function pruneUnusedBundledExtensions(distExtDir, stats) {
+  if (!fs.existsSync(distExtDir)) return;
+  try {
+    for (const entry of fs.readdirSync(distExtDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (shouldKeepBundledExtension(entry.name)) continue;
+      const fullPath = path.join(distExtDir, entry.name);
+      stats.bytesFreed += getDirSize(fullPath);
+      fs.rmSync(fullPath, { recursive: true, force: true });
+      stats.dirsRemoved++;
+      stats.extensionsPruned.push(entry.name);
+    }
+  } catch (err) {
+    console.warn(`[prune-openclaw-runtime] Failed to prune dist/extensions: ${err.message}`);
+  }
+}
+
+function pruneDuplicateOpenClawSdkFromExtensions(thirdPartyDir, stats) {
+  if (!fs.existsSync(thirdPartyDir)) return;
+  try {
+    for (const plugin of fs.readdirSync(thirdPartyDir, { withFileTypes: true })) {
+      if (!plugin.isDirectory()) continue;
+      const duplicateOpenClawDir = path.join(thirdPartyDir, plugin.name, 'node_modules', 'openclaw');
+      if (!fs.existsSync(duplicateOpenClawDir)) continue;
+
+      const size = getDirSize(duplicateOpenClawDir);
+      fs.rmSync(duplicateOpenClawDir, { recursive: true, force: true });
+      stats.bytesFreed += size;
+      stats.dirsRemoved++;
+      console.log(
+        `[prune-openclaw-runtime] Removed duplicate openclaw SDK from ${plugin.name} (${(size / 1024 / 1024).toFixed(1)} MB)`
+      );
+    }
+  } catch (err) {
+    console.warn(`[prune-openclaw-runtime] Failed to prune openclaw from third-party-extensions: ${err.message}`);
+  }
+}
+
 // ─── Main ───
 
 function main() {
@@ -268,20 +306,7 @@ function main() {
 
   // Step 1: Remove unused bundled extensions from dist/extensions/
   const distExtDir = path.join(runtimeRoot, 'dist', 'extensions');
-  if (fs.existsSync(distExtDir)) {
-    try {
-      for (const entry of fs.readdirSync(distExtDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        if (shouldKeepBundledExtension(entry.name)) continue;
-        const fullPath = path.join(distExtDir, entry.name);
-        stats.bytesFreed += getDirSize(fullPath);
-        fs.rmSync(fullPath, { recursive: true, force: true });
-        stats.extensionsPruned.push(entry.name);
-      }
-    } catch (err) {
-      console.warn(`[prune-openclaw-runtime] Failed to prune dist/extensions: ${err.message}`);
-    }
-  }
+  pruneUnusedBundledExtensions(distExtDir, stats);
 
   const thirdPartyDir = path.join(runtimeRoot, 'third-party-extensions');
 
@@ -359,25 +384,7 @@ function main() {
   // Plugins such as QQBot may declare openclaw as a peerDependency, and npm v7+
   // auto-installs it into the plugin's own node_modules. The host gateway already
   // provides the SDK on the module path, so plugin-local copies are redundant.
-  if (fs.existsSync(thirdPartyDir)) {
-    try {
-      for (const plugin of fs.readdirSync(thirdPartyDir, { withFileTypes: true })) {
-        if (!plugin.isDirectory()) continue;
-        const duplicateOpenClawDir = path.join(thirdPartyDir, plugin.name, 'node_modules', 'openclaw');
-        if (!fs.existsSync(duplicateOpenClawDir)) continue;
-
-        const size = getDirSize(duplicateOpenClawDir);
-        fs.rmSync(duplicateOpenClawDir, { recursive: true, force: true });
-        stats.bytesFreed += size;
-        stats.dirsRemoved++;
-        console.log(
-          `[prune-openclaw-runtime] Removed duplicate openclaw SDK from ${plugin.name} (${(size / 1024 / 1024).toFixed(1)} MB)`
-        );
-      }
-    } catch (err) {
-      console.warn(`[prune-openclaw-runtime] Failed to prune openclaw from third-party-extensions: ${err.message}`);
-    }
-  }
+  pruneDuplicateOpenClawSdkFromExtensions(thirdPartyDir, stats);
 
   // Step 3: Clean unnecessary files from node_modules only
   cleanDir(nodeModulesDir, stats);
@@ -401,6 +408,8 @@ module.exports = {
   BUNDLED_EXTENSIONS_TO_KEEP,
   PACKAGES_TO_STUB,
   cleanExtensionNodeModules,
+  pruneDuplicateOpenClawSdkFromExtensions,
+  pruneUnusedBundledExtensions,
   shouldKeepBundledExtension,
 };
 

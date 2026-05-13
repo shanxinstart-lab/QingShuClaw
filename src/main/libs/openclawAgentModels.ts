@@ -10,6 +10,7 @@ type BuildManagedAgentEntriesInput = {
 };
 
 type ProviderModelCatalog = Record<string, { models: Array<{ id: string }> }>;
+const DESIGNED_AGENT_AVATAR_ICON_PREFIX = 'agent-avatar-svg:';
 
 export type ManagedSessionModelTarget = {
   providerId: string;
@@ -172,6 +173,10 @@ export function resolveQualifiedAgentModelRef(options: {
   };
 }
 
+const isDesignedAgentAvatarIcon = (value: string): boolean => (
+  value.trim().startsWith(DESIGNED_AGENT_AVATAR_ICON_PREFIX)
+);
+
 export function buildAgentEntry(
   agent: Agent,
   fallbackPrimaryModel: string,
@@ -182,18 +187,22 @@ export function buildAgentEntry(
     availableProviders: options?.availableProviders ?? {},
   });
   const primaryModel = qualified.status === 'qualified' ? qualified.primaryModel : fallbackPrimaryModel;
+  const legacyEmojiIcon = agent.icon && !isDesignedAgentAvatarIcon(agent.icon)
+    ? agent.icon
+    : '';
 
   return {
     id: agent.id,
     ...(agent.isDefault ? { default: true } : {}),
-    ...(agent.name || agent.icon ? {
+    ...(agent.name || legacyEmojiIcon ? {
       identity: {
         ...(agent.name ? { name: agent.name } : {}),
-        ...(agent.icon ? { emoji: agent.icon } : {}),
+        ...(legacyEmojiIcon ? { emoji: legacyEmojiIcon } : {}),
       },
     } : {}),
     ...(agent.skillIds && agent.skillIds.length > 0 ? { skills: agent.skillIds } : {}),
     ...(options?.workspace ? { workspace: options.workspace } : {}),
+    ...(agent.workingDirectory?.trim() ? { cwd: path.resolve(agent.workingDirectory.trim()) } : {}),
     model: {
       primary: primaryModel,
     },

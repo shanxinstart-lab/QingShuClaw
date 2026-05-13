@@ -9,6 +9,7 @@ export interface Agent {
   systemPrompt: string;
   identity: string;
   model: string;
+  workingDirectory: string;
   icon: string;
   skillIds: string[];
   toolBundleIds: string[];
@@ -48,6 +49,7 @@ export interface CreateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  workingDirectory?: string;
   icon?: string;
   skillIds?: string[];
   toolBundleIds?: string[];
@@ -61,6 +63,7 @@ export interface UpdateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  workingDirectory?: string;
   icon?: string;
   skillIds?: string[];
   toolBundleIds?: string[];

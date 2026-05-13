@@ -4,6 +4,8 @@ build/*
 !build/icons/**
 build/generated/
 release/
+release-repack*
+outputs/
 dist/
 dist-electron/
 coverage/

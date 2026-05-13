@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+
 import {
   buildScheduledReminderSystemMessage,
   extractGatewayHistoryEntries,
@@ -6,6 +7,8 @@ import {
   extractGatewayMessageText,
   isHeartbeatAckText,
   isHeartbeatPromptText,
+  isSilentReplyPrefixText,
+  isSilentReplyText,
   isTransientGatewayStatusText,
   normalizeGatewayHistoryText,
 } from './openclawHistory';
@@ -25,6 +28,14 @@ describe('openclawHistory', () => {
         content: [{ type: 'output_text', text: 'gemini output' }],
       })
     ).toBe('gemini output');
+  });
+
+  test('extracts output_text object fields from responses-style messages', () => {
+    expect(
+      extractGatewayMessageText({
+        content: [{ type: 'message', output_text: 'responses output' }],
+      })
+    ).toBe('responses output');
   });
 
   test('extracts nested parts content blocks', () => {
@@ -70,6 +81,46 @@ describe('openclawHistory', () => {
       content: [{ type: 'text', text: 'Reminder fired' }],
     });
     expect(entry).toEqual({ role: 'system', text: 'Reminder fired' });
+  });
+
+  test('keeps gateway message timestamps when present', () => {
+    expect(
+      extractGatewayHistoryEntry({
+        role: 'user',
+        content: 'hello',
+        createdAt: '2026-05-09T10:20:30.000Z',
+      }),
+    ).toEqual({
+      role: 'user',
+      text: 'hello',
+      timestamp: Date.parse('2026-05-09T10:20:30.000Z'),
+    });
+  });
+
+  test('keeps assistant usage aliases and model metadata', () => {
+    expect(
+      extractGatewayHistoryEntry({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'answer' }],
+        model: 'deepseek-chat',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadTokens: 80,
+          totalTokens: 120,
+        },
+      }),
+    ).toEqual({
+      role: 'assistant',
+      text: 'answer',
+      model: 'deepseek-chat',
+      usage: {
+        input: 100,
+        output: 20,
+        cacheRead: 80,
+        totalTokens: 120,
+      },
+    });
   });
 
   test('strips injected local time context and current request wrapper for user history text', () => {
@@ -203,6 +254,25 @@ Current time: Sunday, March 15th, 2026 — 11:27 (Asia/Shanghai)`,
     expect(entry).toEqual({ role: 'system', text: '⏰ 提醒：该去买菜了！' });
   });
 
+  test('keeps timestamp when remapping scheduled reminder prompts', () => {
+    const timestamp = Date.parse('2026-05-10T08:00:00.000Z');
+    const entry = extractGatewayHistoryEntry({
+      role: 'user',
+      timestamp,
+      content: `A scheduled reminder has been triggered. The reminder content is:
+
+⏰ 提醒：检查日报！
+
+Handle this reminder internally. Do not relay it to the user unless explicitly requested.`,
+    });
+
+    expect(entry).toEqual({
+      role: 'system',
+      text: '⏰ 提醒：检查日报！',
+      timestamp,
+    });
+  });
+
   test('remaps plain scheduled reminder text to a system message', () => {
     const entry = extractGatewayHistoryEntry({
       role: 'user',
@@ -229,5 +299,57 @@ Do not infer or repeat old tasks from prior chats.
 If nothing needs attention, reply HEARTBEAT_OK.`)
     ).toBe(true);
     expect(isHeartbeatPromptText('Please read README.md and reply OK.')).toBe(false);
+  });
+
+  test('isSilentReplyText matches exact NO_REPLY token only', () => {
+    expect(isSilentReplyText('NO_REPLY')).toBe(true);
+    expect(isSilentReplyText('  NO_REPLY  ')).toBe(true);
+    expect(isSilentReplyText('no_reply')).toBe(true);
+    expect(isSilentReplyText('This is a message ending with NO_REPLY')).toBe(false);
+    expect(isSilentReplyText('NO_REPLY: explanation')).toBe(false);
+    expect(isSilentReplyText('NO')).toBe(false);
+    expect(isSilentReplyText('')).toBe(false);
+  });
+
+  test('filters NO_REPLY assistant and system messages from history entries', () => {
+    expect(
+      extractGatewayHistoryEntry({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'NO_REPLY' }],
+      }),
+    ).toBeNull();
+    expect(
+      extractGatewayHistoryEntry({
+        role: 'system',
+        content: [{ type: 'text', text: 'NO_REPLY' }],
+      }),
+    ).toBeNull();
+  });
+
+  test('does not suppress user NO_REPLY messages', () => {
+    const entry = extractGatewayHistoryEntry({
+      role: 'user',
+      content: 'NO_REPLY',
+    });
+
+    expect(entry).toEqual({ role: 'user', text: 'NO_REPLY' });
+  });
+
+  test('isSilentReplyPrefixText matches streaming prefix fragments', () => {
+    expect(isSilentReplyPrefixText('NO')).toBe(true);
+    expect(isSilentReplyPrefixText('NO_')).toBe(true);
+    expect(isSilentReplyPrefixText('NO_R')).toBe(true);
+    expect(isSilentReplyPrefixText('NO_RE')).toBe(true);
+    expect(isSilentReplyPrefixText('NO_REP')).toBe(true);
+    expect(isSilentReplyPrefixText('NO_REPL')).toBe(true);
+  });
+
+  test('isSilentReplyPrefixText rejects non-prefix text', () => {
+    expect(isSilentReplyPrefixText('')).toBe(false);
+    expect(isSilentReplyPrefixText('N')).toBe(false);
+    expect(isSilentReplyPrefixText('No')).toBe(false);
+    expect(isSilentReplyPrefixText('NO,')).toBe(false);
+    expect(isSilentReplyPrefixText('NOT')).toBe(false);
+    expect(isSilentReplyPrefixText('hello')).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import type {
   Schedule,
   ScheduleCron,
   ScheduledTask,
+  ScheduledTaskChannelOption,
   ScheduledTaskDelivery,
   ScheduledTaskPayload,
   TaskLastStatus,
@@ -271,6 +272,32 @@ export function formatDeliveryLabel(delivery: ScheduledTaskDelivery): string {
   const channel = delivery.channel ? resolveChannelDisplayName(delivery.channel) : 'last';
   const toLabel = delivery.to ? ` -> ${delivery.to}` : '';
   return `${i18nService.t('scheduledTasksFormDeliveryModeAnnounce')} · ${channel}${toLabel}`;
+}
+
+export function scheduledTaskChannelOptionKey(option: Pick<ScheduledTaskChannelOption, 'value' | 'accountId'>): string {
+  return `${option.value}::${option.accountId ?? ''}`;
+}
+
+export function mergeScheduledTaskChannelOptions(
+  availableOptions: ScheduledTaskChannelOption[],
+  savedOptions: ScheduledTaskChannelOption[],
+): ScheduledTaskChannelOption[] {
+  const next = [...availableOptions];
+  for (const saved of savedOptions) {
+    if (!next.some((option) => scheduledTaskChannelOptionKey(option) === scheduledTaskChannelOptionKey(saved))) {
+      next.push(saved);
+    }
+  }
+  return next;
+}
+
+export function isSavedOnlyScheduledTaskChannelOption(
+  option: Pick<ScheduledTaskChannelOption, 'value' | 'accountId'>,
+  availableOptions: Array<Pick<ScheduledTaskChannelOption, 'value' | 'accountId'>>,
+): boolean {
+  return !availableOptions.some(
+    (available) => scheduledTaskChannelOptionKey(available) === scheduledTaskChannelOptionKey(option),
+  );
 }
 
 function resolveChannelDisplayName(channel: string): string {

@@ -2,14 +2,14 @@ import { afterEach, expect, test } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import Database from 'better-sqlite3';
 
 import { DeliveryMode, GatewayStatus, MigrationKey, ScheduleKind } from './constants';
 import { migrateScheduledTaskRunsToOpenclaw, migrateScheduledTasksToOpenclaw } from './migrate';
 import type { ScheduledTaskInput } from './types';
 
-type SqlJsExecResult = Array<{ columns: string[]; values: unknown[][] }>;
-
 const tempDirs: string[] = [];
+const dbs: Database.Database[] = [];
 
 function makeTmpDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qingshu-scheduled-migrate-'));
@@ -18,57 +18,92 @@ function makeTmpDir(): string {
 }
 
 afterEach(() => {
+  for (const db of dbs.splice(0)) {
+    db.close();
+  }
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-function makeSqlJsDb({
+function makeBetterSqliteDb({
   tables = new Set<string>(),
   taskRows = [] as Record<string, unknown>[],
   runRows = [] as Record<string, unknown>[],
   taskNameRows = [] as Record<string, unknown>[],
 } = {}) {
-  return {
-    exec(sql: string): SqlJsExecResult {
-      if (sql.includes('sqlite_master') && sql.includes("'scheduled_tasks'")) {
-        return tables.has('scheduled_tasks')
-          ? [{ columns: ['name'], values: [['scheduled_tasks']] }]
-          : [];
-      }
-      if (sql.includes('sqlite_master') && sql.includes("'scheduled_task_runs'")) {
-        return tables.has('scheduled_task_runs')
-          ? [{ columns: ['name'], values: [['scheduled_task_runs']] }]
-          : [];
-      }
-      if (sql.includes('SELECT id, name FROM scheduled_tasks')) {
-        return rowsToExecResult(['id', 'name'], taskNameRows);
-      }
-      if (sql.includes('FROM scheduled_tasks') && !sql.includes('scheduled_task_runs')) {
-        return rowsToExecResult(
-          ['id', 'name', 'description', 'enabled', 'schedule_json', 'prompt', 'notify_platforms_json'],
-          taskRows,
-        );
-      }
-      if (sql.includes('FROM scheduled_task_runs')) {
-        return rowsToExecResult(
-          ['id', 'task_id', 'session_id', 'status', 'started_at', 'finished_at', 'duration_ms', 'error'],
-          runRows,
-        );
-      }
-      return [];
-    },
-  };
-}
+  const dir = makeTmpDir();
+  const db = new Database(path.join(dir, 'test.sqlite'));
+  dbs.push(db);
 
-function rowsToExecResult(columns: string[], rows: Record<string, unknown>[]): SqlJsExecResult {
-  if (rows.length === 0) {
-    return [];
+  if (tables.has('scheduled_tasks')) {
+    db.exec(`
+      CREATE TABLE scheduled_tasks (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled INTEGER NOT NULL,
+        schedule_json TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        notify_platforms_json TEXT NOT NULL
+      )
+    `);
+    const insertTask = db.prepare(
+      'INSERT INTO scheduled_tasks (id, name, description, enabled, schedule_json, prompt, notify_platforms_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const rows = taskRows.length ? taskRows : taskNameRows.map((row) => ({
+      id: row['id'],
+      name: row['name'],
+      description: '',
+      enabled: 1,
+      schedule_json: JSON.stringify({ type: 'cron', expression: '0 9 * * *' }),
+      prompt: '',
+      notify_platforms_json: '[]',
+    }));
+    for (const row of rows) {
+      insertTask.run(
+        row['id'],
+        row['name'],
+        row['description'] ?? '',
+        row['enabled'] ?? 1,
+        row['schedule_json'] ?? JSON.stringify({ type: 'cron', expression: '0 9 * * *' }),
+        row['prompt'] ?? '',
+        row['notify_platforms_json'] ?? '[]',
+      );
+    }
   }
-  return [{
-    columns,
-    values: rows.map((row) => columns.map((column) => row[column])),
-  }];
+
+  if (tables.has('scheduled_task_runs')) {
+    db.exec(`
+      CREATE TABLE scheduled_task_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        session_id TEXT,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        duration_ms INTEGER,
+        error TEXT
+      )
+    `);
+    const insertRun = db.prepare(
+      'INSERT INTO scheduled_task_runs (id, task_id, session_id, status, started_at, finished_at, duration_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    for (const row of runRows) {
+      insertRun.run(
+        row['id'],
+        row['task_id'],
+        row['session_id'] ?? null,
+        row['status'],
+        row['started_at'],
+        row['finished_at'] ?? null,
+        row['duration_ms'] ?? null,
+        row['error'] ?? null,
+      );
+    }
+  }
+
+  return db;
 }
 
 function makeKv(initial: Record<string, string> = {}) {
@@ -102,7 +137,7 @@ function makeCronService() {
 test('migrateScheduledTasksToOpenclaw skips when already migrated', async () => {
   const kv = makeKv({ [MigrationKey.TasksToOpenclaw]: 'true' });
   const cron = makeCronService();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [{
       id: 'task-1',
@@ -116,7 +151,7 @@ test('migrateScheduledTasksToOpenclaw skips when already migrated', async () => 
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -129,10 +164,10 @@ test('migrateScheduledTasksToOpenclaw skips when already migrated', async () => 
 test('migrateScheduledTasksToOpenclaw marks fresh installs as migrated', async () => {
   const kv = makeKv();
   const cron = makeCronService();
-  const db = makeSqlJsDb();
+  const db = makeBetterSqliteDb();
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -145,13 +180,13 @@ test('migrateScheduledTasksToOpenclaw marks fresh installs as migrated', async (
 test('migrateScheduledTasksToOpenclaw marks empty legacy tables as migrated', async () => {
   const kv = makeKv();
   const cron = makeCronService();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [],
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -164,7 +199,7 @@ test('migrateScheduledTasksToOpenclaw marks empty legacy tables as migrated', as
 test('migrateScheduledTasksToOpenclaw converts valid cron tasks', async () => {
   const kv = makeKv();
   const cron = makeCronService();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [{
       id: 'task-1',
@@ -178,7 +213,7 @@ test('migrateScheduledTasksToOpenclaw converts valid cron tasks', async () => {
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -196,7 +231,7 @@ test('migrateScheduledTasksToOpenclaw converts valid cron tasks', async () => {
 test('migrateScheduledTasksToOpenclaw converts interval tasks', async () => {
   const kv = makeKv();
   const cron = makeCronService();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [{
       id: 'task-interval',
@@ -210,7 +245,7 @@ test('migrateScheduledTasksToOpenclaw converts interval tasks', async () => {
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -228,7 +263,7 @@ test('migrateScheduledTasksToOpenclaw converts interval tasks', async () => {
 test('migrateScheduledTasksToOpenclaw skips expired one-time tasks', async () => {
   const kv = makeKv();
   const cron = makeCronService();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [{
       id: 'task-past',
@@ -242,7 +277,7 @@ test('migrateScheduledTasksToOpenclaw skips expired one-time tasks', async () =>
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -255,7 +290,7 @@ test('migrateScheduledTasksToOpenclaw skips expired one-time tasks', async () =>
 test('migrateScheduledTasksToOpenclaw skips invalid schedule_json and continues', async () => {
   const kv = makeKv();
   const cron = makeCronService();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [
       {
@@ -280,7 +315,7 @@ test('migrateScheduledTasksToOpenclaw skips invalid schedule_json and continues'
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -295,7 +330,7 @@ test('migrateScheduledTasksToOpenclaw does not mark done when gateway fails', as
   const kv = makeKv();
   const cron = makeCronService();
   cron.forceError();
-  const db = makeSqlJsDb({
+  const db = makeBetterSqliteDb({
     tables: new Set(['scheduled_tasks']),
     taskRows: [{
       id: 'task-1',
@@ -309,7 +344,7 @@ test('migrateScheduledTasksToOpenclaw does not mark done when gateway fails', as
   });
 
   await migrateScheduledTasksToOpenclaw({
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     cronJobService: cron as never,
@@ -321,8 +356,8 @@ test('migrateScheduledTasksToOpenclaw does not mark done when gateway fails', as
 test('migrateScheduledTaskRunsToOpenclaw writes JSONL run history and deduplicates reruns', async () => {
   const kv = makeKv();
   const stateDir = makeTmpDir();
-  const db = makeSqlJsDb({
-    tables: new Set(['scheduled_task_runs']),
+  const db = makeBetterSqliteDb({
+    tables: new Set(['scheduled_tasks', 'scheduled_task_runs']),
     taskNameRows: [{ id: 'task-1', name: 'Daily standup' }],
     runRows: [{
       id: 'run-1',
@@ -337,7 +372,7 @@ test('migrateScheduledTaskRunsToOpenclaw writes JSONL run history and deduplicat
   });
 
   const deps = {
-    db: db as never,
+    db,
     getKv: kv.getKv,
     setKv: kv.setKv,
     openclawStateDir: stateDir,

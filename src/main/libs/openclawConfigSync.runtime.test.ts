@@ -16,6 +16,7 @@ vi.mock('electron', () => ({
 
 const mockRuntimeState = vi.hoisted(() => ({
   proxyPort: null as number | null,
+  codexAccountId: 'acct-runtime-test' as string | null,
   enabledProviders: [] as Array<{
     providerName: string;
     baseURL: string;
@@ -66,6 +67,17 @@ vi.mock('./openclawTokenProxy', () => ({
   getOpenClawTokenProxyPort: () => mockRuntimeState.proxyPort,
 }));
 
+vi.mock('./openaiCodexAuth', () => ({
+  readOpenAICodexAuthFile: () => mockRuntimeState.codexAccountId
+    ? {
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accountId: mockRuntimeState.codexAccountId,
+        expiresAt: 0,
+      }
+    : null,
+}));
+
 describe('OpenClawConfigSync runtime config output', () => {
   let tmpDir: string;
   let configPath: string;
@@ -73,6 +85,7 @@ describe('OpenClawConfigSync runtime config output', () => {
 
   beforeEach(() => {
     mockRuntimeState.proxyPort = null;
+    mockRuntimeState.codexAccountId = 'acct-runtime-test';
     mockRuntimeState.enabledProviders = [];
     mockRuntimeState.rawApiConfig = {
       config: {
@@ -272,6 +285,27 @@ describe('OpenClawConfigSync runtime config output', () => {
     const second = sync.sync('meta-only-diff');
     expect(second.ok).toBe(true);
     expect(second.changed).toBe(false);
+  });
+
+  test('preserves runtime-injected gateway fields while keeping managed mode', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      gateway: {
+        mode: 'remote',
+        auth: { mode: 'token', token: '${OPENCLAW_GATEWAY_TOKEN}' },
+        tailscale: { mode: 'off' },
+      },
+    }, null, 2));
+
+    const sync = await createSync();
+    const result = sync.sync('preserve-gateway-runtime-fields');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.gateway).toMatchObject({
+      mode: 'local',
+      auth: { mode: 'token', token: '${OPENCLAW_GATEWAY_TOKEN}' },
+      tailscale: { mode: 'off' },
+    });
   });
 
   test('disables mcporter so MCP routing uses the built-in bridge', async () => {
@@ -556,7 +590,17 @@ describe('OpenClawConfigSync runtime config output', () => {
       expect(result.ok).toBe(true);
 
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      expect(config.models.providers.openai).toBeDefined();
+      expect(config.models.providers['openai-codex']).toMatchObject({
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        api: 'openai-codex-responses',
+        auth: 'oauth',
+        headers: {
+          'chatgpt-account-id': 'acct-runtime-test',
+          originator: 'pi',
+          'OpenAI-Beta': 'responses=experimental',
+        },
+      });
+      expect(config.models.providers['openai-codex']).not.toHaveProperty('apiKey');
       expect(config.models.providers.deepseek).toBeDefined();
       expect(config.agents.defaults.models).toBeUndefined();
     } finally {

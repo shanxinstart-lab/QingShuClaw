@@ -5,6 +5,7 @@ export interface CreateAgentDraft {
   description: string;
   systemPrompt: string;
   identity: string;
+  workingDirectory?: string;
   icon: string;
   skillIds: string[];
   toolBundleIds?: string[];
@@ -16,6 +17,7 @@ export interface UpdateAgentDraft {
   description: string;
   systemPrompt: string;
   identity: string;
+  workingDirectory?: string;
   icon: string;
   skillIds: string[];
   toolBundleIds?: string[];
@@ -29,6 +31,7 @@ export const buildPersistedCreateAgentRequest = (
   description: draft.description.trim(),
   systemPrompt: draft.systemPrompt.trim(),
   identity: draft.identity.trim(),
+  workingDirectory: draft.workingDirectory?.trim(),
   icon: draft.icon.trim() || undefined,
   skillIds: draft.skillIds,
   toolBundleIds: draft.toolBundleIds ?? [],
@@ -41,6 +44,7 @@ export const buildPersistedUpdateAgentRequest = (
   description: draft.description.trim(),
   systemPrompt: draft.systemPrompt.trim(),
   identity: draft.identity.trim(),
+  workingDirectory: draft.workingDirectory?.trim(),
   icon: draft.icon.trim(),
   skillIds: draft.skillIds,
   toolBundleIds: draft.toolBundleIds ?? [],

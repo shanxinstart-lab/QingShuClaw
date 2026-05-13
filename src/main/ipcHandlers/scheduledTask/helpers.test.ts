@@ -76,18 +76,20 @@ describe('scheduled task helpers', () => {
     expect(channels.some((channel) => channel.label === '钉钉二号')).toBe(false);
   });
 
-  test('derives NIM runtime account ids from token or app account when instance id is unavailable', () => {
+  test('expands NIM and POPO instances after OpenClaw account routing is enabled', () => {
     initScheduledTaskHelpers({
       getIMGatewayManager: () => ({
         getConfig: () => ({
           nim: {
             instances: [
               {
+                instanceId: 'nim-token-001',
                 instanceName: '云信 Token Bot',
                 enabled: true,
                 nimToken: 'app-key|accid-001|token-secret',
               },
               {
+                instanceId: 'nim-account-002',
                 instanceName: '云信账号 Bot',
                 enabled: true,
                 appKey: 'app-key-2',
@@ -96,6 +98,18 @@ describe('scheduled task helpers', () => {
               {
                 instanceName: '云信不可用 Bot',
                 enabled: true,
+              },
+            ],
+          },
+          popo: {
+            instances: [
+              {
+                instanceId: 'popo-extra-001',
+                instanceName: 'POPO 二号',
+                enabled: true,
+                appKey: 'popo-extra',
+                appSecret: 'popo-extra-secret',
+                aesKey: 'popo-extra-aes',
               },
             ],
           },
@@ -108,14 +122,20 @@ describe('scheduled task helpers', () => {
     expect(channels).toContainEqual({
       value: 'nim',
       label: '云信 Token Bot',
-      accountId: 'app-key:accid-001',
-      filterAccountId: 'app-key:accid-001',
+      accountId: 'nim-toke',
+      filterAccountId: 'nim-toke',
     });
     expect(channels).toContainEqual({
       value: 'nim',
       label: '云信账号 Bot',
-      accountId: 'app-key-2:accid-002',
-      filterAccountId: 'app-key-2:accid-002',
+      accountId: 'nim-acco',
+      filterAccountId: 'nim-acco',
+    });
+    expect(channels).toContainEqual({
+      value: 'moltbot-popo',
+      label: 'POPO 二号',
+      accountId: 'popo-ext',
+      filterAccountId: 'popo-ext',
     });
     expect(channels.some((channel) => channel.label === '云信不可用 Bot')).toBe(false);
   });

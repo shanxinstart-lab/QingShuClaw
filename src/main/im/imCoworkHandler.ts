@@ -3,24 +3,25 @@
  * Adapter that enables IM (DingTalk/Feishu/Telegram) to use CoworkRuntime for tool-enabled AI execution
  */
 
+import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+
+import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
+import type { CoworkMessage,CoworkStore } from '../coworkStore';
+import { t } from '../i18n';
 import type { CoworkRuntime, PermissionRequest } from '../libs/agentEngine/types';
-import type { CoworkStore, CoworkMessage } from '../coworkStore';
-import type { IMStore } from './imStore';
-import type { IMMessage, Platform, IMMediaAttachment, IMSessionMapping } from './types';
 import { buildIMMediaInstruction } from './imMediaInstruction';
 import { analyzeIMReply, DEFAULT_IM_EMPTY_REPLY } from './imReplyGuard';
 import {
-  isReminderSystemTurn,
   type IMScheduledTaskCreationResult,
   type IMScheduledTaskRequestDetector,
+  isReminderSystemTurn,
   type ParsedIMScheduledTaskRequest,
 } from './imScheduledTaskHandler';
-import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
-import { t } from '../i18n';
+import type { IMStore } from './imStore';
+import type { IMMediaAttachment, IMMessage, IMSessionMapping,Platform } from './types';
 
 interface MessageAccumulator {
   messages: CoworkMessage[];
@@ -340,7 +341,7 @@ export class IMCoworkHandler extends EventEmitter {
     );
 
     // Save mapping
-    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id);
+    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id, agentId);
     this.trackSessionMapping(mapping);
 
     return session.id;
@@ -554,11 +555,11 @@ export class IMCoworkHandler extends EventEmitter {
   private handleMessage(sessionId: string, message: CoworkMessage): void {
     // Only process messages from IM sessions
     const tracked = this.ensureTrackedSession(sessionId);
-    console.log('[IMCoworkHandler:handleMessage] sessionId:', sessionId, 'tracked:', tracked, 'messageType:', message.type);
+    console.debug('[IMCoworkHandler] received runtime message for IM session.');
     if (!tracked) return;
 
     const accumulator = this.messageAccumulators.get(sessionId) ?? this.ensureBackgroundAccumulator(sessionId);
-    console.log('[IMCoworkHandler:handleMessage] accumulator exists:', !!accumulator, 'backgroundDelivery:', !!(accumulator as any)?.backgroundDelivery);
+    console.debug('[IMCoworkHandler] appended runtime message to IM accumulator.');
     if (accumulator) {
       accumulator.messages.push(message);
     }

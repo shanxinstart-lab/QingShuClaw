@@ -22,8 +22,8 @@ import { hasCreateAgentDraftChanges } from './agentDraftState';
 import {
   buildAgentBindingKeyBindings,
   getAgentImBindingEnabledInstances,
+  hasAgentImBindingInstanceConfigs,
   isAgentImBindingPlatformConfigured,
-  isMultiInstanceAgentBindingPlatform,
 } from './agentImBindingConfig';
 import { buildPersistedCreateAgentRequest } from './agentPersistedDraft';
 import AgentSkillSelector from './AgentSkillSelector';
@@ -533,7 +533,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
                   const logo = PlatformRegistry.logo(platform);
                   const bindings = imConfig?.settings?.platformAgentBindings || {};
 
-                  if (isMultiInstanceAgentBindingPlatform(platform)) {
+                  if (hasAgentImBindingInstanceConfigs(imConfig, platform)) {
                     const enabledInstances = getAgentImBindingEnabledInstances(imConfig, platform);
                     if (enabledInstances.length === 0) {
                       return (

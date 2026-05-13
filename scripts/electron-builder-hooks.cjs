@@ -90,8 +90,8 @@ function syncCurrentOpenClawRuntimeForTarget(context) {
   return { runtimeRoot: currentRoot, targetId };
 }
 
-function verifyPreinstalledPlugins(runtimeRoot, buildHint) {
-  const pkgPath = path.join(__dirname, '..', 'package.json');
+function verifyPreinstalledPlugins(runtimeRoot, buildHint, options = {}) {
+  const pkgPath = options.packageJsonPath || path.join(__dirname, '..', 'package.json');
   let plugins = [];
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -106,10 +106,12 @@ function verifyPreinstalledPlugins(runtimeRoot, buildHint) {
 
   const extensionsDir = path.join(runtimeRoot, 'third-party-extensions');
   const missing = [];
+  let verifiedCount = 0;
 
   for (const plugin of plugins) {
     if (!plugin.id) continue;
     if (plugin.optional) continue;
+    verifiedCount++;
     const pluginDir = path.join(extensionsDir, plugin.id);
     if (!existsSync(pluginDir)) {
       missing.push(plugin.id);
@@ -124,7 +126,7 @@ function verifyPreinstalledPlugins(runtimeRoot, buildHint) {
     );
   }
 
-  console.log(`[electron-builder-hooks] Verified ${plugins.length} preinstalled OpenClaw plugin(s).`);
+  console.log(`[electron-builder-hooks] Verified ${verifiedCount} required preinstalled OpenClaw plugin(s).`);
 }
 
 function hasCompiledLocalExtension(runtimeRoot, extensionId) {
@@ -513,25 +515,43 @@ function installSkillDependencies() {
   console.log(`[electron-builder-hooks] Skill dependencies: ${installedCount} installed, ${skippedCount} skipped, ${failedCount} failed`);
 }
 
+function buildMacosGeneratedHelpers(
+  context,
+  builders = {
+    speech: buildMacosSpeechHelper,
+    tts: buildMacosTtsHelper,
+  },
+) {
+  if (!isMacTarget(context)) {
+    return null;
+  }
+
+  const generatedDir = path.join(__dirname, '..', 'build', 'generated', 'macos-speech');
+  const targetArch = resolveTargetArch(context);
+  const helperPath = builders.speech({
+    arch: targetArch,
+    outputDir: generatedDir,
+  });
+  console.log(`[electron-builder-hooks] Built macOS speech helper for ${targetArch}: ${helperPath}`);
+  const ttsHelperPath = builders.tts({
+    arch: targetArch,
+    outputDir: generatedDir,
+  });
+  console.log(`[electron-builder-hooks] Built macOS TTS helper for ${targetArch}: ${ttsHelperPath}`);
+  return {
+    arch: targetArch,
+    outputDir: generatedDir,
+    speechHelperPath: helperPath,
+    ttsHelperPath,
+  };
+}
+
 async function beforePack(context) {
   ensureBundledOpenClawRuntime(context);
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();
 
-  if (isMacTarget(context)) {
-    const generatedDir = path.join(__dirname, '..', 'build', 'generated', 'macos-speech');
-    const targetArch = resolveTargetArch(context);
-    const helperPath = buildMacosSpeechHelper({
-      arch: targetArch,
-      outputDir: generatedDir,
-    });
-    console.log(`[electron-builder-hooks] Built macOS speech helper for ${targetArch}: ${helperPath}`);
-    const ttsHelperPath = buildMacosTtsHelper({
-      arch: targetArch,
-      outputDir: generatedDir,
-    });
-    console.log(`[electron-builder-hooks] Built macOS TTS helper for ${targetArch}: ${ttsHelperPath}`);
-  }
+  buildMacosGeneratedHelpers(context);
 
   if (isWindowsTarget(context)) {
     // Pack all large resource directories into a single tar for faster NSIS
@@ -610,4 +630,13 @@ async function afterPack(context) {
 module.exports = {
   beforePack,
   afterPack,
+  __test__: {
+    buildMacosGeneratedHelpers,
+    isMacTarget,
+    removeAllBinDirsInCfmind,
+    resolveOpenClawRuntimeTargetId,
+    resolveTargetArch,
+    getOpenClawRuntimeBuildHint,
+    verifyPreinstalledPlugins,
+  },
 };

@@ -6,6 +6,7 @@ import {
   AppUpdateStatus,
   type AppUpdateRuntimeState,
 } from '../shared/appUpdate/constants';
+import { OpenClawProviderId, ProviderName, ProviderRegistry } from '../shared/providers';
 import { CoworkView } from './components/cowork';
 import ConversationHistoryDrawer from './components/cowork/ConversationHistoryDrawer';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
@@ -74,6 +75,16 @@ import type { CoworkPermissionResult, CoworkSessionSummary } from './types/cowor
 const CoworkSearchModal = lazy(() => import('./components/cowork/CoworkSearchModal'));
 const ApplicationsView = lazy(() => import('./components/apps/ApplicationsView'));
 const AgentsView = lazy(() => import('./components/agent/AgentsView'));
+
+const getOpenClawProviderIdForConfig = (
+  providerName: string,
+  providerConfig: { authType?: string },
+): string => {
+  if (providerName === ProviderName.OpenAI && providerConfig.authType === 'oauth') {
+    return OpenClawProviderId.OpenAICodex;
+  }
+  return ProviderRegistry.getOpenClawProviderId(providerName);
+};
 
 const createInitialAppUpdateState = (): AppUpdateRuntimeState => ({
   status: AppUpdateStatus.Idle,
@@ -293,16 +304,18 @@ const App: React.FC = () => {
         apiService.setConfig(apiConfig);
 
         // 从 providers 配置中加载可用模型列表到 Redux
-        const providerModels: { id: string; name: string; provider?: string; providerKey?: string; supportsImage?: boolean }[] = [];
+        const providerModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
         if (config.providers) {
           Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
             if (providerConfig.enabled && providerConfig.models) {
-              providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean }) => {
+              const openClawProviderId = getOpenClawProviderIdForConfig(providerName, providerConfig);
+              providerConfig.models.forEach((model: { id: string; name: string; openClawProviderId?: string; supportsImage?: boolean }) => {
                 providerModels.push({
                   id: model.id,
                   name: model.name,
                   provider: getProviderDisplayName(providerName, providerConfig),
                   providerKey: providerName,
+                  openClawProviderId: model.openClawProviderId ?? openClawProviderId,
                   supportsImage: model.supportsImage ?? false,
                 });
               });
@@ -313,6 +326,7 @@ const App: React.FC = () => {
           id: model.id,
           name: model.name,
           providerKey: undefined,
+          openClawProviderId: model.openClawProviderId,
           supportsImage: model.supportsImage ?? false,
         }));
         const resolvedModels = providerModels.length > 0 ? providerModels : fallbackModels;
@@ -1120,15 +1134,17 @@ const App: React.FC = () => {
     });
 
     if (config.providers) {
-      const allModels: { id: string; name: string; provider?: string; providerKey?: string; supportsImage?: boolean }[] = [];
+      const allModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
       Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
         if (providerConfig.enabled && providerConfig.models) {
-          providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean }) => {
+          const openClawProviderId = getOpenClawProviderIdForConfig(providerName, providerConfig);
+          providerConfig.models.forEach((model: { id: string; name: string; openClawProviderId?: string; supportsImage?: boolean }) => {
             allModels.push({
               id: model.id,
               name: model.name,
               provider: getProviderDisplayName(providerName, providerConfig),
               providerKey: providerName,
+              openClawProviderId: model.openClawProviderId ?? openClawProviderId,
               supportsImage: model.supportsImage ?? false,
             });
           });
@@ -1391,12 +1407,20 @@ const App: React.FC = () => {
               <ChatBubbleLeftRightIcon className="h-8 w-8 text-white" />
             </div>
             <div className="text-foreground text-xl font-medium text-center">{initError}</div>
-            <button
-              onClick={() => handleShowSettings()}
-              className="px-6 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl shadow-md transition-colors text-sm font-medium"
-            >
-              {i18nService.t('openSettings')}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => window.electron.appInfo.relaunch()}
+                className="px-6 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl shadow-md transition-colors text-sm font-medium"
+              >
+                {i18nService.t('restartApp')}
+              </button>
+              <button
+                onClick={() => handleShowSettings()}
+                className="px-6 py-2.5 border border-border text-foreground hover:bg-surface-raised rounded-xl transition-colors text-sm font-medium"
+              >
+                {i18nService.t('openSettings')}
+              </button>
+            </div>
           </div>
           {showSettings && (
             <Settings

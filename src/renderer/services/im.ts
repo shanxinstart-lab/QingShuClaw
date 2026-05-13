@@ -8,10 +8,28 @@ import { PlatformRegistry } from '@shared/platform';
 
 import { store } from '../store';
 import {
+  addDingTalkInstance,
+  addFeishuInstance,
+  addNimInstance,
+  addPopoInstance,
+  addQQInstance,
+  addWecomInstance,
+  removeDingTalkInstance,
+  removeFeishuInstance,
+  removeNimInstance,
+  removePopoInstance,
+  removeQQInstance,
+  removeWecomInstance,
   setConfig,
+  setDingTalkInstanceConfig,
   setError,
+  setFeishuInstanceConfig,
   setLoading,
+  setNimInstanceConfig,
+  setPopoInstanceConfig,
+  setQQInstanceConfig,
   setStatus,
+  setWecomInstanceConfig,
 } from '../store/slices/imSlice';
 import type {
   DingTalkInstanceConfig,
@@ -23,6 +41,8 @@ import type {
   IMGatewayResult,
   IMGatewayStatus,
   IMStatusResult,
+  NimInstanceConfig,
+  PopoInstanceConfig,
   QQInstanceConfig,
   WecomInstanceConfig,
 } from '../types/im';
@@ -300,9 +320,9 @@ class IMService {
 
   async addDingTalkInstance(name: string): Promise<DingTalkInstanceConfig | null> {
     const result = await window.electron.im.addDingTalkInstance(name);
-    if (result.success) {
-      await this.loadConfig();
-      return result.instance ?? null;
+    if (result.success && result.instance) {
+      store.dispatch(addDingTalkInstance(result.instance));
+      return result.instance;
     }
     store.dispatch(setError(result.error || 'Failed to add DingTalk instance'));
     return null;
@@ -313,9 +333,15 @@ class IMService {
     config: Partial<DingTalkInstanceConfig>,
     options?: { syncGateway?: boolean }
   ): Promise<boolean> {
-    const result = await window.electron.im.setDingTalkInstanceConfig(instanceId, config, options);
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setDingTalkInstanceConfig(instanceId, config, { syncGateway });
     if (result.success) {
-      await this.loadConfig();
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setDingTalkInstanceConfig({ instanceId, config }));
+      }
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to update DingTalk instance'));
@@ -332,7 +358,7 @@ class IMService {
   async deleteDingTalkInstance(instanceId: string): Promise<boolean> {
     const result = await window.electron.im.deleteDingTalkInstance(instanceId);
     if (result.success) {
-      await this.loadConfig();
+      store.dispatch(removeDingTalkInstance(instanceId));
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to delete DingTalk instance'));
@@ -341,9 +367,9 @@ class IMService {
 
   async addFeishuInstance(name: string): Promise<FeishuInstanceConfig | null> {
     const result = await window.electron.im.addFeishuInstance(name);
-    if (result.success) {
-      await this.loadConfig();
-      return result.instance ?? null;
+    if (result.success && result.instance) {
+      store.dispatch(addFeishuInstance(result.instance));
+      return result.instance;
     }
     store.dispatch(setError(result.error || 'Failed to add Feishu instance'));
     return null;
@@ -354,9 +380,15 @@ class IMService {
     config: Partial<FeishuInstanceConfig>,
     options?: { syncGateway?: boolean }
   ): Promise<boolean> {
-    const result = await window.electron.im.setFeishuInstanceConfig(instanceId, config, options);
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setFeishuInstanceConfig(instanceId, config, { syncGateway });
     if (result.success) {
-      await this.loadConfig();
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setFeishuInstanceConfig({ instanceId, config }));
+      }
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to update Feishu instance'));
@@ -373,7 +405,7 @@ class IMService {
   async deleteFeishuInstance(instanceId: string): Promise<boolean> {
     const result = await window.electron.im.deleteFeishuInstance(instanceId);
     if (result.success) {
-      await this.loadConfig();
+      store.dispatch(removeFeishuInstance(instanceId));
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to delete Feishu instance'));
@@ -382,9 +414,9 @@ class IMService {
 
   async addQQInstance(name: string): Promise<QQInstanceConfig | null> {
     const result = await window.electron.im.addQQInstance(name);
-    if (result.success) {
-      await this.loadConfig();
-      return result.instance ?? null;
+    if (result.success && result.instance) {
+      store.dispatch(addQQInstance(result.instance));
+      return result.instance;
     }
     store.dispatch(setError(result.error || 'Failed to add QQ instance'));
     return null;
@@ -395,9 +427,15 @@ class IMService {
     config: Partial<QQInstanceConfig>,
     options?: { syncGateway?: boolean }
   ): Promise<boolean> {
-    const result = await window.electron.im.setQQInstanceConfig(instanceId, config, options);
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setQQInstanceConfig(instanceId, config, { syncGateway });
     if (result.success) {
-      await this.loadConfig();
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setQQInstanceConfig({ instanceId, config }));
+      }
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to update QQ instance'));
@@ -414,18 +452,112 @@ class IMService {
   async deleteQQInstance(instanceId: string): Promise<boolean> {
     const result = await window.electron.im.deleteQQInstance(instanceId);
     if (result.success) {
-      await this.loadConfig();
+      store.dispatch(removeQQInstance(instanceId));
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to delete QQ instance'));
     return false;
   }
 
+  async addNimInstance(name: string): Promise<NimInstanceConfig | null> {
+    const result = await window.electron.im.addNimInstance(name);
+    if (result.success && result.instance) {
+      store.dispatch(addNimInstance(result.instance));
+      return result.instance;
+    }
+    store.dispatch(setError(result.error || 'Failed to add NIM instance'));
+    return null;
+  }
+
+  async updateNimInstanceConfig(
+    instanceId: string,
+    config: Partial<NimInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setNimInstanceConfig(instanceId, config, { syncGateway });
+    if (result.success) {
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setNimInstanceConfig({ instanceId, config }));
+      }
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update NIM instance'));
+    return false;
+  }
+
+  async persistNimInstanceConfig(
+    instanceId: string,
+    config: Partial<NimInstanceConfig>
+  ): Promise<boolean> {
+    return this.updateNimInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deleteNimInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deleteNimInstance(instanceId);
+    if (result.success) {
+      store.dispatch(removeNimInstance(instanceId));
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete NIM instance'));
+    return false;
+  }
+
+  async addPopoInstance(name: string): Promise<PopoInstanceConfig | null> {
+    const result = await window.electron.im.addPopoInstance(name);
+    if (result.success && result.instance) {
+      store.dispatch(addPopoInstance(result.instance));
+      return result.instance;
+    }
+    store.dispatch(setError(result.error || 'Failed to add POPO instance'));
+    return null;
+  }
+
+  async updatePopoInstanceConfig(
+    instanceId: string,
+    config: Partial<PopoInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setPopoInstanceConfig(instanceId, config, { syncGateway });
+    if (result.success) {
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setPopoInstanceConfig({ instanceId, config }));
+      }
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update POPO instance'));
+    return false;
+  }
+
+  async persistPopoInstanceConfig(
+    instanceId: string,
+    config: Partial<PopoInstanceConfig>
+  ): Promise<boolean> {
+    return this.updatePopoInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deletePopoInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deletePopoInstance(instanceId);
+    if (result.success) {
+      store.dispatch(removePopoInstance(instanceId));
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete POPO instance'));
+    return false;
+  }
+
   async addWecomInstance(name: string): Promise<WecomInstanceConfig | null> {
     const result = await window.electron.im.addWecomInstance(name);
-    if (result.success) {
-      await this.loadConfig();
-      return result.instance ?? null;
+    if (result.success && result.instance) {
+      store.dispatch(addWecomInstance(result.instance));
+      return result.instance;
     }
     store.dispatch(setError(result.error || 'Failed to add WeCom instance'));
     return null;
@@ -436,9 +568,15 @@ class IMService {
     config: Partial<WecomInstanceConfig>,
     options?: { syncGateway?: boolean }
   ): Promise<boolean> {
-    const result = await window.electron.im.setWecomInstanceConfig(instanceId, config, options);
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setWecomInstanceConfig(instanceId, config, { syncGateway });
     if (result.success) {
-      await this.loadConfig();
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setWecomInstanceConfig({ instanceId, config }));
+      }
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to update WeCom instance'));
@@ -455,7 +593,7 @@ class IMService {
   async deleteWecomInstance(instanceId: string): Promise<boolean> {
     const result = await window.electron.im.deleteWecomInstance(instanceId);
     if (result.success) {
-      await this.loadConfig();
+      store.dispatch(removeWecomInstance(instanceId));
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to delete WeCom instance'));

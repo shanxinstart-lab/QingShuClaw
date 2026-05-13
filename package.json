@@ -6,7 +6,7 @@
     "email": "lobsterai.project@rd.netease.com"
   },
   "license": "MIT",
-  "version": "2026.5.7",
+  "version": "2026.5.9",
   "openclaw": {
     "version": "v2026.4.14",
     "repo": "https://github.com/openclaw/openclaw.git",
@@ -29,7 +29,7 @@
       {
         "id": "openclaw-weixin",
         "npm": "@tencent-weixin/openclaw-weixin",
-        "version": "2.1.10"
+        "version": "2.4.3"
       },
       {
         "id": "moltbot-popo",
@@ -132,6 +132,7 @@
     "@types/crypto-js": "^4.2.2",
     "@types/uuid": "^10.0.0",
     "@wecom/wecom-aibot-sdk": "^0.1.0",
+    "better-sqlite3": "^12.8.0",
     "bufferutil": "^4.1.0",
     "cheerio": "^1.2.0",
     "cron-parser": "^5.5.0",
@@ -155,7 +156,6 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "sql.js": "^1.13.0",
     "tar": "^7.5.11",
     "utf-8-validate": "^6.0.6",
     "uuid": "^11.1.0",
@@ -172,6 +172,7 @@
     "@commitlint/config-conventional": "^20.5.0",
     "@eslint/js": "^9.39.1",
     "@tailwindcss/typography": "^0.5.16",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/dompurify": "^3.0.5",
     "@types/extract-zip": "^2.0.1",
     "@types/js-yaml": "^4.0.9",
@@ -179,7 +180,6 @@
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@types/sql.js": "^1.4.9",
     "@types/yazl": "^3.3.0",
     "@typescript-eslint/eslint-plugin": "^8.57.1",
     "@typescript-eslint/parser": "^8.57.1",

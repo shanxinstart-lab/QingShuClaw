@@ -4,6 +4,7 @@ export interface ProviderModelConfig {
   id: string;
   name: string;
   supportsImage?: boolean;
+  openClawProviderId?: string;
 }
 
 export interface ProviderConfig {

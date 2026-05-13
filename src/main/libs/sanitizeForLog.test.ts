@@ -147,4 +147,29 @@ describe('serializeForLog', () => {
     expect(result).toContain('status=401');
     expect(result).not.toContain('sk-secret-value');
   });
+
+  test('redacts sensitive URL query parameters without hiding safe parameters', () => {
+    const result = serializeForLog({
+      message: 'fetch failed for https://api.example.com/search?query=qingshu&api_key=sk-secret-value&status=401#details',
+    });
+
+    expect(result).toContain('query=qingshu');
+    expect(result).toContain('api_key=[redacted]');
+    expect(result).toContain('status=401');
+    expect(result).toContain('#details');
+    expect(result).not.toContain('sk-secret-value');
+  });
+
+  test('redacts multiple sensitive URL query parameters in plain text values', () => {
+    const result = serializeForLog({
+      message: 'callback https://example.com/cb?access_token=access-secret&refresh_token=refresh-secret&sessionId=session-secret',
+    });
+
+    expect(result).toContain('access_token=[redacted]');
+    expect(result).toContain('refresh_token=[redacted]');
+    expect(result).toContain('sessionId=[redacted]');
+    expect(result).not.toContain('access-secret');
+    expect(result).not.toContain('refresh-secret');
+    expect(result).not.toContain('session-secret');
+  });
 });

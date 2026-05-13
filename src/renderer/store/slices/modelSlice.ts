@@ -1,6 +1,7 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 import { defaultConfig, getProviderDisplayName } from '../../config';
+import { resolveOpenClawModelRef } from '../../utils/openclawModelRef';
 
 export interface Model {
   id: string;
@@ -43,6 +44,7 @@ function buildInitialModels(): Model[] {
             name: model.name,
             provider: getProviderDisplayName(providerName, config),
             providerKey: providerName,
+            openClawProviderId: model.openClawProviderId,
             supportsImage: model.supportsImage ?? false,
           });
         });
@@ -60,6 +62,39 @@ interface ModelState {
   selectedModel: Model;
   availableModels: Model[];
   selectedModelDirty: boolean;
+  selectedModelByAgent: Record<string, Model>;
+}
+
+export function selectAgentSelectedModel(
+  modelState: Pick<ModelState, 'selectedModel' | 'availableModels' | 'selectedModelByAgent'>,
+  agentId: string,
+  agentModelRef: string,
+): Model {
+  const override = modelState.selectedModelByAgent[agentId];
+  if (override) return override;
+
+  const normalizedAgentModelRef = agentModelRef.trim();
+  if (normalizedAgentModelRef) {
+    const resolvedAgentModel = resolveOpenClawModelRef(normalizedAgentModelRef, modelState.availableModels);
+    if (resolvedAgentModel) return resolvedAgentModel;
+  }
+
+  return modelState.selectedModel;
+}
+
+function syncSelectedModelByAgent(
+  selectedModelByAgent: Record<string, Model>,
+  allAvailableModels: Model[],
+): void {
+  for (const agentId of Object.keys(selectedModelByAgent)) {
+    const agentModel = selectedModelByAgent[agentId];
+    const matchedModel = allAvailableModels.find(m => isSameModelIdentity(m, agentModel));
+    if (matchedModel) {
+      selectedModelByAgent[agentId] = matchedModel;
+    } else {
+      delete selectedModelByAgent[agentId];
+    }
+  }
 }
 
 const initialState: ModelState = {
@@ -70,6 +105,7 @@ const initialState: ModelState = {
   ) || availableModels[0],
   availableModels: availableModels,
   selectedModelDirty: false,
+  selectedModelByAgent: {},
 };
 
 const modelSlice = createSlice({
@@ -86,6 +122,12 @@ const modelSlice = createSlice({
     },
     markSelectedModelPersisted: (state) => {
       state.selectedModelDirty = false;
+    },
+    setAgentSelectedModel: (state, action: PayloadAction<{ agentId: string; model: Model }>) => {
+      state.selectedModelByAgent[action.payload.agentId] = action.payload.model;
+    },
+    clearAgentSelectedModel: (state, action: PayloadAction<string>) => {
+      delete state.selectedModelByAgent[action.payload];
     },
     setAvailableModels: (state, action: PayloadAction<Model[]>) => {
       // 保留已有的服务端模型，只更新用户自配模型（与 setServerModels 对称）
@@ -104,6 +146,7 @@ const modelSlice = createSlice({
           state.selectedModelDirty = false;
         }
       }
+      syncSelectedModelByAgent(state.selectedModelByAgent, state.availableModels);
     },
     setServerModels: (state, action: PayloadAction<Model[]>) => {
       // 服务端模型放前面，自配模型保留在后面
@@ -120,6 +163,7 @@ const modelSlice = createSlice({
           state.selectedModelDirty = false;
         }
       }
+      syncSelectedModelByAgent(state.selectedModelByAgent, state.availableModels);
     },
     clearServerModels: (state) => {
       state.availableModels = state.availableModels.filter(m => !m.isServerModel);
@@ -129,6 +173,7 @@ const modelSlice = createSlice({
         state.selectedModel = state.availableModels[0];
         state.selectedModelDirty = false;
       }
+      syncSelectedModelByAgent(state.selectedModelByAgent, state.availableModels);
     },
   },
 });
@@ -137,6 +182,8 @@ export const {
   setSelectedModel,
   setSelectedModelSilently,
   markSelectedModelPersisted,
+  setAgentSelectedModel,
+  clearAgentSelectedModel,
   setAvailableModels,
   setServerModels,
   clearServerModels,

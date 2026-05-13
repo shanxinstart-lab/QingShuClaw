@@ -1,3 +1,5 @@
+import { type ProviderConfig, ProviderName, ProviderRegistry } from '../../shared/providers';
+import { TtsEngine } from '../../shared/tts/constants';
 import {
   AppConfig,
   CONFIG_KEYS,
@@ -8,21 +10,16 @@ import {
   defaultConfig,
   isCustomProvider,
 } from '../config';
-import { type ProviderConfig, ProviderRegistry } from '../../shared/providers';
-import { TtsEngine } from '../../shared/tts/constants';
 import { localStore } from './store';
 
 const getFixedProviderApiFormat = (providerKey: string): 'anthropic' | 'openai' | 'gemini' | null => {
-  if (providerKey === 'openai' || providerKey === 'stepfun' || providerKey === 'youdaozhiyun') {
+  // Moonshot exposes switchable URLs in settings, but its regular Anthropic
+  // endpoint is incomplete for the renderer chat flow.
+  if (providerKey === ProviderName.Moonshot) {
     return 'openai';
   }
-  if (providerKey === 'anthropic') {
-    return 'anthropic';
-  }
-  if (providerKey === 'gemini') {
-    return 'gemini';
-  }
-  return null;
+  const def = ProviderRegistry.get(providerKey);
+  return def && !def.switchableBaseUrls ? def.defaultApiFormat : null;
 };
 
 const normalizeProviderBaseUrl = (providerKey: string, baseUrl: unknown): string => {
@@ -255,8 +252,9 @@ class ConfigService {
               }).map(([providerKey, providerConfig]) => [
                 providerKey,
                 (() => {
+                  const defaultProvidersByKey = defaultConfig.providers as Record<string, ProviderConfig | undefined>;
                   const mergedProvider = {
-                    ...(defaultConfig.providers as Record<string, any>)?.[providerKey],
+                    ...defaultProvidersByKey[providerKey],
                     ...providerConfig,
                   };
                   // Filter out removed models

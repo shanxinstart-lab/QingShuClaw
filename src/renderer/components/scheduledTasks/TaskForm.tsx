@@ -14,7 +14,14 @@ import { RootState } from '../../store';
 import type { Model } from '../../store/slices/modelSlice';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import ModelSelector from '../ModelSelector';
-import { formatScheduleLabel, type PlanType, scheduleToPlanInfo } from './utils';
+import {
+  formatScheduleLabel,
+  isSavedOnlyScheduledTaskChannelOption,
+  mergeScheduledTaskChannelOptions,
+  type PlanType,
+  scheduledTaskChannelOptionKey,
+  scheduleToPlanInfo,
+} from './utils';
 
 interface TaskFormProps {
   mode: 'create' | 'edit';
@@ -141,10 +148,6 @@ function buildScheduleInput(form: FormState): ScheduledTaskInput['schedule'] {
   return { kind: 'cron', expr: `${min} ${hr} ${form.monthDay} * *` };
 }
 
-function getChannelOptionValue(channel: string, accountId?: string): string {
-  return `${channel}::${accountId ?? ''}`;
-}
-
 const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDirtyChange }) => {
   const [form, setForm] = useState<FormState>(() => createFormState(task));
   const initialFormRef = useRef(JSON.stringify(createFormState(task)));
@@ -163,6 +166,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     }
     return base;
   });
+  const [availableChannelOptions, setAvailableChannelOptions] = useState<ScheduledTaskChannelOption[]>([]);
   const [conversations, setConversations] = useState<ScheduledTaskConversationOption[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -198,14 +202,9 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     let cancelled = false;
     void scheduledTaskService.listChannels().then((channels) => {
       if (cancelled || channels.length === 0) return;
+      setAvailableChannelOptions(channels);
       setChannelOptions((current) => {
-        const next = [...current];
-        for (const channel of channels) {
-          if (!next.some((item) => item.value === channel.value && item.accountId === channel.accountId)) {
-            next.push(channel);
-          }
-        }
-        return next;
+        return mergeScheduledTaskChannelOptions(channels, current);
       });
     });
     return () => {
@@ -639,6 +638,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
                 </div>
                 {channelOptions.map((channel) => {
                   const unsupported = isChannelUnsupported(channel.value);
+                  const savedOnly = isSavedOnlyScheduledTaskChannelOption(channel, availableChannelOptions);
                   const logo = getChannelLogo(channel.value);
                   const platform = PlatformRegistry.platformOfChannel(channel.value);
                   const platformLabel = platform
@@ -649,7 +649,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
                     && (channel.accountId ? form.notifyAccountId === channel.accountId : !form.notifyAccountId);
                   return (
                     <div
-                      key={getChannelOptionValue(channel.value, channel.accountId)}
+                      key={scheduledTaskChannelOptionKey(channel)}
                       className={`flex items-center gap-2 px-3 py-2 transition-colors ${
                         unsupported
                           ? 'opacity-50 cursor-not-allowed'
@@ -667,10 +667,10 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
                       ) : (
                         <span className="w-5 h-5" />
                       )}
-                      <span className={`text-sm ${unsupported ? 'text-secondary' : 'text-foreground'}`}>
-                        {unsupported
-                          ? `${displayName} (${i18nService.t('scheduledTasksChannelUnsupported')})`
-                          : displayName}
+                      <span className={`text-sm ${unsupported || savedOnly ? 'text-secondary' : 'text-foreground'}`}>
+                        {displayName}
+                        {unsupported && ` (${i18nService.t('scheduledTasksChannelUnsupported')})`}
+                        {!unsupported && savedOnly && ` (${i18nService.t('scheduledTasksChannelUnavailable')})`}
                       </span>
                     </div>
                   );

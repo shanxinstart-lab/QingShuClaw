@@ -1,4 +1,5 @@
 import {
+  ArrowPathIcon,
   BoltIcon,
   ClockIcon,
   EllipsisVerticalIcon,
@@ -37,6 +38,7 @@ const TaskListItem: React.FC<TaskListItemProps> = ({ task, onRequestDelete }) =>
   }, [showMenu]);
 
   const effectiveStatus = task.state.runningAtMs ? 'running' : task.state.lastStatus;
+  const isRunning = effectiveStatus === 'running';
   const statusLabel = i18nService.t(getStatusLabelKey(effectiveStatus));
   const statusTone = getStatusTone(effectiveStatus);
   const statusBadgeClass = effectiveStatus === 'running'
@@ -140,10 +142,11 @@ const TaskListItem: React.FC<TaskListItemProps> = ({ task, onRequestDelete }) =>
                     setShowMenu(false);
                     void scheduledTaskService.runManually(task.id);
                   }}
-                  disabled={Boolean(task.state.runningAtMs)}
-                  className="w-full px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-surface-raised disabled:opacity-50"
+                  disabled={isRunning}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-surface-raised disabled:cursor-wait disabled:opacity-60"
                 >
-                  {i18nService.t('scheduledTasksRun')}
+                  {isRunning && <ArrowPathIcon className="h-3.5 w-3.5 animate-spin text-primary" />}
+                  <span>{i18nService.t(isRunning ? 'scheduledTasksStatusRunning' : 'scheduledTasksRun')}</span>
                 </button>
                 <button
                   type="button"

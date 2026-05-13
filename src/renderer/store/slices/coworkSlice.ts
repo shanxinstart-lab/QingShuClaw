@@ -217,13 +217,32 @@ const coworkSlice = createSlice({
       markSessionUnread(state, sessionId);
     },
 
-    updateMessageContent(state, action: PayloadAction<{ sessionId: string; messageId: string; content: string }>) {
-      const { sessionId, messageId, content } = action.payload;
+    updateMessageContent(state, action: PayloadAction<{
+      sessionId: string;
+      messageId: string;
+      content: string;
+      metadata?: CoworkMessage['metadata'];
+    }>) {
+      const { sessionId, messageId, content, metadata } = action.payload;
 
       if (state.currentSession?.id === sessionId) {
         const messageIndex = state.currentSession.messages.findIndex(m => m.id === messageId);
         if (messageIndex !== -1) {
           state.currentSession.messages[messageIndex].content = content;
+          if (metadata !== undefined) {
+            state.currentSession.messages[messageIndex].metadata = {
+              ...(state.currentSession.messages[messageIndex].metadata ?? {}),
+              ...metadata,
+            };
+          }
+        } else {
+          state.currentSession.messages.push({
+            id: messageId,
+            type: 'assistant',
+            content,
+            timestamp: Date.now(),
+            ...(metadata !== undefined ? { metadata } : {}),
+          });
         }
       }
 

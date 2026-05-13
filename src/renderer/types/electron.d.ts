@@ -1,4 +1,5 @@
 import type { AppUpdateCheckResult, AppUpdateInfo as RuntimeAppUpdateInfo, AppUpdateRuntimeState, AppUpdateSource } from '../../shared/appUpdate/constants';
+import type { NimQrLoginPollResult, NimQrLoginStartResult } from '../../shared/im/nimQrLogin';
 
 interface ApiResponse {
   ok: boolean;
@@ -300,6 +301,7 @@ interface AgentIpcRecord {
   systemPrompt: string;
   identity: string;
   model: string;
+  workingDirectory: string;
   icon: string;
   skillIds: string[];
   toolBundleIds: string[];
@@ -400,8 +402,8 @@ import type {
   AuthCallbackPayload,
   AuthPasswordLoginInput,
 } from '../../common/auth';
-import type { Agent, PresetAgent } from './agent';
 import type { UserProfile, UserQuota } from '../store/slices/authSlice';
+import type { Agent, PresetAgent } from './agent';
 
 interface CreditItem {
   type: 'subscription' | 'boost' | 'free';
@@ -469,8 +471,8 @@ interface IElectronAPI {
   agents: {
     list: (options?: { refreshManagedCatalog?: boolean }) => Promise<Agent[]>;
     get: (id: string) => Promise<Agent | null>;
-    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
-    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => Promise<Agent>;
+    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; workingDirectory?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
+    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; workingDirectory?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => Promise<Agent>;
     delete: (id: string) => Promise<void>;
     presets: () => Promise<PresetAgent[]>;
     addPreset: (presetId: string) => Promise<Agent>;
@@ -578,7 +580,12 @@ interface IElectronAPI {
     readBootstrapFile: (filename: string) => Promise<{ success: boolean; content: string; error?: string }>;
     writeBootstrapFile: (filename: string, content: string) => Promise<{ success: boolean; error?: string }>;
     onStreamMessage: (callback: (data: { sessionId: string; message: CoworkMessage }) => void) => () => void;
-    onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string }) => void) => () => void;
+    onStreamMessageUpdate: (callback: (data: {
+      sessionId: string;
+      messageId: string;
+      content: string;
+      metadata?: Record<string, unknown>;
+    }) => void) => () => void;
     onStreamPermission: (callback: (data: { sessionId: string; request: CoworkPermissionRequest }) => void) => () => void;
     onStreamPermissionDismiss: (callback: (data: { requestId: string }) => void) => () => void;
     onStreamComplete: (callback: (data: { sessionId: string; claudeSessionId: string | null }) => void) => () => void;
@@ -639,6 +646,7 @@ interface IElectronAPI {
   appInfo: {
     getVersion: () => Promise<string>;
     getSystemLocale: () => Promise<string>;
+    relaunch: () => Promise<void>;
   };
   appUpdate: {
     getState: () => Promise<AppUpdateRuntimeState>;
@@ -684,6 +692,8 @@ interface IElectronAPI {
     weixinQrLoginWait: (accountId?: string) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string }>;
     popoQrLoginStart: () => Promise<{ success: boolean; qrUrl?: string; taskToken?: string; timeoutMs?: number; message?: string }>;
     popoQrLoginPoll: (taskToken: string) => Promise<{ success: boolean; message: string; appKey?: string; appSecret?: string; aesKey?: string }>;
+    nimQrLoginStart: () => Promise<NimQrLoginStartResult>;
+    nimQrLoginPoll: (uuid: string) => Promise<NimQrLoginPollResult>;
     listPairingRequests: (platform: string) => Promise<{
       success: boolean;
       requests: Array<{ id: string; code: string; createdAt: string; lastSeenAt: string; meta?: Record<string, string> }>;
@@ -701,6 +711,12 @@ interface IElectronAPI {
     addQQInstance: (name: string) => Promise<{ success: boolean; instance?: QQInstanceConfig; error?: string }>;
     deleteQQInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
     setQQInstanceConfig: (instanceId: string, config: Partial<QQInstanceConfig>, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    addNimInstance: (name: string) => Promise<{ success: boolean; instance?: NimInstanceConfig; error?: string }>;
+    deleteNimInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setNimInstanceConfig: (instanceId: string, config: Partial<NimInstanceConfig>, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
+    addPopoInstance: (name: string) => Promise<{ success: boolean; instance?: PopoInstanceConfig; error?: string }>;
+    deletePopoInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
+    setPopoInstanceConfig: (instanceId: string, config: Partial<PopoInstanceConfig>, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
     addWecomInstance: (name: string) => Promise<{ success: boolean; instance?: WecomInstanceConfig; error?: string }>;
     deleteWecomInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
     setWecomInstanceConfig: (instanceId: string, config: Partial<WecomInstanceConfig>, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
@@ -716,9 +732,9 @@ interface IElectronAPI {
     toggle: (id: string, enabled: boolean) => Promise<{ success: boolean; task?: import('../../scheduledTask/types').ScheduledTask; warning?: string; error?: string }>;
     runManually: (id: string) => Promise<{ success: boolean; error?: string }>;
     stop: (id: string) => Promise<{ success: boolean; error?: string }>;
-    listRuns: (taskId: string, limit?: number, offset?: number) => Promise<{ success: boolean; runs?: import('../../scheduledTask/types').ScheduledTaskRun[]; error?: string }>;
+    listRuns: (taskId: string, limit?: number, offset?: number, filter?: import('../../scheduledTask/types').RunFilter) => Promise<{ success: boolean; runs?: import('../../scheduledTask/types').ScheduledTaskRun[]; error?: string }>;
     countRuns: (taskId: string) => Promise<{ success: boolean; count?: number; error?: string }>;
-    listAllRuns: (limit?: number, offset?: number) => Promise<{ success: boolean; runs?: import('../../scheduledTask/types').ScheduledTaskRunWithName[]; error?: string }>;
+    listAllRuns: (limit?: number, offset?: number, filter?: import('../../scheduledTask/types').RunFilter) => Promise<{ success: boolean; runs?: import('../../scheduledTask/types').ScheduledTaskRunWithName[]; error?: string }>;
     resolveSession: (sessionKey: string) => Promise<{
       success: boolean;
       session?: import('./cowork').CoworkSession | null;
@@ -856,10 +872,10 @@ interface IMGatewayConfig {
   telegram: TelegramOpenClawConfig;
   qq: QQMultiInstanceConfig;
   discord: DiscordOpenClawConfig;
-  nim: NimConfig;
+  nim: NimMultiInstanceConfig;
   'netease-bee': NeteaseBeeChanConfig;
   wecom: WecomMultiInstanceConfig;
-  popo: PopoOpenClawConfig;
+  popo: PopoMultiInstanceConfig;
   weixin: WeixinOpenClawConfig;
   settings: IMSettings;
 }
@@ -992,17 +1008,36 @@ interface NimAdvancedConfig {
   mediaMaxMb?: number;
   textChunkLimit?: number;
   debug?: boolean;
+  legacyLogin?: boolean;
+  weblbsUrl?: string;
+  link_web?: string;
+  nos_uploader?: string;
+  nos_downloader_v2?: string;
+  nosSsl?: boolean;
+  nos_accelerate?: string;
+  nos_accelerate_host?: string;
 }
 
 interface NimConfig {
   enabled: boolean;
+  nimToken?: string;
   appKey: string;
   account: string;
   token: string;
+  antispamEnabled?: boolean;
   p2p?: NimP2pConfig;
   team?: NimTeamConfig;
   qchat?: NimQChatConfig;
   advanced?: NimAdvancedConfig;
+}
+
+interface NimInstanceConfig extends NimConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface NimMultiInstanceConfig {
+  instances: NimInstanceConfig[];
 }
 
 interface NeteaseBeeChanConfig {
@@ -1073,6 +1108,15 @@ interface PopoOpenClawConfig {
   textChunkLimit: number;
   richTextChunkLimit: number;
   debug: boolean;
+}
+
+interface PopoInstanceConfig extends PopoOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
+}
+
+interface PopoMultiInstanceConfig {
+  instances: PopoInstanceConfig[];
 }
 
 interface WeixinOpenClawConfig {

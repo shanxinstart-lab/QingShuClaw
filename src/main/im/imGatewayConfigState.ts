@@ -16,6 +16,8 @@ export const isPlatformEnabled = (
 ): boolean => {
   if (platform === 'dingtalk') return config.dingtalk.instances.some((item) => item.enabled);
   if (platform === 'feishu') return config.feishu.instances.some((item) => item.enabled);
+  if (platform === 'nim') return config.nim.instances.some((item) => item.enabled);
+  if (platform === 'popo') return config.popo.instances.some((item) => item.enabled);
   if (platform === 'qq') return config.qq.instances.some((item) => item.enabled);
   if (platform === 'wecom') return config.wecom.instances.some((item) => item.enabled);
   return Boolean(config[platform]?.enabled);

@@ -33,13 +33,47 @@ import type {
 } from '../types/cowork';
 import { getCoworkVisibleErrorMessage } from './coworkErrorMessage';
 
+export function mergeLoadedSessionWithCurrentSession(
+  loadedSession: CoworkSession,
+  currentSession: CoworkSession | null | undefined,
+): CoworkSession {
+  if (!currentSession || currentSession.id !== loadedSession.id) {
+    return loadedSession;
+  }
+
+  if (loadedSession.messages.length >= currentSession.messages.length) {
+    return loadedSession;
+  }
+
+  const loadedMessagesById = new Map(
+    loadedSession.messages.map((message) => [message.id, message]),
+  );
+  const currentMessageIds = new Set(currentSession.messages.map((message) => message.id));
+  const mergedMessages = currentSession.messages.map((message) => (
+    loadedMessagesById.get(message.id) ?? message
+  ));
+
+  for (const message of loadedSession.messages) {
+    if (!currentMessageIds.has(message.id)) {
+      mergedMessages.push(message);
+    }
+  }
+
+  return {
+    ...loadedSession,
+    messages: mergedMessages,
+    updatedAt: Math.max(loadedSession.updatedAt, currentSession.updatedAt),
+  };
+}
+
 class CoworkService {
   private streamListenerCleanups: Array<() => void> = [];
   private initialized = false;
   private openClawStatus: OpenClawEngineStatus | null = null;
   private openClawStatusListeners = new Set<(status: OpenClawEngineStatus) => void>();
   private openClawEngineListenerAttached = false;
-  private latestLoadSessionsRequestId = 0;
+  private latestLoadSessionsRequestIds = new Map<string, number>();
+  private pendingLoadSessionsByKey = new Map<string, Promise<void>>();
   private latestLoadSessionRequestId = 0;
 
   async init(): Promise<void> {
@@ -70,30 +104,13 @@ class CoworkService {
 
     // Message listener - also check if session exists (for IM-created sessions)
     const messageCleanup = cowork.onStreamMessage(async ({ sessionId, message }) => {
-      // Debug: log user messages to check if imageAttachments are preserved
-      if (message.type === 'user') {
-        const meta = message.metadata as Record<string, unknown> | undefined;
-        console.log('[CoworkService] onStreamMessage received user message', {
-          sessionId,
-          messageId: message.id,
-          hasMetadata: !!meta,
-          metadataKeys: meta ? Object.keys(meta) : [],
-          hasImageAttachments: !!(meta?.imageAttachments),
-          imageAttachmentsCount: Array.isArray(meta?.imageAttachments) ? (meta.imageAttachments as unknown[]).length : 0,
-        });
-      }
       // Check if session exists in current list
       const state = store.getState().cowork;
       const sessionExists = state.sessions.some(s => s.id === sessionId);
 
-      console.log('[CoworkService] onStreamMessage: sessionId=', sessionId, 'type=', message.type, 'sessionExists=', sessionExists, 'totalSessions=', state.sessions.length);
       if (!sessionExists) {
         // Session was created by IM or another source, refresh the session list
-        console.log('[CoworkService] onStreamMessage: session NOT found in Redux, calling loadSessions...');
         await this.loadSessions();
-        const newState = store.getState().cowork;
-        const nowExists = newState.sessions.some(s => s.id === sessionId);
-        console.log('[CoworkService] onStreamMessage: after loadSessions, sessionExists=', nowExists, 'totalSessions=', newState.sessions.length);
       }
 
       // A new user turn means this session is actively running again
@@ -109,8 +126,8 @@ class CoworkService {
     this.streamListenerCleanups.push(messageCleanup);
 
     // Message update listener (for streaming content updates)
-    const messageUpdateCleanup = cowork.onStreamMessageUpdate(({ sessionId, messageId, content }) => {
-      store.dispatch(updateMessageContent({ sessionId, messageId, content }));
+    const messageUpdateCleanup = cowork.onStreamMessageUpdate(({ sessionId, messageId, content, metadata }) => {
+      store.dispatch(updateMessageContent({ sessionId, messageId, content, metadata }));
     });
     this.streamListenerCleanups.push(messageUpdateCleanup);
 
@@ -137,7 +154,7 @@ class CoworkService {
       store.dispatch(updateSessionStatus({ sessionId, status: 'completed' }));
       const state = store.getState().cowork;
       if (state.currentSession?.id === sessionId) {
-        void this.loadSession(sessionId);
+          void this.loadSession(sessionId, { preserveSelection: true });
       }
     });
     this.streamListenerCleanups.push(completeCleanup);
@@ -163,19 +180,24 @@ class CoworkService {
     // Sessions changed listener (new channel sessions discovered by polling)
     const sessionsChangedCleanup = cowork.onSessionsChanged(() => {
       const beforeState = store.getState().cowork;
-      console.log('[CoworkService] onSessionsChanged: received IPC event, before sessions:', beforeState.sessions.length, 'sessionIds:', beforeState.sessions.map(s => s.id).slice(0, 5));
+      console.debug('[CoworkService] sessions changed, refreshing session list with', beforeState.sessions.length, 'known sessions');
       void this.loadSessions().then(() => {
         const state = store.getState().cowork;
-        console.log('[CoworkService] onSessionsChanged: loadSessions complete, total sessions:', state.sessions.length, 'sessionIds:', state.sessions.map(s => s.id).slice(0, 5));
+        console.debug('[CoworkService] refreshed session list with', state.sessions.length, 'sessions');
         const currentSessionId = state.currentSessionId;
         if (currentSessionId && state.currentSession?.id === currentSessionId) {
-          void this.loadSession(currentSessionId);
+          void this.loadSession(currentSessionId, { preserveSelection: true });
         }
       }).catch((err) => {
-        console.error('[CoworkService] onSessionsChanged: loadSessions FAILED:', err);
+        console.error('[CoworkService] session list refresh failed:', err);
       });
     });
     this.streamListenerCleanups.push(sessionsChangedCleanup);
+  }
+
+  setupStreamListenersForTest(): void {
+    if (!import.meta.env?.TEST) return;
+    this.setupStreamListeners();
   }
 
   private setupOpenClawEngineListeners(): void {
@@ -203,13 +225,38 @@ class CoworkService {
     this.openClawEngineListenerAttached = false;
   }
 
+  cleanupListenersForTest(): void {
+    if (!import.meta.env?.TEST) return;
+    this.cleanupListeners();
+  }
+
   async loadSessions(agentId?: string): Promise<void> {
-    const requestId = ++this.latestLoadSessionsRequestId;
+    const requestKey = agentId ?? '__all__';
+    const pendingRequest = this.pendingLoadSessionsByKey.get(requestKey);
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+
+    const requestId = (this.latestLoadSessionsRequestIds.get(requestKey) ?? 0) + 1;
+    this.latestLoadSessionsRequestIds.set(requestKey, requestId);
+
+    const requestPromise = this.loadSessionsForKey(agentId, requestKey, requestId);
+    this.pendingLoadSessionsByKey.set(requestKey, requestPromise);
+    try {
+      await requestPromise;
+    } finally {
+      if (this.pendingLoadSessionsByKey.get(requestKey) === requestPromise) {
+        this.pendingLoadSessionsByKey.delete(requestKey);
+      }
+    }
+  }
+
+  private async loadSessionsForKey(agentId: string | undefined, requestKey: string, requestId: number): Promise<void> {
     const result = await window.electron?.cowork?.listSessions(agentId);
     if (result?.success && result.sessions) {
       // High-frequency IM traffic can trigger overlapping list refreshes.
       // Ignore stale responses so an older snapshot does not hide newer sessions.
-      if (requestId !== this.latestLoadSessionsRequestId) {
+      if (requestId !== this.latestLoadSessionsRequestIds.get(requestKey)) {
         return;
       }
       store.dispatch(setSessions(result.sessions));
@@ -469,10 +516,14 @@ class CoworkService {
     }
   }
 
-  async loadSession(sessionId: string): Promise<CoworkSession | null> {
+  async loadSession(
+    sessionId: string,
+    options: { preserveSelection?: boolean } = {},
+  ): Promise<CoworkSession | null> {
     const cowork = window.electron?.cowork;
     if (!cowork) return null;
     const requestId = ++this.latestLoadSessionRequestId;
+    const expectedSessionId = options.preserveSelection ? sessionId : null;
 
     const result = await cowork.getSession(sessionId);
     if (result.success && result.session) {
@@ -480,11 +531,21 @@ class CoworkService {
       if (requestId !== this.latestLoadSessionRequestId) {
         return result.session;
       }
-      store.dispatch(setCurrentSession(result.session));
-      store.dispatch(setStreaming(result.session.status === 'running'));
+      if (expectedSessionId && store.getState().cowork.currentSessionId !== expectedSessionId) {
+        return result.session;
+      }
+      const sessionToApply = mergeLoadedSessionWithCurrentSession(
+        result.session,
+        store.getState().cowork.currentSession,
+      );
+      store.dispatch(setCurrentSession(sessionToApply));
+      store.dispatch(setStreaming(sessionToApply.status === 'running'));
 
       const imResult = await cowork.remoteManaged(sessionId);
-      if (requestId === this.latestLoadSessionRequestId) {
+      if (
+        requestId === this.latestLoadSessionRequestId
+        && (!expectedSessionId || store.getState().cowork.currentSessionId === expectedSessionId)
+      ) {
         store.dispatch(setRemoteManaged(imResult?.remoteManaged ?? false));
       }
 

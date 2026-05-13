@@ -5,11 +5,11 @@ import type {
   CoworkSession,
   CoworkSessionStatus,
 } from '../coworkStore';
+import { extractOpenClawAssistantStreamText } from './openclawAssistantText';
 import {
   extractGatewayHistoryEntry,
   extractGatewayMessageText,
 } from './openclawHistory';
-import { extractOpenClawAssistantStreamText } from './openclawAssistantText';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -326,6 +326,14 @@ const parseTranscriptMessages = (fileContent: string): CoworkMessage[] => {
         if (fallbackText.trim()) {
           textParts.push(fallbackText);
         }
+      }
+    }
+    if (textParts.length === 0) {
+      const topLevelText = toStringValue(message.text).trim()
+        || toStringValue(message.output).trim()
+        || toStringValue(message.output_text).trim();
+      if (topLevelText) {
+        textParts.push(topLevelText);
       }
     }
 

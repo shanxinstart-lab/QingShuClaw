@@ -134,6 +134,7 @@ let proxyAuthToken: string | null = null;
 let upstreamConfig: OpenAICompatUpstreamConfig | null = null;
 let lastProxyError: string | null = null;
 let tokenRefresher: (() => Promise<string | null>) | null = null;
+const tokenRefreshers = new Map<string, () => Promise<string | null>>();
 let currentCoworkSessionId: string | null = null;
 const toolCallExtraContentById = new Map<string, unknown>();
 
@@ -2308,6 +2309,89 @@ async function handleRequest(
     return;
   }
 
+  if (method === 'POST' && (url.pathname === '/v1/copilot/chat/completions' || url.pathname === '/copilot/chat/completions')) {
+    let body = '';
+    try {
+      body = await readRequestBody(req);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid request body';
+      writeJSON(res, 400, createAnthropicErrorBody(message, 'invalid_request_error'));
+      return;
+    }
+
+    const { getCurrentCopilotToken, refreshCopilotTokenNow } = await import('./copilotTokenManager');
+
+    let tokenState = getCurrentCopilotToken();
+    if (!tokenState) {
+      try {
+        tokenState = await refreshCopilotTokenNow();
+      } catch (error) {
+        console.warn('[CoworkProxy] Copilot passthrough could not obtain a token:', error);
+        writeJSON(res, 503, createAnthropicErrorBody('Copilot token unavailable', 'service_unavailable'));
+        return;
+      }
+    }
+
+    const buildCopilotUrl = (baseUrl: string): string => {
+      const normalized = baseUrl.replace(/\/+$/, '');
+      return normalized.endsWith('/chat/completions')
+        ? normalized
+        : `${normalized}/chat/completions`;
+    };
+
+    const buildCopilotHeaders = (token: string): Record<string, string> => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'Copilot-Integration-Id': 'vscode-chat',
+      'Editor-Version': 'vscode/1.96.2',
+      'Editor-Plugin-Version': 'copilot-chat/0.26.7',
+      'User-Agent': 'GitHubCopilotChat/0.26.7',
+      'Openai-Intent': 'conversation-panel',
+    });
+
+    let copilotUrl = buildCopilotUrl(tokenState.baseUrl);
+    console.log(`[CoworkProxy] Copilot passthrough request forwarded to ${copilotUrl}`);
+    let upstreamResponse = await session.defaultSession.fetch(copilotUrl, {
+      method: 'POST',
+      headers: buildCopilotHeaders(tokenState.copilotToken),
+      body,
+    });
+
+    if (upstreamResponse.status === 401 || upstreamResponse.status === 403) {
+      try {
+        const refreshed = await refreshCopilotTokenNow();
+        copilotUrl = buildCopilotUrl(refreshed.baseUrl);
+        upstreamResponse = await session.defaultSession.fetch(copilotUrl, {
+          method: 'POST',
+          headers: buildCopilotHeaders(refreshed.copilotToken),
+          body,
+        });
+        console.log(`[CoworkProxy] Copilot passthrough retry completed with status ${upstreamResponse.status}`);
+      } catch (error) {
+        console.warn('[CoworkProxy] Copilot passthrough token refresh failed:', error);
+      }
+    }
+
+    res.writeHead(upstreamResponse.status, {
+      'Content-Type': upstreamResponse.headers.get('content-type') || 'application/json',
+    });
+
+    if (upstreamResponse.body) {
+      const reader = upstreamResponse.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          res.end();
+          return;
+        }
+        res.write(Buffer.from(value));
+      }
+    }
+
+    res.end(await upstreamResponse.text().catch(() => ''));
+    return;
+  }
+
   if (method !== 'POST' || url.pathname !== '/v1/messages') {
     writeJSON(res, 404, createAnthropicErrorBody('Not found', 'not_found_error'));
     return;
@@ -2435,12 +2519,15 @@ async function handleRequest(
   }
 
   if (!upstreamResponse.ok) {
-    // 401/403 from lobsterai-server likely means the JWT accessToken expired.
-    // Refresh the token and retry once before falling through to other error handling.
-    if ((upstreamResponse.status === 401 || upstreamResponse.status === 403) && tokenRefresher) {
-      console.log(`[CoworkProxy] Got ${upstreamResponse.status}, attempting token refresh and retry...`);
+    const providerRefresher = upstreamConfig.provider
+      ? tokenRefreshers.get(upstreamConfig.provider)
+      : undefined;
+    const refresher = providerRefresher ?? tokenRefresher;
+    if ((upstreamResponse.status === 401 || upstreamResponse.status === 403) && refresher) {
+      const providerLabel = upstreamConfig.provider || 'default';
+      console.log(`[CoworkProxy] Got ${upstreamResponse.status} from ${providerLabel}, attempting token refresh and retry...`);
       try {
-        const newToken = await tokenRefresher();
+        const newToken = await refresher();
         if (newToken) {
           if (isGeminiProvider(upstreamConfig?.provider, upstreamConfig?.baseURL)) {
             headers['x-goog-api-key'] = newToken;
@@ -2689,6 +2776,10 @@ export function configureCoworkOpenAICompatProxy(config: OpenAICompatUpstreamCon
  */
 export function setProxyTokenRefresher(refresher: () => Promise<string | null>): void {
   tokenRefresher = refresher;
+}
+
+export function registerProxyTokenRefresher(provider: string, refresher: () => Promise<string | null>): void {
+  tokenRefreshers.set(provider, refresher);
 }
 
 export function getCoworkOpenAICompatProxyBaseURL(target: OpenAICompatProxyTarget = 'local'): string | null {

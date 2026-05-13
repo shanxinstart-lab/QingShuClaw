@@ -1,71 +1,74 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { configService } from '../services/config';
-import { apiService } from '../services/api';
-import { buildApiRequestHeaders } from '../services/apiRequestHeaders';
-import {
-  buildOpenAICompatibleChatCompletionsUrl,
-  buildOpenAIResponsesUrl,
-  getEffectiveProviderApiFormat as getEffectiveApiFormat,
-  shouldUseMaxCompletionTokensForOpenAI,
-  shouldUseOpenAIResponsesForProvider,
-  shouldShowProviderApiFormatSelector as shouldShowApiFormatSelector,
-} from '../services/providerRequestConfig';
-import { themeService } from '../services/theme';
-import { i18nService, LanguageType } from '../services/i18n';
-import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPayload, PasswordEncryptedPayload } from '../services/encryption';
-import { coworkService } from '../services/cowork';
-import { APP_ID, APP_NAME, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
-import ErrorMessage from './ErrorMessage';
-import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
-import PlusCircleIcon from './icons/PlusCircleIcon';
-import TrashIcon from './icons/TrashIcon';
-import PencilIcon from './icons/PencilIcon';
-import BrainIcon from './icons/BrainIcon';
+import { ArrowTopRightOnSquareIcon,ChatBubbleLeftIcon, CheckCircleIcon, Cog6ToothIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, InformationCircleIcon, SignalIcon, UserCircleIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { setAvailableModels } from '../store/slices/modelSlice';
-import { RootState } from '../store';
-import ThemedSelect from './ui/ThemedSelect';
-import type {
-  CoworkAgentEngine,
-  OpenClawEngineStatus,
-  CoworkUserMemoryEntry,
-  CoworkMemoryStats,
-  OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValue,
-} from '../types/cowork';
-import { OpenClawSessionKeepAlive } from '../types/cowork';
-import IMSettings from './im/IMSettings';
-import { imService } from '../services/im';
-import EmailSkillConfig from './skills/EmailSkillConfig';
-import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
-import type { WakeInputStatus } from '../../shared/wakeInput/constants';
-import { TtsEngine, TtsPrepareStatus, type TtsAvailability, type TtsVoice } from '../../shared/tts/constants';
-import { getProviderIcon } from '../providers/uiRegistry';
-import {
-  AppUpdateSource,
-  AppUpdateStatus,
-  type AppUpdateRuntimeState,
-} from '../../shared/appUpdate/constants';
-import {
-  DEFAULT_SPEECH_INPUT_CONFIG,
-  DEFAULT_TTS_CONFIG,
-  DEFAULT_VOICE_POST_PROCESS_CONFIG,
-  DEFAULT_WAKE_INPUT_CONFIG,
-  defaultConfig,
-  type AppConfig,
-  getVisibleProviders,
-  isCustomProvider,
-  getCustomProviderDefaultName,
-  getProviderDisplayName,
-} from '../config';
+
 import {
   AuthBackend,
   DEFAULT_QTB_API_BASE_URL,
   DEFAULT_QTB_WEB_BASE_URL,
 } from '../../common/auth';
 import {
+  type AppUpdateRuntimeState,
+  AppUpdateSource,
+  AppUpdateStatus,
+} from '../../shared/appUpdate/constants';
+import { ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
+import { type TtsAvailability, TtsEngine, TtsPrepareStatus, type TtsVoice } from '../../shared/tts/constants';
+import type { WakeInputStatus } from '../../shared/wakeInput/constants';
+import {
+  type AppConfig,
+  DEFAULT_SPEECH_INPUT_CONFIG,
+  DEFAULT_TTS_CONFIG,
+  DEFAULT_VOICE_POST_PROCESS_CONFIG,
+  DEFAULT_WAKE_INPUT_CONFIG,
+  defaultConfig,
+  getCustomProviderDefaultName,
+  getProviderDisplayName,
+  getVisibleProviders,
+  isCustomProvider,
+} from '../config';
+import { APP_ID, APP_NAME, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
+import { getProviderIcon } from '../providers/uiRegistry';
+import { apiService } from '../services/api';
+import { buildApiRequestHeaders } from '../services/apiRequestHeaders';
+import { configService } from '../services/config';
+import { coworkService } from '../services/cowork';
+import { decryptSecret, decryptWithPassword, EncryptedPayload, encryptWithPassword, PasswordEncryptedPayload } from '../services/encryption';
+import { i18nService, LanguageType } from '../services/i18n';
+import { imService } from '../services/im';
+import {
+  buildOpenAICompatibleChatCompletionsUrl,
+  buildOpenAIResponsesUrl,
+  getEffectiveProviderApiFormat as getEffectiveApiFormat,
+  resolveProviderRequestCredential,
+  shouldShowProviderApiFormatSelector as shouldShowApiFormatSelector,
+  shouldUseMaxCompletionTokensForOpenAI,
+  shouldUseOpenAIResponsesForProvider,
+} from '../services/providerRequestConfig';
+import { themeService } from '../services/theme';
+import { RootState } from '../store';
+import { setAvailableModels } from '../store/slices/modelSlice';
+import type {
+  CoworkAgentEngine,
+  CoworkMemoryStats,
+  CoworkUserMemoryEntry,
+  OpenClawEngineStatus,
+  OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValue,
+} from '../types/cowork';
+import { OpenClawSessionKeepAlive } from '../types/cowork';
+import EmbeddingSettingsSection from './cowork/EmbeddingSettingsSection';
+import ErrorMessage from './ErrorMessage';
+import BrainIcon from './icons/BrainIcon';
+import PencilIcon from './icons/PencilIcon';
+import PlusCircleIcon from './icons/PlusCircleIcon';
+import {
   GitHubCopilotIcon,
 } from './icons/providers';
+import TrashIcon from './icons/TrashIcon';
+import IMSettings from './im/IMSettings';
+import EmailSkillConfig from './skills/EmailSkillConfig';
+import ThemedSelect from './ui/ThemedSelect';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
 
@@ -684,6 +687,12 @@ const Settings: React.FC<SettingsProps> = ({
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
   const [skipMissedJobs, setSkipMissedJobs] = useState<boolean>(coworkConfig.skipMissedJobs ?? true);
+  const [embeddingEnabled, setEmbeddingEnabled] = useState<boolean>(coworkConfig.embeddingEnabled ?? false);
+  const [embeddingProvider, setEmbeddingProvider] = useState<string>(coworkConfig.embeddingProvider ?? 'openai');
+  const [embeddingModel, setEmbeddingModel] = useState<string>(coworkConfig.embeddingModel ?? '');
+  const [embeddingVectorWeight, setEmbeddingVectorWeight] = useState<number>(coworkConfig.embeddingVectorWeight ?? 0.7);
+  const [embeddingRemoteBaseUrl, setEmbeddingRemoteBaseUrl] = useState<string>(coworkConfig.embeddingRemoteBaseUrl ?? '');
+  const [embeddingRemoteApiKey, setEmbeddingRemoteApiKey] = useState<string>(coworkConfig.embeddingRemoteApiKey ?? '');
   const [openClawSessionKeepAlive, setOpenClawSessionKeepAlive] = useState<OpenClawSessionKeepAliveValue>(
     coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays
   );
@@ -705,12 +714,24 @@ const Settings: React.FC<SettingsProps> = ({
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
     setSkipMissedJobs(coworkConfig.skipMissedJobs ?? true);
+    setEmbeddingEnabled(coworkConfig.embeddingEnabled ?? false);
+    setEmbeddingProvider(coworkConfig.embeddingProvider ?? 'openai');
+    setEmbeddingModel(coworkConfig.embeddingModel ?? '');
+    setEmbeddingVectorWeight(coworkConfig.embeddingVectorWeight ?? 0.7);
+    setEmbeddingRemoteBaseUrl(coworkConfig.embeddingRemoteBaseUrl ?? '');
+    setEmbeddingRemoteApiKey(coworkConfig.embeddingRemoteApiKey ?? '');
     setOpenClawSessionKeepAlive(coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays);
   }, [
     coworkConfig.agentEngine,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
     coworkConfig.skipMissedJobs,
+    coworkConfig.embeddingEnabled,
+    coworkConfig.embeddingProvider,
+    coworkConfig.embeddingModel,
+    coworkConfig.embeddingVectorWeight,
+    coworkConfig.embeddingRemoteBaseUrl,
+    coworkConfig.embeddingRemoteApiKey,
     coworkConfig.openClawSessionPolicy?.keepAlive,
   ]);
 
@@ -966,7 +987,7 @@ const Settings: React.FC<SettingsProps> = ({
           ...config.shortcuts,
         }));
       }
-    } catch (error) {
+    } catch {
       setError('Failed to load settings');
     }
   }, []);
@@ -1121,12 +1142,15 @@ const Settings: React.FC<SettingsProps> = ({
   }, [isMac, ttsEngine]);
 
   useEffect(() => {
+    const initialThemeId = initialThemeIdRef.current;
+    const initialTheme = initialThemeRef.current;
+    const initialLanguage = initialLanguageRef.current;
     return () => {
       if (didSaveRef.current) {
         return;
       }
-      themeService.restoreTheme(initialThemeIdRef.current, initialThemeRef.current);
-      i18nService.setLanguage(initialLanguageRef.current, { persist: false });
+      themeService.restoreTheme(initialThemeId, initialTheme);
+      i18nService.setLanguage(initialLanguage, { persist: false });
     };
   }, []);
 
@@ -1559,7 +1583,13 @@ const Settings: React.FC<SettingsProps> = ({
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled
     || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? true)
-    || openClawSessionKeepAlive !== (coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays);
+    || openClawSessionKeepAlive !== (coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays)
+    || embeddingEnabled !== (coworkConfig.embeddingEnabled ?? false)
+    || embeddingProvider !== (coworkConfig.embeddingProvider ?? 'openai')
+    || embeddingModel !== (coworkConfig.embeddingModel ?? '')
+    || embeddingVectorWeight !== (coworkConfig.embeddingVectorWeight ?? 0.7)
+    || embeddingRemoteBaseUrl !== (coworkConfig.embeddingRemoteBaseUrl ?? '')
+    || embeddingRemoteApiKey !== (coworkConfig.embeddingRemoteApiKey ?? '');
   const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
 
   const openClawProgressPercent = useMemo(() => {
@@ -1901,6 +1931,12 @@ const Settings: React.FC<SettingsProps> = ({
           memoryEnabled: coworkMemoryEnabled,
           memoryLlmJudgeEnabled: coworkMemoryLlmJudgeEnabled,
           skipMissedJobs,
+          embeddingEnabled,
+          embeddingProvider,
+          embeddingModel,
+          embeddingVectorWeight,
+          embeddingRemoteBaseUrl,
+          embeddingRemoteApiKey,
           openClawSessionPolicy: {
             keepAlive: openClawSessionKeepAlive,
           },
@@ -2122,7 +2158,8 @@ const Settings: React.FC<SettingsProps> = ({
     setIsTestResultModalOpen(false);
     setTestResult(null);
 
-    if (providerRequiresApiKey(testingProvider) && !providerConfig.apiKey) {
+    const credential = resolveProviderRequestCredential(testingProvider, providerConfig);
+    if (providerRequiresApiKey(testingProvider) && !credential.apiKey) {
       showTestResultModal({ success: false, message: i18nService.t('apiKeyRequired') }, testingProvider);
       setIsTesting(false);
       return;
@@ -2139,8 +2176,8 @@ const Settings: React.FC<SettingsProps> = ({
     try {
       let response: Awaited<ReturnType<typeof window.electron.api.fetch>>;
       // Apply Coding Plan endpoint switch
-      let effectiveBaseUrl = resolveBaseUrl(testingProvider, providerConfig.baseUrl, getEffectiveApiFormat(testingProvider, providerConfig.apiFormat));
-      let effectiveApiFormat = getEffectiveApiFormat(testingProvider, providerConfig.apiFormat);
+      let effectiveBaseUrl = resolveBaseUrl(testingProvider, credential.baseUrl, getEffectiveApiFormat(testingProvider, credential.apiFormat));
+      let effectiveApiFormat = getEffectiveApiFormat(testingProvider, credential.apiFormat);
       
       // Handle Coding Plan endpoint switch for supported providers
       if ((providerConfig as { codingPlanEnabled?: boolean }).codingPlanEnabled && (effectiveApiFormat === 'anthropic' || effectiveApiFormat === 'openai')) {
@@ -2164,7 +2201,7 @@ const Settings: React.FC<SettingsProps> = ({
           url: anthropicUrl,
           method: 'POST',
           headers: {
-            'x-api-key': providerConfig.apiKey,
+            'x-api-key': credential.apiKey,
             'anthropic-version': '2023-06-01',
             'Content-Type': 'application/json',
           },
@@ -2179,7 +2216,7 @@ const Settings: React.FC<SettingsProps> = ({
         const openaiUrl = useResponsesApi
           ? buildOpenAIResponsesUrl(normalizedBaseUrl)
           : buildOpenAICompatibleChatCompletionsUrl(normalizedBaseUrl, testingProvider);
-        const headers = buildApiRequestHeaders(testingProvider, providerConfig.apiKey);
+        const headers = buildApiRequestHeaders(testingProvider, credential.apiKey);
         const openAIRequestBody: Record<string, unknown> = useResponsesApi
           ? {
               model: firstModel.id,
@@ -2546,7 +2583,7 @@ const Settings: React.FC<SettingsProps> = ({
       return allTabs.filter(tab => ui[`settings.${tab.key}`] !== 'hide');
     }
     return allTabs;
-  }, [language, enterpriseConfig]);
+  }, [enterpriseConfig]);
 
   const activeTabLabel = useMemo(() => {
     return sidebarTabs.find(t => t.key === activeTab)?.label ?? '';
@@ -3510,6 +3547,21 @@ const Settings: React.FC<SettingsProps> = ({
                 )}
               </div>
             </div>
+
+            <EmbeddingSettingsSection
+              embeddingEnabled={embeddingEnabled}
+              embeddingProvider={embeddingProvider}
+              embeddingModel={embeddingModel}
+              embeddingVectorWeight={embeddingVectorWeight}
+              embeddingRemoteBaseUrl={embeddingRemoteBaseUrl}
+              embeddingRemoteApiKey={embeddingRemoteApiKey}
+              onEmbeddingEnabledChange={setEmbeddingEnabled}
+              onEmbeddingProviderChange={setEmbeddingProvider}
+              onEmbeddingModelChange={setEmbeddingModel}
+              onEmbeddingVectorWeightChange={setEmbeddingVectorWeight}
+              onEmbeddingRemoteBaseUrlChange={setEmbeddingRemoteBaseUrl}
+              onEmbeddingRemoteApiKeyChange={setEmbeddingRemoteApiKey}
+            />
 
           </div>
         );

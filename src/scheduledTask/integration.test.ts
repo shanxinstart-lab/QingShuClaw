@@ -1,5 +1,8 @@
-import { test, expect } from 'vitest';
-import initSqlJs from 'sql.js';
+import { afterEach, test, expect } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import Database from 'better-sqlite3';
 import { makeTask, makeModel } from './fixtures';
 import { ScheduledTaskMetaStore } from './metaStore';
 import { TaskModelMapper } from './modelMapper';
@@ -11,14 +14,28 @@ import {
 
 const mapper = new TaskModelMapper();
 
-async function createMetaStore() {
-  const SQL = await initSqlJs();
-  const db = new SQL.Database();
+const tempDirs: string[] = [];
+const dbs: Database.Database[] = [];
+
+function createMetaStore() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qingshu-scheduled-integration-'));
+  tempDirs.push(dir);
+  const db = new Database(path.join(dir, 'test.sqlite'));
+  dbs.push(db);
   return new ScheduledTaskMetaStore(db);
 }
 
-test('integration: manual create -> edit delivery to IM -> binding auto-updates', async () => {
-  const metaStore = await createMetaStore();
+afterEach(() => {
+  for (const db of dbs.splice(0)) {
+    db.close();
+  }
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('integration: manual create -> edit delivery to IM -> binding auto-updates', () => {
+  const metaStore = createMetaStore();
   const origin = { kind: OriginKind.Manual as const };
   const policy = taskPolicyRegistry.get(origin);
 
@@ -70,8 +87,8 @@ test('integration: cowork task -> delivery change to webhook -> binding stays', 
   expect(edited.delivery.mode).toBe(DeliveryMode.Webhook);
 });
 
-test('integration: infer -> persist -> reload uses stored meta (not re-infer)', async () => {
-  const metaStore = await createMetaStore();
+test('integration: infer -> persist -> reload uses stored meta (not re-infer)', () => {
+  const metaStore = createMetaStore();
   const wire = makeTask({ sessionKey: 'agent:main:lobsterai:sess-99' });
 
   // 1. First load -- infer

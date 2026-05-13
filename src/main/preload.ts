@@ -1,8 +1,45 @@
+import type { IpcRendererEvent } from 'electron';
 import { contextBridge, ipcRenderer } from 'electron';
 
+import type {
+  AuthCallbackPayload,
+  CreateBridgeTicketRequest,
+  ExchangeBridgeCodeRequest,
+} from '../common/auth';
 import { OpenClawSessionIpc } from '../common/openclawSession';
+import type {
+  CoworkMessage,
+  CoworkPermissionRequest,
+  CoworkPermissionResult,
+  OpenClawEngineStatus,
+} from '../renderer/types/cowork';
+import type {
+  DingTalkInstanceConfig,
+  FeishuInstanceConfig,
+  IMGatewayConfig,
+  IMGatewayStatus,
+  IMMessage,
+  NimInstanceConfig,
+  PopoInstanceConfig,
+  QQInstanceConfig,
+  WecomInstanceConfig,
+} from '../renderer/types/im';
+import type { McpServerFormData } from '../renderer/types/mcp';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
-import { AppUpdateIpc } from '../shared/appUpdate/constants';
+import { NimQrLoginIpc } from './ipcHandlers/nimQrLogin';
+import type {
+  RunFilter,
+  ScheduledTaskInput,
+  ScheduledTaskRunEvent,
+  ScheduledTaskStatusEvent,
+} from '../scheduledTask/types';
+import {
+  type AppUpdateDownloadProgress,
+  type AppUpdateInfo,
+  AppUpdateIpc,
+  type AppUpdateRuntimeState,
+  type AppUpdateSource,
+} from '../shared/appUpdate/constants';
 import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
@@ -53,8 +90,8 @@ contextBridge.exposeInMainWorld('electron', {
   },
   mcp: {
     list: () => ipcRenderer.invoke('mcp:list'),
-    create: (data: any) => ipcRenderer.invoke('mcp:create', data),
-    update: (id: string, data: any) => ipcRenderer.invoke('mcp:update', id, data),
+    create: (data: McpServerFormData) => ipcRenderer.invoke('mcp:create', data),
+    update: (id: string, data: Partial<McpServerFormData>) => ipcRenderer.invoke('mcp:update', id, data),
     delete: (id: string) => ipcRenderer.invoke('mcp:delete', id),
     setEnabled: (options: { id: string; enabled: boolean }) => ipcRenderer.invoke('mcp:setEnabled', options),
     fetchMarketplace: () => ipcRenderer.invoke('mcp:fetchMarketplace'),
@@ -65,7 +102,7 @@ contextBridge.exposeInMainWorld('electron', {
       return () => ipcRenderer.removeListener('mcp:bridge:syncStart', handler);
     },
     onBridgeSyncDone: (callback: (data: { tools: number; error?: string }) => void) => {
-      const handler = (_event: any, data: { tools: number; error?: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { tools: number; error?: string }) => callback(data);
       ipcRenderer.on('mcp:bridge:syncDone', handler);
       return () => ipcRenderer.removeListener('mcp:bridge:syncDone', handler);
     },
@@ -100,7 +137,7 @@ contextBridge.exposeInMainWorld('electron', {
 
     // 监听流式数据
     onStreamData: (requestId: string, callback: (chunk: string) => void) => {
-      const handler = (_event: any, chunk: string) => callback(chunk);
+      const handler = (_event: IpcRendererEvent, chunk: string) => callback(chunk);
       ipcRenderer.on(`api:stream:${requestId}:data`, handler);
       return () => ipcRenderer.removeListener(`api:stream:${requestId}:data`, handler);
     },
@@ -114,7 +151,7 @@ contextBridge.exposeInMainWorld('electron', {
 
     // 监听流式错误
     onStreamError: (requestId: string, callback: (error: string) => void) => {
-      const handler = (_event: any, error: string) => callback(error);
+      const handler = (_event: IpcRendererEvent, error: string) => callback(error);
       ipcRenderer.on(`api:stream:${requestId}:error`, handler);
       return () => ipcRenderer.removeListener(`api:stream:${requestId}:error`, handler);
     },
@@ -143,7 +180,7 @@ contextBridge.exposeInMainWorld('electron', {
     isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
     showSystemMenu: (position: { x: number; y: number }) => ipcRenderer.send('window:showSystemMenu', position),
     onStateChanged: (callback: (state: { isMaximized: boolean; isFullscreen: boolean; isFocused: boolean }) => void) => {
-      const handler = (_event: any, state: { isMaximized: boolean; isFullscreen: boolean; isFocused: boolean }) => callback(state);
+      const handler = (_event: IpcRendererEvent, state: { isMaximized: boolean; isFullscreen: boolean; isFocused: boolean }) => callback(state);
       ipcRenderer.on('window:state-changed', handler);
       return () => ipcRenderer.removeListener('window:state-changed', handler);
     },
@@ -162,8 +199,8 @@ contextBridge.exposeInMainWorld('electron', {
       install: () => ipcRenderer.invoke('openclaw:engine:install'),
       retryInstall: () => ipcRenderer.invoke('openclaw:engine:retryInstall'),
       restartGateway: () => ipcRenderer.invoke('openclaw:engine:restartGateway'),
-      onProgress: (callback: (status: any) => void) => {
-        const handler = (_event: any, status: any) => callback(status);
+      onProgress: (callback: (status: OpenClawEngineStatus) => void) => {
+        const handler = (_event: IpcRendererEvent, status: OpenClawEngineStatus) => callback(status);
         ipcRenderer.on('openclaw:engine:onProgress', handler);
         return () => ipcRenderer.removeListener('openclaw:engine:onProgress', handler);
       },
@@ -196,11 +233,11 @@ contextBridge.exposeInMainWorld('electron', {
       const result = await ipcRenderer.invoke('agents:get', id);
       return result?.success ? result.agent : null;
     },
-    create: async (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => {
+    create: async (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; workingDirectory?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; source?: string; presetId?: string }) => {
       const result = await ipcRenderer.invoke('agents:create', request);
       return result?.success ? result.agent : null;
     },
-    update: async (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => {
+    update: async (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; workingDirectory?: string; icon?: string; skillIds?: string[]; toolBundleIds?: string[]; enabled?: boolean }) => {
       const result = await ipcRenderer.invoke('agents:update', id, updates);
       return result?.success ? result.agent : null;
     },
@@ -249,7 +286,7 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('cowork:session:exportText', options),
 
     // Permission handling
-    respondToPermission: (options: { requestId: string; result: any }) =>
+    respondToPermission: (options: { requestId: string; result: CoworkPermissionResult }) =>
       ipcRenderer.invoke('cowork:permission:respond', options),
 
     // Configuration
@@ -306,33 +343,33 @@ contextBridge.exposeInMainWorld('electron', {
     writeBootstrapFile: (filename: string, content: string) =>
       ipcRenderer.invoke('cowork:bootstrap:write', filename, content),
     // Stream event listeners
-    onStreamMessage: (callback: (data: { sessionId: string; message: any }) => void) => {
-      const handler = (_event: any, data: { sessionId: string; message: any }) => callback(data);
+    onStreamMessage: (callback: (data: { sessionId: string; message: CoworkMessage }) => void) => {
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string; message: CoworkMessage }) => callback(data);
       ipcRenderer.on('cowork:stream:message', handler);
       return () => ipcRenderer.removeListener('cowork:stream:message', handler);
     },
-    onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string }) => void) => {
-      const handler = (_event: any, data: { sessionId: string; messageId: string; content: string }) => callback(data);
+    onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string; metadata?: Record<string, unknown> }) => void) => {
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string; messageId: string; content: string; metadata?: Record<string, unknown> }) => callback(data);
       ipcRenderer.on('cowork:stream:messageUpdate', handler);
       return () => ipcRenderer.removeListener('cowork:stream:messageUpdate', handler);
     },
-    onStreamPermission: (callback: (data: { sessionId: string; request: any }) => void) => {
-      const handler = (_event: any, data: { sessionId: string; request: any }) => callback(data);
+    onStreamPermission: (callback: (data: { sessionId: string; request: CoworkPermissionRequest }) => void) => {
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string; request: CoworkPermissionRequest }) => callback(data);
       ipcRenderer.on('cowork:stream:permission', handler);
       return () => ipcRenderer.removeListener('cowork:stream:permission', handler);
     },
     onStreamPermissionDismiss: (callback: (data: { requestId: string }) => void) => {
-      const handler = (_event: any, data: { requestId: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { requestId: string }) => callback(data);
       ipcRenderer.on('cowork:stream:permissionDismiss', handler);
       return () => ipcRenderer.removeListener('cowork:stream:permissionDismiss', handler);
     },
     onStreamComplete: (callback: (data: { sessionId: string; claudeSessionId: string | null }) => void) => {
-      const handler = (_event: any, data: { sessionId: string; claudeSessionId: string | null }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string; claudeSessionId: string | null }) => callback(data);
       ipcRenderer.on('cowork:stream:complete', handler);
       return () => ipcRenderer.removeListener('cowork:stream:complete', handler);
     },
     onStreamError: (callback: (data: { sessionId: string; error: string }) => void) => {
-      const handler = (_event: any, data: { sessionId: string; error: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string; error: string }) => callback(data);
       ipcRenderer.on('cowork:stream:error', handler);
       return () => ipcRenderer.removeListener('cowork:stream:error', handler);
     },
@@ -358,7 +395,7 @@ contextBridge.exposeInMainWorld('electron', {
     start: (options?: { locale?: string; source?: 'manual' | 'wake' | 'follow_up' }) => ipcRenderer.invoke(SpeechIpcChannel.Start, options),
     stop: () => ipcRenderer.invoke(SpeechIpcChannel.Stop),
     onStateChanged: (callback: (data: { type: string; text?: string; code?: string; message?: string }) => void) => {
-      const handler = (_event: any, data: { type: string; text?: string; code?: string; message?: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { type: string; text?: string; code?: string; message?: string }) => callback(data);
       ipcRenderer.on(SpeechIpcChannel.StateChanged, handler);
       return () => ipcRenderer.removeListener(SpeechIpcChannel.StateChanged, handler);
     },
@@ -374,12 +411,12 @@ contextBridge.exposeInMainWorld('electron', {
     getStatus: () => ipcRenderer.invoke(WakeInputIpcChannel.GetStatus),
     updateConfig: (config: Record<string, unknown>) => ipcRenderer.invoke(WakeInputIpcChannel.UpdateConfig, config),
     onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
-      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: Record<string, unknown>) => callback(data);
       ipcRenderer.on(WakeInputIpcChannel.StateChanged, handler);
       return () => ipcRenderer.removeListener(WakeInputIpcChannel.StateChanged, handler);
     },
     onDictationRequested: (callback: (data: Record<string, unknown>) => void) => {
-      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: Record<string, unknown>) => callback(data);
       ipcRenderer.on(WakeInputIpcChannel.DictationRequested, handler);
       return () => ipcRenderer.removeListener(WakeInputIpcChannel.DictationRequested, handler);
     },
@@ -397,7 +434,7 @@ contextBridge.exposeInMainWorld('electron', {
     }) => ipcRenderer.invoke(TtsIpcChannel.Speak, options),
     stop: () => ipcRenderer.invoke(TtsIpcChannel.Stop),
     onStateChanged: (callback: (data: Record<string, unknown>) => void) => {
-      const handler = (_event: any, data: Record<string, unknown>) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: Record<string, unknown>) => callback(data);
       ipcRenderer.on(TtsIpcChannel.StateChanged, handler);
       return () => ipcRenderer.removeListener(TtsIpcChannel.StateChanged, handler);
     },
@@ -418,23 +455,25 @@ contextBridge.exposeInMainWorld('electron', {
   appInfo: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     getSystemLocale: () => ipcRenderer.invoke('app:getSystemLocale'),
+    relaunch: () => ipcRenderer.invoke('app:relaunch'),
   },
   appUpdate: {
     getState: () => ipcRenderer.invoke(AppUpdateIpc.GetState),
     checkNow: (options?: { manual?: boolean; userId?: string | null }) => ipcRenderer.invoke(AppUpdateIpc.CheckNow, options),
-    setAvailable: (info: any, options?: { source?: string }) => ipcRenderer.invoke(AppUpdateIpc.SetAvailable, info, options),
+    setAvailable: (info: AppUpdateInfo, options?: { source?: AppUpdateSource }) =>
+      ipcRenderer.invoke(AppUpdateIpc.SetAvailable, info, options),
     retryDownload: () => ipcRenderer.invoke(AppUpdateIpc.RetryDownload),
     installReady: () => ipcRenderer.invoke(AppUpdateIpc.InstallReady),
     download: (url: string) => ipcRenderer.invoke('appUpdate:download', url),
-    cancelDownload: () => ipcRenderer.invoke('appUpdate:cancelDownload'),
+    cancelDownload: () => ipcRenderer.invoke(AppUpdateIpc.CancelDownload),
     install: (filePath: string) => ipcRenderer.invoke('appUpdate:install', filePath),
-    onStateChanged: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
+    onStateChanged: (callback: (data: AppUpdateRuntimeState) => void) => {
+      const handler = (_event: IpcRendererEvent, data: AppUpdateRuntimeState) => callback(data);
       ipcRenderer.on(AppUpdateIpc.StateChanged, handler);
       return () => ipcRenderer.removeListener(AppUpdateIpc.StateChanged, handler);
     },
-    onDownloadProgress: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
+    onDownloadProgress: (callback: (data: AppUpdateDownloadProgress) => void) => {
+      const handler = (_event: IpcRendererEvent, data: AppUpdateDownloadProgress) => callback(data);
       ipcRenderer.on('appUpdate:downloadProgress', handler);
       return () => ipcRenderer.removeListener('appUpdate:downloadProgress', handler);
     },
@@ -449,7 +488,7 @@ contextBridge.exposeInMainWorld('electron', {
   im: {
     // Configuration
     getConfig: () => ipcRenderer.invoke('im:config:get'),
-    setConfig: (config: any, options?: { syncGateway?: boolean }) => ipcRenderer.invoke('im:config:set', config, options),
+    setConfig: (config: Partial<IMGatewayConfig>, options?: { syncGateway?: boolean }) => ipcRenderer.invoke('im:config:set', config, options),
     syncConfig: () => ipcRenderer.invoke('im:config:sync'),
 
     // Gateway control
@@ -457,7 +496,7 @@ contextBridge.exposeInMainWorld('electron', {
     stopGateway: (platform: Platform) => ipcRenderer.invoke('im:gateway:stop', platform),
     testGateway: (
       platform: Platform,
-      configOverride?: any
+      configOverride?: Partial<IMGatewayConfig>
     ) => ipcRenderer.invoke('im:gateway:test', platform, configOverride),
 
     // Status
@@ -472,6 +511,8 @@ contextBridge.exposeInMainWorld('electron', {
     weixinQrLoginWait: (accountId?: string) => ipcRenderer.invoke('im:weixin:qr-login-wait', accountId),
     popoQrLoginStart: () => ipcRenderer.invoke('im:popo:qr-login-start'),
     popoQrLoginPoll: (taskToken: string) => ipcRenderer.invoke('im:popo:qr-login-poll', taskToken),
+    nimQrLoginStart: () => ipcRenderer.invoke(NimQrLoginIpc.Start),
+    nimQrLoginPoll: (uuid: string) => ipcRenderer.invoke(NimQrLoginIpc.Poll, uuid),
 
     // Pairing
     listPairingRequests: (platform: string) => ipcRenderer.invoke('im:pairing:list', platform),
@@ -481,35 +522,47 @@ contextBridge.exposeInMainWorld('electron', {
     // DingTalk Multi-Instance
     addDingTalkInstance: (name: string) => ipcRenderer.invoke('im:dingtalk:instance:add', name),
     deleteDingTalkInstance: (instanceId: string) => ipcRenderer.invoke('im:dingtalk:instance:delete', instanceId),
-    setDingTalkInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+    setDingTalkInstanceConfig: (instanceId: string, config: Partial<DingTalkInstanceConfig>, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:dingtalk:instance:config:set', instanceId, config, options),
 
     // Feishu Multi-Instance
     addFeishuInstance: (name: string) => ipcRenderer.invoke('im:feishu:instance:add', name),
     deleteFeishuInstance: (instanceId: string) => ipcRenderer.invoke('im:feishu:instance:delete', instanceId),
-    setFeishuInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+    setFeishuInstanceConfig: (instanceId: string, config: Partial<FeishuInstanceConfig>, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:feishu:instance:config:set', instanceId, config, options),
 
     // QQ Multi-Instance
     addQQInstance: (name: string) => ipcRenderer.invoke('im:qq:instance:add', name),
     deleteQQInstance: (instanceId: string) => ipcRenderer.invoke('im:qq:instance:delete', instanceId),
-    setQQInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+    setQQInstanceConfig: (instanceId: string, config: Partial<QQInstanceConfig>, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:qq:instance:config:set', instanceId, config, options),
+
+    // NIM Multi-Instance
+    addNimInstance: (name: string) => ipcRenderer.invoke('im:nim:instance:add', name),
+    deleteNimInstance: (instanceId: string) => ipcRenderer.invoke('im:nim:instance:delete', instanceId),
+    setNimInstanceConfig: (instanceId: string, config: Partial<NimInstanceConfig>, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:nim:instance:config:set', instanceId, config, options),
+
+    // POPO Multi-Instance
+    addPopoInstance: (name: string) => ipcRenderer.invoke('im:popo:instance:add', name),
+    deletePopoInstance: (instanceId: string) => ipcRenderer.invoke('im:popo:instance:delete', instanceId),
+    setPopoInstanceConfig: (instanceId: string, config: Partial<PopoInstanceConfig>, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:popo:instance:config:set', instanceId, config, options),
 
     // WeCom Multi-Instance
     addWecomInstance: (name: string) => ipcRenderer.invoke('im:wecom:instance:add', name),
     deleteWecomInstance: (instanceId: string) => ipcRenderer.invoke('im:wecom:instance:delete', instanceId),
-    setWecomInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) =>
+    setWecomInstanceConfig: (instanceId: string, config: Partial<WecomInstanceConfig>, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:wecom:instance:config:set', instanceId, config, options),
 
     // Event listeners
-    onStatusChange: (callback: (status: any) => void) => {
-      const handler = (_event: any, status: any) => callback(status);
+    onStatusChange: (callback: (status: IMGatewayStatus) => void) => {
+      const handler = (_event: IpcRendererEvent, status: IMGatewayStatus) => callback(status);
       ipcRenderer.on('im:status:change', handler);
       return () => ipcRenderer.removeListener('im:status:change', handler);
     },
-    onMessageReceived: (callback: (message: any) => void) => {
-      const handler = (_event: any, message: any) => callback(message);
+    onMessageReceived: (callback: (message: IMMessage) => void) => {
+      const handler = (_event: IpcRendererEvent, message: IMMessage) => callback(message);
       ipcRenderer.on('im:message:received', handler);
       return () => ipcRenderer.removeListener('im:message:received', handler);
     },
@@ -518,8 +571,8 @@ contextBridge.exposeInMainWorld('electron', {
     // Task CRUD
     list: () => ipcRenderer.invoke(ScheduledTaskIpc.List),
     get: (id: string) => ipcRenderer.invoke(ScheduledTaskIpc.Get, id),
-    create: (input: any) => ipcRenderer.invoke(ScheduledTaskIpc.Create, input),
-    update: (id: string, input: any) => ipcRenderer.invoke(ScheduledTaskIpc.Update, id, input),
+    create: (input: ScheduledTaskInput) => ipcRenderer.invoke(ScheduledTaskIpc.Create, input),
+    update: (id: string, input: Partial<ScheduledTaskInput>) => ipcRenderer.invoke(ScheduledTaskIpc.Update, id, input),
     delete: (id: string) => ipcRenderer.invoke(ScheduledTaskIpc.Delete, id),
     toggle: (id: string, enabled: boolean) => ipcRenderer.invoke(ScheduledTaskIpc.Toggle, id, enabled),
 
@@ -528,11 +581,11 @@ contextBridge.exposeInMainWorld('electron', {
     stop: (id: string) => ipcRenderer.invoke(ScheduledTaskIpc.Stop, id),
 
     // Run history
-    listRuns: (taskId: string, limit?: number, offset?: number) =>
-      ipcRenderer.invoke(ScheduledTaskIpc.ListRuns, taskId, limit, offset),
+    listRuns: (taskId: string, limit?: number, offset?: number, filter?: RunFilter) =>
+      ipcRenderer.invoke(ScheduledTaskIpc.ListRuns, taskId, limit, offset, filter),
     countRuns: (taskId: string) => ipcRenderer.invoke(ScheduledTaskIpc.CountRuns, taskId),
-    listAllRuns: (limit?: number, offset?: number) =>
-      ipcRenderer.invoke(ScheduledTaskIpc.ListAllRuns, limit, offset),
+    listAllRuns: (limit?: number, offset?: number, filter?: RunFilter) =>
+      ipcRenderer.invoke(ScheduledTaskIpc.ListAllRuns, limit, offset, filter),
     resolveSession: (sessionKey: string) =>
       ipcRenderer.invoke(ScheduledTaskIpc.ResolveSession, sessionKey),
 
@@ -542,13 +595,13 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel, accountId, filterAccountId),
 
     // Stream event listeners
-    onStatusUpdate: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
+    onStatusUpdate: (callback: (data: ScheduledTaskStatusEvent) => void) => {
+      const handler = (_event: IpcRendererEvent, data: ScheduledTaskStatusEvent) => callback(data);
       ipcRenderer.on(ScheduledTaskIpc.StatusUpdate, handler);
       return () => ipcRenderer.removeListener(ScheduledTaskIpc.StatusUpdate, handler);
     },
-    onRunUpdate: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
+    onRunUpdate: (callback: (data: ScheduledTaskRunEvent) => void) => {
+      const handler = (_event: IpcRendererEvent, data: ScheduledTaskRunEvent) => callback(data);
       ipcRenderer.on(ScheduledTaskIpc.RunUpdate, handler);
       return () => ipcRenderer.removeListener(ScheduledTaskIpc.RunUpdate, handler);
     },
@@ -572,9 +625,9 @@ contextBridge.exposeInMainWorld('electron', {
     pollFeishuScanSession: (scanSessionId: string) =>
       ipcRenderer.invoke('auth:pollFeishuScanSession', { scanSessionId }),
     exchange: (code: string, state?: string) => ipcRenderer.invoke('auth:exchange', { code, state }),
-    createBridgeTicket: (input: { target: 'web' | 'desktop'; redirectPath?: string }) =>
+    createBridgeTicket: (input: CreateBridgeTicketRequest) =>
       ipcRenderer.invoke('auth:createBridgeTicket', input),
-    exchangeBridgeCode: (input: { code: string; target: 'web' | 'desktop' }) =>
+    exchangeBridgeCode: (input: ExchangeBridgeCodeRequest) =>
       ipcRenderer.invoke('auth:exchangeBridgeCode', input),
     getUser: () => ipcRenderer.invoke('auth:getUser'),
     getQuota: () => ipcRenderer.invoke('auth:getQuota'),
@@ -585,18 +638,18 @@ contextBridge.exposeInMainWorld('electron', {
     getProfileSummary: () => ipcRenderer.invoke('auth:getProfileSummary'),
     getPendingCallback: () => ipcRenderer.invoke('auth:getPendingCallback'),
     getPendingBridgeCode: () => ipcRenderer.invoke('auth:getPendingBridgeCode'),
-    onCallback: (callback: (data: { code: string; state?: string }) => void) => {
-      const handler = (_event: any, data: { code: string; state?: string }) => callback(data);
+    onCallback: (callback: (data: AuthCallbackPayload) => void) => {
+      const handler = (_event: IpcRendererEvent, data: AuthCallbackPayload) => callback(data);
       ipcRenderer.on('auth:callback', handler);
       return () => ipcRenderer.removeListener('auth:callback', handler);
     },
     onBridgeCode: (callback: (data: { code: string }) => void) => {
-      const handler = (_event: any, data: { code: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { code: string }) => callback(data);
       ipcRenderer.on('auth:bridgeCode', handler);
       return () => ipcRenderer.removeListener('auth:bridgeCode', handler);
     },
     onSessionInvalidated: (callback: (data: { reason?: string }) => void) => {
-      const handler = (_event: any, data: { reason?: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { reason?: string }) => callback(data);
       ipcRenderer.on('auth:sessionInvalidated', handler);
       return () => ipcRenderer.removeListener('auth:sessionInvalidated', handler);
     },
@@ -657,7 +710,7 @@ contextBridge.exposeInMainWorld('electron', {
         error?: string;
       }>,
     onTokenUpdated: (callback: (data: { token: string; baseUrl: string }) => void) => {
-      const handler = (_event: any, data: { token: string; baseUrl: string }) => callback(data);
+      const handler = (_event: IpcRendererEvent, data: { token: string; baseUrl: string }) => callback(data);
       ipcRenderer.on('github-copilot:token-updated', handler);
       return () => ipcRenderer.removeListener('github-copilot:token-updated', handler);
     },

@@ -4,9 +4,10 @@
  * and Telegram, Discord, QQ, WeCom, Weixin, POPO, NeteaseBee via OpenClaw
  */
 
+import type * as FeishuAuthModule from '@larksuite/openclaw-lark-tools/dist/utils/feishu-auth.js';
+import type * as LarkSdk from '@larksuiteoapi/node-sdk';
+import type Database from 'better-sqlite3';
 import { EventEmitter } from 'events';
-import * as path from 'path';
-import type { Database } from 'sql.js';
 
 import { classifyErrorKey } from '../../common/coworkErrorClassify';
 import type { CoworkStore } from '../coworkStore';
@@ -16,17 +17,17 @@ import { fetchJsonWithTimeout } from './http';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
 import {
-  isAnyGatewayConnected,
-  isPlatformEnabled,
-  pickConfiguredInstance,
-} from './imGatewayConfigState';
-import {
   buildDingTalkSendParamsFromRoute,
   buildDingTalkSessionKeyCandidates,
   type OpenClawDeliveryRoute,
   resolveManagedSessionDeliveryRoute,
   resolveOpenClawDeliveryRouteForSessionKeys,
 } from './imDeliveryRoute';
+import {
+  isAnyGatewayConnected,
+  isPlatformEnabled,
+  pickConfiguredInstance,
+} from './imGatewayConfigState';
 import type {
   IMScheduledTaskCreationResult,
   ParsedIMScheduledTaskRequest,
@@ -40,11 +41,18 @@ import {
   IMConnectivityVerdict,
   IMGatewayConfig,
   IMGatewayStatus,
+  IMLLMConfig,
   IMMessage,
+  NimConfig,
+  PopoOpenClawConfig,
   Platform,
 } from './types';
 const CONNECTIVITY_TIMEOUT_MS = 10_000;
 const INBOUND_ACTIVITY_WARN_AFTER_MS = 2 * 60 * 1000;
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -52,6 +60,70 @@ type GatewayClientLike = {
     params?: unknown,
     opts?: { expectFinal?: boolean },
   ) => Promise<T>;
+};
+
+const pickConfiguredNimInstance = (config: IMGatewayConfig) => pickConfiguredInstance(
+  config.nim?.instances ?? [],
+  (instance) => Boolean(
+    (instance.nimToken && instance.nimToken.trim())
+    || (instance.appKey && instance.account && instance.token),
+  ),
+);
+
+const pickConfiguredPopoInstance = (config: IMGatewayConfig) => pickConfiguredInstance(
+  config.popo?.instances ?? [],
+  (instance) => Boolean(
+    instance.appKey
+    && instance.appSecret
+    && instance.aesKey
+    && ((instance.connectionMode ?? 'websocket') === 'websocket' || instance.token),
+  ),
+);
+
+const mergeNimConfigOverride = (
+  current: IMGatewayConfig['nim'],
+  override?: Partial<IMGatewayConfig['nim'] & NimConfig>,
+): IMGatewayConfig['nim'] => {
+  if (!override) {
+    return current;
+  }
+  if (Array.isArray(override.instances)) {
+    return { ...current, ...override };
+  }
+  const { instances: _instances, ...singleConfig } = override;
+  return {
+    ...current,
+    ...singleConfig,
+    instances: [{
+      ...current.instances[0],
+      instanceId: current.instances[0]?.instanceId ?? 'nim-override',
+      instanceName: current.instances[0]?.instanceName ?? 'NIM Bot',
+      ...singleConfig,
+    }],
+  };
+};
+
+const mergePopoConfigOverride = (
+  current: IMGatewayConfig['popo'],
+  override?: Partial<IMGatewayConfig['popo'] & PopoOpenClawConfig>,
+): IMGatewayConfig['popo'] => {
+  if (!override) {
+    return current;
+  }
+  if (Array.isArray(override.instances)) {
+    return { ...current, ...override };
+  }
+  const { instances: _instances, ...singleConfig } = override;
+  return {
+    ...current,
+    ...singleConfig,
+    instances: [{
+      ...current.instances[0],
+      instanceId: current.instances[0]?.instanceId ?? 'popo-override',
+      instanceName: current.instances[0]?.instanceName ?? 'POPO Bot',
+      ...singleConfig,
+    }],
+  };
 };
 
 interface OpenClawSessionsListResult {
@@ -70,6 +142,17 @@ interface DiscordUserResponse {
   username?: string;
   discriminator?: string;
 }
+
+type FeishuBotInfoResponse = {
+  code: number;
+  msg?: string;
+  data?: {
+    app_name?: string;
+    bot?: {
+      app_name?: string;
+    };
+  };
+};
 
 export interface IMGatewayManagerOptions {
   coworkRuntime?: CoworkRuntime;
@@ -93,7 +176,7 @@ export class IMGatewayManager extends EventEmitter {
   private imStore: IMStore;
   private chatHandler: IMChatHandler | null = null;
   private coworkHandler: IMCoworkHandler | null = null;
-  private getLLMConfig: (() => Promise<any>) | null = null;
+  private getLLMConfig: (() => Promise<IMLLMConfig | null>) | null = null;
   private getSkillsPrompt: (() => Promise<string | null>) | null = null;
   private ensureCoworkReady: (() => Promise<void>) | null = null;
   private isOpenClawEngine: (() => boolean) | null = null;
@@ -119,7 +202,7 @@ export class IMGatewayManager extends EventEmitter {
   private dingTalkAccessToken: string | null = null;
   private dingTalkAccessTokenExpiry = 0;
 
-  constructor(db: Database, saveDb: () => void, options?: IMGatewayManagerOptions) {
+  constructor(db: Database.Database, saveDb: () => void, options?: IMGatewayManagerOptions) {
     super();
 
     this.imStore = new IMStore(db, saveDb);
@@ -188,7 +271,7 @@ export class IMGatewayManager extends EventEmitter {
    * Initialize the manager with LLM and skills providers
    */
   initialize(options: {
-    getLLMConfig: () => Promise<any>;
+    getLLMConfig: () => Promise<IMLLMConfig | null>;
     getSkillsPrompt?: () => Promise<string | null>;
   }): void {
     this.getLLMConfig = options.getLLMConfig;
@@ -233,16 +316,17 @@ export class IMGatewayManager extends EventEmitter {
         }
 
         await replyFn(response);
-      } catch (error: any) {
-        console.error(`[IMGatewayManager] Error processing message: ${error.message}`);
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        console.error(`[IMGatewayManager] Error processing message: ${errorMessage}`);
         // Don't send "Replaced by a newer IM request" error to user, just log it
-        if (error.message === 'Replaced by a newer IM request') {
+        if (errorMessage === 'Replaced by a newer IM request') {
           return;
         }
         // Send error message to user
         try {
-          const errorKey = classifyErrorKey(error.message);
-          const friendlyMessage = errorKey ? t(errorKey) : error.message;
+          const errorKey = classifyErrorKey(errorMessage);
+          const friendlyMessage = errorKey ? t(errorKey) : errorMessage;
           await replyFn(`${t('imErrorPrefix')}: ${friendlyMessage}`);
         } catch (replyError) {
           console.error(`[IMGatewayManager] Failed to send error reply: ${replyError}`);
@@ -258,7 +342,7 @@ export class IMGatewayManager extends EventEmitter {
    */
   private persistNotificationTarget(platform: Platform): void {
     try {
-      let target: any = null;
+      let target: string | null = null;
       if (platform === 'nim') {
         target = this.nimGateway.getNotificationTarget();
       }
@@ -268,8 +352,8 @@ export class IMGatewayManager extends EventEmitter {
       if (target != null) {
         this.imStore.setNotificationTarget(platform, target);
       }
-    } catch (err: any) {
-      console.warn(`[IMGatewayManager] Failed to persist notification target for ${platform}:`, err.message);
+    } catch (err) {
+      console.warn(`[IMGatewayManager] Failed to persist notification target for ${platform}:`, getErrorMessage(err));
     }
   }
 
@@ -288,8 +372,8 @@ export class IMGatewayManager extends EventEmitter {
       // Weixin runs via OpenClaw; notification target not managed locally
       // POPO runs via OpenClaw; notification target not managed locally
       console.log(`[IMGatewayManager] Restored notification target for ${platform}`);
-    } catch (err: any) {
-      console.warn(`[IMGatewayManager] Failed to restore notification target for ${platform}:`, err.message);
+    } catch (err) {
+      console.warn(`[IMGatewayManager] Failed to restore notification target for ${platform}:`, getErrorMessage(err));
     }
   }
 
@@ -464,9 +548,9 @@ export class IMGatewayManager extends EventEmitter {
       },
       discord: discordStatus,
       nim: (() => {
-        const nmConfig = config.nim;
+        const nmConfig = pickConfiguredNimInstance(config);
         return {
-          connected: Boolean(nmConfig?.enabled && nmConfig.appKey && nmConfig.account && nmConfig.token),
+          connected: Boolean(nmConfig?.enabled && ((nmConfig.nimToken && nmConfig.nimToken.trim()) || (nmConfig.appKey && nmConfig.account && nmConfig.token))),
           startedAt: null as number | null,
           lastError: null as string | null,
           botAccount: nmConfig?.account || null,
@@ -505,7 +589,7 @@ export class IMGatewayManager extends EventEmitter {
         lastOutboundAt: null as number | null,
       },
       popo: {
-        connected: Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)),
+        connected: Boolean(pickConfiguredPopoInstance(config)?.enabled),
         startedAt: null as number | null,
         lastError: null as string | null,
         lastInboundAt: null as number | null,
@@ -612,11 +696,11 @@ export class IMGatewayManager extends EventEmitter {
         level: 'pass',
         message: authMessage,
       });
-    } catch (error: any) {
+    } catch (error) {
       addCheck({
         code: 'auth_check',
         level: 'fail',
-        message: t('imAuthFailed', { error: error.message }),
+        message: t('imAuthFailed', { error: getErrorMessage(error) }),
         suggestion: t('imAuthFailedSuggestion'),
       });
       return {
@@ -728,8 +812,6 @@ export class IMGatewayManager extends EventEmitter {
 
   // ==================== Gateway Control ====================
   async startGateway(platform: Platform): Promise<void> {
-    const config = this.getConfig();
-
     // Ensure chat handler is ready
     this.updateChatHandler();
 
@@ -898,10 +980,10 @@ export class IMGatewayManager extends EventEmitter {
     if (config.weixin?.enabled) {
       openClawPlatformsToStart.push('weixin');
     }
-    if (config.popo?.enabled && config.popo?.appKey && config.popo?.appSecret && config.popo?.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)) {
+    if (pickConfiguredPopoInstance(config)?.enabled) {
       openClawPlatformsToStart.push('popo');
     }
-    if (config.nim?.enabled && config.nim.appKey && config.nim.account && config.nim.token) {
+    if (pickConfiguredNimInstance(config)?.enabled) {
       openClawPlatformsToStart.push('nim');
     }
     if (config['netease-bee']?.enabled && config['netease-bee']?.clientId && config['netease-bee']?.secret) {
@@ -913,8 +995,8 @@ export class IMGatewayManager extends EventEmitter {
       try {
         await this.syncOpenClawConfig?.();
         await this.ensureOpenClawGatewayConnected?.();
-      } catch (error: any) {
-        console.error(`[IMGatewayManager] Failed to start OpenClaw platforms: ${error.message}`);
+      } catch (error) {
+        console.error(`[IMGatewayManager] Failed to start OpenClaw platforms: ${getErrorMessage(error)}`);
       }
     }
   }
@@ -953,7 +1035,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'nim') {
       // NIM runs via OpenClaw; consider it connected when enabled and configured
       const config = this.getConfig();
-      return Boolean(config.nim?.enabled && config.nim.appKey && config.nim.account && config.nim.token);
+      return Boolean(pickConfiguredNimInstance(config)?.enabled);
     }
     if (platform === 'netease-bee') {
       // netease-bee runs via OpenClaw; status comes from OpenClaw
@@ -979,12 +1061,12 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'popo') {
       // POPO runs via OpenClaw; consider it connected when enabled and configured
       const config = this.getConfig();
-      return Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token));
+      return Boolean(pickConfiguredPopoInstance(config)?.enabled);
     }
     return false;
   }
 
-  async sendNotification(platform: Platform, text: string): Promise<boolean> {
+  async sendNotification(platform: Platform, _text: string): Promise<boolean> {
     if (!this.isConnected(platform)) {
       console.warn(`[IMGatewayManager] Cannot send notification: ${platform} is not connected`);
       return false;
@@ -1011,13 +1093,13 @@ export class IMGatewayManager extends EventEmitter {
         console.log('[IMGatewayManager] netease-bee notification via OpenClaw not yet supported');
       }
       return true;
-    } catch (error: any) {
-      console.error(`[IMGatewayManager] Failed to send notification via ${platform}:`, error.message);
+    } catch (error) {
+      console.error(`[IMGatewayManager] Failed to send notification via ${platform}:`, getErrorMessage(error));
       return false;
     }
   }
 
-  async sendNotificationWithMedia(platform: Platform, text: string): Promise<boolean> {
+  async sendNotificationWithMedia(platform: Platform, _text: string): Promise<boolean> {
     if (!this.isConnected(platform)) {
       console.warn(`[IMGatewayManager] Cannot send notification: ${platform} is not connected`);
       return false;
@@ -1044,8 +1126,8 @@ export class IMGatewayManager extends EventEmitter {
         console.log('[IMGatewayManager] netease-bee notification via OpenClaw not yet supported');
       }
       return true;
-    } catch (error: any) {
-      console.error(`[IMGatewayManager] Failed to send notification with media via ${platform}:`, error.message);
+    } catch (error) {
+      console.error(`[IMGatewayManager] Failed to send notification with media via ${platform}:`, getErrorMessage(error));
       return false;
     }
   }
@@ -1099,11 +1181,11 @@ export class IMGatewayManager extends EventEmitter {
         });
         return { platform, testedAt, verdict: 'fail', checks };
       }
-    } catch (error: any) {
+    } catch (error) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: t('imTelegramAuthFailed', { error: error.message }),
+        message: t('imTelegramAuthFailed', { error: getErrorMessage(error) }),
         suggestion: t('imTelegramCheckTokenNetwork'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
@@ -1166,11 +1248,11 @@ export class IMGatewayManager extends EventEmitter {
         level: 'pass',
         message: t('imDiscordAuthPassed', { username }),
       });
-    } catch (error: any) {
+    } catch (error) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: t('imDiscordAuthFailed', { error: error.message }),
+        message: t('imDiscordAuthFailed', { error: getErrorMessage(error) }),
         suggestion: t('imDiscordCheckTokenNetwork'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
@@ -1237,10 +1319,10 @@ export class IMGatewayManager extends EventEmitter {
         appType: Lark.AppType.SelfBuild,
         domain,
       });
-      const response: any = await client.request({
+      const response = await client.request({
         method: 'GET',
         url: '/open-apis/bot/v3/info',
-      });
+      }) as FeishuBotInfoResponse;
       if (response.code !== 0) {
         throw new Error(response.msg || `code ${response.code}`);
       }
@@ -1250,11 +1332,11 @@ export class IMGatewayManager extends EventEmitter {
         level: 'pass',
         message: t('imFeishuAuthPassed', { botName }),
       });
-    } catch (error: any) {
+    } catch (error) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: t('imFeishuAuthFailed', { error: error.message }),
+        message: t('imFeishuAuthFailed', { error: getErrorMessage(error) }),
         suggestion: t('imFeishuCheckAppIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
@@ -1336,11 +1418,11 @@ export class IMGatewayManager extends EventEmitter {
         level: 'pass',
         message: t('imDingtalkAuthPassed'),
       });
-    } catch (error: any) {
+    } catch (error) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: t('imDingtalkAuthFailed', { error: error.message }),
+        message: t('imDingtalkAuthFailed', { error: getErrorMessage(error) }),
         suggestion: t('imDingtalkCheckClientIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
@@ -1618,7 +1700,7 @@ export class IMGatewayManager extends EventEmitter {
     const platform: Platform = 'nim';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
-    const nimConfig = mergedConfig.nim;
+    const nimConfig = pickConfiguredNimInstance(mergedConfig);
 
     if (!nimConfig?.appKey || !nimConfig?.account || !nimConfig?.token) {
       const missing: string[] = [];
@@ -1674,7 +1756,7 @@ export class IMGatewayManager extends EventEmitter {
     const platform: Platform = 'popo';
 
     const mergedConfig = this.buildMergedConfig(configOverride);
-    const popoConfig = mergedConfig.popo;
+    const popoConfig = pickConfiguredPopoInstance(mergedConfig);
 
     // Check 1: Credentials present
     const isWebhookMode = (popoConfig?.connectionMode ?? 'websocket') === 'webhook';
@@ -1767,11 +1849,11 @@ export class IMGatewayManager extends EventEmitter {
         level: 'pass',
         message: t('imQqAuthPassed'),
       });
-    } catch (error: any) {
+    } catch (error) {
       checks.push({
         code: 'auth_check',
         level: 'fail',
-        message: t('imQqAuthFailed', { error: error.message }),
+        message: t('imQqAuthFailed', { error: getErrorMessage(error) }),
         suggestion: t('imQqCheckAppIdSecret'),
       });
       return { platform, testedAt, verdict: 'fail', checks };
@@ -1812,11 +1894,11 @@ export class IMGatewayManager extends EventEmitter {
       qq: configOverride.qq || current.qq,
       telegram: { ...current.telegram, ...(configOverride.telegram || {}) },
       discord: { ...current.discord, ...(configOverride.discord || {}) },
-      nim: { ...current.nim, ...(configOverride.nim || {}) },
+      nim: mergeNimConfigOverride(current.nim, configOverride.nim),
       'netease-bee': { ...current['netease-bee'], ...(configOverride['netease-bee'] || {}) },
       wecom: configOverride.wecom || current.wecom,
       weixin: { ...current.weixin, ...(configOverride.weixin || {}) },
-      popo: { ...current.popo, ...(configOverride.popo || {}) },
+      popo: mergePopoConfigOverride(current.popo, configOverride.popo),
       settings: { ...current.settings, ...(configOverride.settings || {}) },
     };
   }
@@ -1848,10 +1930,11 @@ export class IMGatewayManager extends EventEmitter {
       return config.telegram.botToken ? [] : ['botToken'];
     }
     if (platform === 'nim') {
+      const nimConfig = pickConfiguredNimInstance(config);
       const fields: string[] = [];
-      if (!config.nim.appKey) fields.push('appKey');
-      if (!config.nim.account) fields.push('account');
-      if (!config.nim.token) fields.push('token');
+      if (!nimConfig?.appKey) fields.push('appKey');
+      if (!nimConfig?.account) fields.push('account');
+      if (!nimConfig?.token && !nimConfig?.nimToken) fields.push('token');
       return fields;
     }
     if (platform === 'netease-bee') {
@@ -1887,11 +1970,12 @@ export class IMGatewayManager extends EventEmitter {
       return [];
     }
     if (platform === 'popo') {
+      const popoConfig = pickConfiguredPopoInstance(config);
       const fields: string[] = [];
-      if (!config.popo?.appKey) fields.push('appKey');
-      if (!config.popo?.appSecret) fields.push('appSecret');
-      if ((config.popo?.connectionMode ?? 'websocket') === 'webhook' && !config.popo?.token) fields.push('token');
-      if (!config.popo?.aesKey) fields.push('aesKey');
+      if (!popoConfig?.appKey) fields.push('appKey');
+      if (!popoConfig?.appSecret) fields.push('appSecret');
+      if ((popoConfig?.connectionMode ?? 'websocket') === 'webhook' && !popoConfig?.token) fields.push('token');
+      if (!popoConfig?.aesKey) fields.push('aesKey');
       return fields;
     }
     return config.discord.botToken ? [] : ['botToken'];
@@ -1932,10 +2016,10 @@ export class IMGatewayManager extends EventEmitter {
         appType: Lark.AppType.SelfBuild,
         domain,
       });
-      const response: any = await client.request({
+      const response = await client.request({
         method: 'GET',
         url: '/open-apis/bot/v3/info',
-      });
+      }) as FeishuBotInfoResponse;
       if (response.code !== 0) {
         throw new Error(response.msg || `code ${response.code}`);
       }
@@ -1944,7 +2028,10 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     if (platform === 'nim') {
-      const { appKey, account, token } = config.nim;
+      const nimConfig = pickConfiguredNimInstance(config);
+      const appKey = nimConfig?.appKey;
+      const account = nimConfig?.account;
+      const token = nimConfig?.token || nimConfig?.nimToken;
       if (!appKey || !account || !token) {
         throw new Error(t('imConfigIncomplete'));
       }
@@ -1982,7 +2069,12 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     if (platform === 'popo') {
-      const { appKey, appSecret, token, aesKey, connectionMode } = config.popo;
+      const popoConfig = pickConfiguredPopoInstance(config);
+      const appKey = popoConfig?.appKey;
+      const appSecret = popoConfig?.appSecret;
+      const token = popoConfig?.token;
+      const aesKey = popoConfig?.aesKey;
+      const connectionMode = popoConfig?.connectionMode;
       const isWebhook = (connectionMode ?? 'websocket') === 'webhook';
       if (!appKey || !appSecret || !aesKey || (isWebhook && !token)) {
         throw new Error(t('imConfigIncomplete'));
@@ -2152,10 +2244,10 @@ export class IMGatewayManager extends EventEmitter {
           accountId: fallbackRoute.route.accountId ?? null,
         }));
       }
-    } catch (error: any) {
+    } catch (error) {
       console.warn(
         `[IMGatewayManager] Failed to prime DingTalk reply route for ${conversationId}:`,
-        error?.message || error,
+        getErrorMessage(error),
       );
     }
   }
@@ -2166,10 +2258,10 @@ export class IMGatewayManager extends EventEmitter {
     let lookup: Awaited<ReturnType<IMGatewayManager['lookupDingTalkConversationReplyRoute']>> = null;
     try {
       lookup = await this.lookupDingTalkConversationReplyRoute(conversationId);
-    } catch (error: any) {
+    } catch (error) {
       console.warn(
         `[IMGatewayManager] Failed to query OpenClaw DingTalk reply route for ${conversationId}:`,
-        error?.message || error,
+        getErrorMessage(error),
       );
     }
 
@@ -2417,8 +2509,8 @@ export class IMGatewayManager extends EventEmitter {
   async getOpenClawConfigSchema(): Promise<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null> {
     try {
       return await this.requestOpenClawGateway<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> }>('config.schema', {});
-    } catch (err: any) {
-      console.warn('[IMGatewayManager] Failed to fetch config.schema from OpenClaw gateway:', err.message);
+    } catch (err) {
+      console.warn('[IMGatewayManager] Failed to fetch config.schema from OpenClaw gateway:', getErrorMessage(err));
       return null;
     }
   }
@@ -2438,7 +2530,7 @@ export class IMGatewayManager extends EventEmitter {
     return client.request<T>(method, params);
   }
 
-  private resolveFeishuDomain(domain: string, Lark: any): any {
+  private resolveFeishuDomain(domain: string, Lark: typeof LarkSdk): symbol | string {
     if (domain === 'lark') return Lark.Domain.Lark;
     if (domain === 'feishu') return Lark.Domain.Feishu;
     return domain.replace(/\/+$/, '');
@@ -2518,8 +2610,8 @@ export class IMGatewayManager extends EventEmitter {
   // ==================== Feishu Bot Install Helpers ====================
 
   /** Lazy-load and cache the feishu-auth module (avoid repeated dynamic import overhead). */
-  private _feishuAuthModule: any = null;
-  private async getFeishuAuthModule() {
+  private _feishuAuthModule: typeof FeishuAuthModule | null = null;
+  private async getFeishuAuthModule(): Promise<typeof FeishuAuthModule> {
     if (!this._feishuAuthModule) {
       this._feishuAuthModule = await import('@larksuite/openclaw-lark-tools/dist/utils/feishu-auth.js');
     }
@@ -2594,8 +2686,8 @@ export class IMGatewayManager extends EventEmitter {
         return { success: true };
       }
       return { success: false, error: t('feishuVerifyCredentialsFailed') };
-    } catch (err: any) {
-      return { success: false, error: err?.message || t('feishuVerifyFailed') };
+    } catch (err) {
+      return { success: false, error: getErrorMessage(err) || t('feishuVerifyFailed') };
     }
   }
 

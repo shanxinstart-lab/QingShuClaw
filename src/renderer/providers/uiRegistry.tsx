@@ -7,6 +7,7 @@ import {
   DeepSeekIcon,
   GeminiIcon,
   GitHubCopilotIcon,
+  LmStudioIcon,
   MiniMaxIcon,
   MoonshotIcon,
   OllamaIcon,
@@ -37,6 +38,7 @@ const PROVIDER_ICON_MAP: Record<string, React.ReactNode> = {
   [ProviderName.OpenRouter]: <OpenRouterIcon />,
   [ProviderName.Copilot]: <GitHubCopilotIcon />,
   [ProviderName.Ollama]: <OllamaIcon />,
+  [ProviderName.LmStudio]: <LmStudioIcon />,
   [ProviderName.Qianfan]: <QianfanIcon />,
 };
 
