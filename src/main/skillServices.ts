@@ -3,9 +3,10 @@
  */
 
 import { execSync, spawn, spawnSync } from 'child_process';
-import path from 'path';
-import fs from 'fs';
 import { app } from 'electron';
+import fs from 'fs';
+import path from 'path';
+
 import { cpRecursiveSync } from './fsCompat';
 import { getElectronNodeRuntimePath } from './libs/coworkUtil';
 import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
@@ -101,7 +102,7 @@ export class SkillServiceManager {
   private hasLegacyWebSearchEncodingHeuristic(serverEntry: string): boolean {
     try {
       const content = fs.readFileSync(serverEntry, 'utf-8');
-      return content.includes('scoreDecodedJsonText')
+      return content.includes('function scoreDecodedJsonText')
         && content.includes('Request body decoded using gb18030 (score');
     } catch {
       return true;
