@@ -19,6 +19,7 @@ import type { ArtifactType } from '@/types/artifact';
 import type { Artifact } from '@/types/artifact';
 import { PREVIEWABLE_ARTIFACT_TYPES } from '@/types/artifact';
 
+import CopyIcon from '../icons/CopyIcon';
 import ArtifactRenderer from './ArtifactRenderer';
 import FileDirectoryView from './FileDirectoryView';
 import CodeRenderer from './renderers/CodeRenderer';
@@ -489,13 +490,6 @@ const RefreshIcon = () => (
     <path d="M2.5 8a5.5 5.5 0 019.55-3.75" />
     <path d="M12.05 1.25v3h-3" />
     <path d="M3.95 14.75v-3h3" />
-  </svg>
-);
-
-const CopyIcon = ({ className }: { className?: string }) => (
-  <svg className={className} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="5" y="5" width="8" height="8" rx="1.5" />
-    <path d="M3 10.5H2.5A1.5 1.5 0 011 9V2.5A1.5 1.5 0 012.5 1H9a1.5 1.5 0 011.5 1.5V3" />
   </svg>
 );
 
