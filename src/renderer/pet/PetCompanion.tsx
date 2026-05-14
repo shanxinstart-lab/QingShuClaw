@@ -1,7 +1,17 @@
+import {
+  ArrowPathIcon,
+  CheckCircleIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  ExclamationTriangleIcon,
+  MinusIcon,
+  PaperAirplaneIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 import React, { useEffect, useMemo, useState } from 'react';
 
 import { PetMode, PetSource, PetStatus } from '../../shared/pet/constants';
-import type { PetCatalogEntry, PetRuntimeState } from '../../shared/pet/types';
+import type { PetCatalogEntry, PetRuntimeSession, PetRuntimeState } from '../../shared/pet/types';
 import { i18nService } from '../services/i18n';
 import {
   nextPetFrameIndex,
@@ -46,22 +56,6 @@ const canToggleFloatingWindow = (state: PetRuntimeState): boolean => (
 const sessionStatusDotClass = (status: PetStatus): string => {
   switch (status) {
     case PetStatus.Waiting:
-      return 'bg-orange-500';
-    case PetStatus.Review:
-      return 'bg-green-500';
-    case PetStatus.Failed:
-      return 'bg-red-500';
-    case PetStatus.Running:
-      return 'bg-blue-500 animate-pulse';
-    case PetStatus.Idle:
-    default:
-      return 'bg-neutral-400';
-  }
-};
-
-const sessionStatusBadgeClass = (status: PetStatus): string => {
-  switch (status) {
-    case PetStatus.Waiting:
       return 'bg-orange-500 text-white';
     case PetStatus.Review:
       return 'bg-green-500 text-white';
@@ -75,19 +69,19 @@ const sessionStatusBadgeClass = (status: PetStatus): string => {
   }
 };
 
-const sessionStatusMark = (status: PetStatus): string => {
+const sessionStatusIcon = (status: PetStatus): React.ReactNode => {
   switch (status) {
-    case PetStatus.Review:
-      return '✓';
     case PetStatus.Waiting:
-      return '!';
+      return <ClockIcon className="h-3.5 w-3.5" />;
+    case PetStatus.Review:
+      return <CheckCircleIcon className="h-3.5 w-3.5" />;
     case PetStatus.Failed:
-      return '×';
+      return <ExclamationTriangleIcon className="h-3.5 w-3.5" />;
     case PetStatus.Running:
-      return '…';
+      return <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />;
     case PetStatus.Idle:
     default:
-      return '';
+      return null;
   }
 };
 
@@ -226,6 +220,87 @@ export const PetMenu: React.FC<PetMenuProps> = ({
   </div>
 );
 
+type PetSessionNotificationProps = {
+  session: PetRuntimeSession;
+  collapsed: boolean;
+  onActivate: (sessionId: string) => void;
+  onClose: (event: React.MouseEvent<HTMLButtonElement>, sessionId: string) => void;
+  onToggleExpanded: (event: React.MouseEvent<HTMLButtonElement>, sessionId: string) => void;
+};
+
+export const PetSessionNotification: React.FC<PetSessionNotificationProps> = ({
+  session,
+  collapsed,
+  onActivate,
+  onClose,
+  onToggleExpanded,
+}) => {
+  const canExpand = !!session.message && session.message.length > 96;
+
+  return (
+    <div
+      className="group relative w-full snap-start scroll-mt-2 text-left"
+      role="listitem"
+    >
+      <div className="relative z-[1] overflow-hidden rounded-[18px] border border-neutral-200 bg-white text-black shadow-[inset_0_1px_0_rgba(255,255,255,0.42),inset_0_-1px_0_rgba(0,0,0,0.08),0_14px_30px_-20px_rgba(0,0,0,0.4)] transition-[background-color,border-color,box-shadow] duration-200 ease-out hover:border-neutral-300 hover:bg-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.52),inset_0_-1px_0_rgba(0,0,0,0.1),0_18px_38px_-22px_rgba(0,0,0,0.48)]">
+        <button
+          type="button"
+          className="block w-full min-w-0 cursor-pointer px-3 py-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          onClick={() => onActivate(session.id)}
+          title={session.message ?? session.title}
+          aria-label={`${session.title}. ${session.message ?? statusLabel(session.status)}`}
+        >
+          <span className="flex min-w-0 items-center pr-7">
+            <span className="min-w-0 truncate text-[13px] font-semibold leading-[17px] text-black">
+              {session.title}
+            </span>
+          </span>
+          <span className={`${collapsed ? 'line-clamp-2' : 'line-clamp-3'} mt-0.5 block overflow-hidden text-[12px] leading-4 text-neutral-800`}>
+            {session.message ?? session.progressLabel ?? statusLabel(session.status)}
+          </span>
+        </button>
+        <span className={`pointer-events-none absolute right-1 top-1 z-0 flex h-6 w-6 items-center justify-center rounded-full ${sessionStatusDotClass(session.status)}`}>
+          {sessionStatusIcon(session.status)}
+        </span>
+        {canExpand && (
+          <button
+            type="button"
+            className="absolute right-1 top-1 z-10 flex h-6 w-6 translate-x-1 items-center justify-center rounded-full bg-white text-neutral-600 opacity-0 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:translate-x-0 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:opacity-100"
+            onClick={(event) => onToggleExpanded(event, session.id)}
+            title={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
+          >
+            <ChevronRightIcon className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="absolute left-1 top-1 z-20 flex h-6 w-6 -translate-x-1 items-center justify-center rounded-full bg-white text-neutral-500 opacity-0 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:translate-x-0 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:opacity-100"
+          onClick={(event) => onClose(event, session.id)}
+          title={i18nService.t('petCloseSession')}
+          aria-label={i18nService.t('petCloseSession')}
+        >
+          <XMarkIcon className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          className="absolute bottom-1 right-2 z-10 flex h-5 translate-x-1 items-center gap-1 rounded-full bg-white px-2 text-[11px] font-medium leading-none text-neutral-800 opacity-0 shadow-[0px_5px_10px_-7px_rgba(0,0,0,0.22)] ring-1 ring-neutral-200 transition hover:bg-neutral-100 focus:translate-x-0 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:opacity-100"
+          onClick={(event) => {
+            event.stopPropagation();
+            onActivate(session.id);
+          }}
+          title={i18nService.t('petReplyInSession')}
+          aria-label={i18nService.t('petReplyInSession')}
+        >
+          <PaperAirplaneIcon className="h-3 w-3" />
+          {i18nService.t('petReplyInSession')}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const PetCompanion: React.FC<PetCompanionProps> = ({
   state,
   variant = 'embedded',
@@ -233,6 +308,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [petHovered, setPetHovered] = useState(false);
+  const [activityTrayOpen, setActivityTrayOpen] = useState(true);
   const [collapsedSessionIds, setCollapsedSessionIds] = useState<Record<string, boolean>>({});
   const [dragState, setDragState] = useState<{
     pointerId: number;
@@ -252,6 +328,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   const activeSessions = state.activeSessions;
   const hasActiveSessions = activeSessions.length > 0;
   const activeSessionCount = activeSessions.length;
+  const primarySessionStatus = activeSessions[0]?.status ?? PetStatus.Idle;
   const spriteAnimationKey = [
     state.session?.id ?? 'none',
     state.message ?? '',
@@ -261,6 +338,10 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   const bubbleMessage = state.message ?? statusLabel(state.status);
   const handlePetActivate = () => {
     if (isFloating) {
+      if (hasActiveSessions) {
+        setActivityTrayOpen((open) => !open);
+        return;
+      }
       void window.electron.pet.activateMainWindow();
       return;
     }
@@ -376,13 +457,27 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
             void window.electron.pet.persistFloatingWindowPosition();
           }}
           title={`${pet.displayName} - ${statusLabel(state.status)}`}
-          aria-label={`${pet.displayName} - ${statusLabel(state.status)}`}
+          aria-label={hasActiveSessions
+            ? i18nService.t(activityTrayOpen ? 'petCollapseActivity' : 'petOpenActivity')
+            : `${pet.displayName} - ${statusLabel(state.status)}`}
         >
           {sprite}
           {hasActiveSessions && (
-            <span className="pointer-events-none absolute right-0 top-0 z-10 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-black px-1 text-[11px] font-semibold leading-5 text-white shadow-md ring-2 ring-white">
-              {activeSessionCount}
-            </span>
+            activityTrayOpen ? (
+              <span
+                className="pointer-events-none absolute right-0 top-0 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border border-neutral-200 bg-white p-0 text-neutral-600 shadow-sm ring-2 ring-white"
+                aria-hidden="true"
+              >
+                <MinusIcon className="h-3.5 w-3.5" />
+              </span>
+            ) : (
+              <span
+                className={`pointer-events-none absolute right-0 top-0 z-10 inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-white/70 px-2 text-xs font-semibold leading-none shadow-sm ring-2 ring-white ${sessionStatusDotClass(primarySessionStatus)}`}
+                aria-hidden="true"
+              >
+                {activeSessionCount}
+              </span>
+            )
           )}
         </button>
       ) : (
@@ -402,76 +497,23 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
         </button>
       )}
 
-      {isFloating && hasActiveSessions && (
-        <div className="non-draggable absolute right-[118px] top-3 z-[70] flex w-[310px] flex-col items-stretch gap-2 text-left">
+      {isFloating && hasActiveSessions && activityTrayOpen && (
+        <div
+          className="non-draggable absolute right-[118px] top-3 z-[70] flex max-h-[300px] w-[276px] flex-col items-stretch gap-2 overflow-y-auto overflow-x-hidden text-left"
+          role="list"
+          aria-label={i18nService.t('petNotificationList')}
+        >
           {activeSessions.map((session) => {
             const collapsed = collapsedSessionIds[session.id] ?? false;
             return (
-              <div
+              <PetSessionNotification
                 key={session.id}
-                className="group relative overflow-hidden rounded-xl border border-neutral-200 bg-white text-black shadow-lg"
-              >
-                <button
-                  type="button"
-                  className="absolute left-1.5 top-1.5 z-10 hidden h-5 w-5 items-center justify-center rounded-full bg-white/95 text-[13px] font-semibold leading-none text-neutral-500 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:inline-flex"
-                  onClick={(event) => closeSessionNotification(event, session.id)}
-                  title={i18nService.t('petCloseSession')}
-                  aria-label={i18nService.t('petCloseSession')}
-                >
-                  ×
-                </button>
-                {sessionStatusMark(session.status) && (
-                  <span className={`absolute right-2 top-2 z-10 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold leading-5 shadow-sm ${sessionStatusBadgeClass(session.status)}`}>
-                    {sessionStatusMark(session.status)}
-                  </span>
-                )}
-                <div className="flex w-full min-w-0 items-start gap-2 px-3 py-2.5 text-left transition hover:bg-neutral-50">
-                  <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${sessionStatusDotClass(session.status)}`} />
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 pr-6 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                    onClick={() => activateSession(session.id)}
-                    title={session.message ?? session.title}
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[12px] font-semibold leading-tight text-black">
-                        {session.title}
-                      </span>
-                      <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[9px] font-medium leading-tight text-neutral-700">
-                        {session.progressLabel ?? statusLabel(session.status)}
-                      </span>
-                    </span>
-                    {!collapsed && (
-                      <span className="mt-1 line-clamp-3 block text-[11px] leading-snug text-neutral-700">
-                        {session.message ?? statusLabel(session.status)}
-                      </span>
-                    )}
-                  </button>
-                  <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      className="inline-flex h-5 w-5 items-center justify-center rounded text-[12px] font-semibold text-neutral-500 transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                      onClick={(event) => toggleSessionExpanded(event, session.id)}
-                      title={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
-                      aria-label={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
-                    >
-                      {collapsed ? '+' : '-'}
-                    </button>
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="absolute bottom-1.5 right-2 hidden rounded-full bg-black px-2 py-0.5 text-[10px] font-medium leading-4 text-white shadow-sm transition hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:inline-flex"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    activateSession(session.id);
-                  }}
-                  title={i18nService.t('petReplyInSession')}
-                  aria-label={i18nService.t('petReplyInSession')}
-                >
-                  {i18nService.t('petReplyInSession')}
-                </button>
-              </div>
+                session={session}
+                collapsed={collapsed}
+                onActivate={activateSession}
+                onClose={closeSessionNotification}
+                onToggleExpanded={toggleSessionExpanded}
+              />
             );
           })}
         </div>

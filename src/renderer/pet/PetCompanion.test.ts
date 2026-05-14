@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { DEFAULT_PET_CONFIG } from '../../shared/pet/config';
 import { PetMode, PetSource, PetStatus } from '../../shared/pet/constants';
 import type { PetCatalogEntry, PetRuntimeState } from '../../shared/pet/types';
-import PetCompanion, { PetMenu } from './PetCompanion';
+import PetCompanion, { PetMenu, PetSessionNotification } from './PetCompanion';
 
 vi.mock('./petService', () => ({
   petService: {
@@ -80,15 +80,17 @@ const floatingState = (): PetRuntimeState => ({
 });
 
 describe('PetCompanion floating notifications', () => {
-  test('renders the active session count on the pet instead of above the session list', () => {
+  test('renders the collapse badge on the pet while the activity tray is open', () => {
     const markup = renderToStaticMarkup(React.createElement(PetCompanion, {
       state: floatingState(),
       variant: 'floating',
     }));
 
-    expect(markup).toContain('pointer-events-none absolute right-0 top-0');
-    expect(markup).toContain('>2</span>');
+    expect(markup).toContain('aria-label="收起活动"');
     expect(markup).toContain('right-[118px] top-3');
+    expect(markup).toContain('role="list"');
+    expect(markup).toContain('活动通知');
+    expect(markup).toContain('h-7 w-7');
     expect(markup).not.toContain('Show sessions');
     expect(markup).not.toContain('Hide sessions');
   });
@@ -99,7 +101,28 @@ describe('PetCompanion floating notifications', () => {
       variant: 'floating',
     }));
 
-    expect(markup.match(/aria-label="收起会话"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="关闭会话"');
+    expect(markup).toContain('aria-label="回复会话"');
+    expect(markup).toContain('rounded-[18px]');
+  });
+
+  test('renders a collapsed Codex-style notification row when requested', () => {
+    const session = {
+      ...floatingState().activeSessions[0],
+      message: 'Working on the first task with a longer activity summary that should expose the expand control just like Codex does for taller notification rows.',
+    };
+    const markup = renderToStaticMarkup(React.createElement(PetSessionNotification, {
+      session,
+      collapsed: true,
+      onActivate: vi.fn(),
+      onClose: vi.fn(),
+      onToggleExpanded: vi.fn(),
+    }));
+
+    expect(markup).toContain('Session one');
+    expect(markup).toContain('line-clamp-2');
+    expect(markup).toContain('aria-label="展开会话"');
+    expect(markup).toContain('回复会话');
   });
 
   test('keeps the floating context menu scoped to closing the overlay', () => {
