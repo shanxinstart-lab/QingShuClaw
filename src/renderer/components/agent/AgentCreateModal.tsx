@@ -34,6 +34,7 @@ import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import AgentToolBundleSelector from './AgentToolBundleSelector';
 import AgentAvatarPicker from './AgentAvatarPicker';
 import AgentConfirmDialog from './AgentConfirmDialog';
+import AgentWorkingDirectoryField from './AgentWorkingDirectoryField';
 import { AgentConfirmDialogVariant } from './constants';
 
 type CreateTab = 'basic' | 'skills' | 'im';
@@ -52,6 +53,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
+  const [workingDirectory, setWorkingDirectory] = useState('');
   const [icon, setIcon] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [toolBundleIds, setToolBundleIds] = useState<string[]>([]);
@@ -74,6 +76,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setDescription('');
     setSystemPrompt('');
     setIdentity('');
+    setWorkingDirectory('');
     setIcon('');
     setSkillIds([]);
     setToolBundleIds([]);
@@ -92,6 +95,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     description,
     systemPrompt,
     identity,
+    workingDirectory,
     icon,
     skillIds,
     toolBundleIds,
@@ -101,6 +105,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     description,
     icon,
     identity,
+    workingDirectory,
     name,
     skillIds,
     systemPrompt,
@@ -185,6 +190,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setDescription(isEn && preset.descriptionEn ? preset.descriptionEn : preset.description);
     setSystemPrompt(isEn && preset.systemPromptEn ? preset.systemPromptEn : preset.systemPrompt);
     setIdentity('');
+    setWorkingDirectory('');
     setIcon(preset.icon);
     setSkillIds([...preset.skillIds]);
     setToolBundleIds([]);
@@ -223,6 +229,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
         description,
         systemPrompt,
         identity,
+        workingDirectory,
         icon,
         skillIds,
         toolBundleIds,
@@ -487,6 +494,10 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
                   className="w-full px-3 py-2.5 rounded-xl border border-border bg-background/50 text-foreground text-sm resize-none transition-all focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
                 />
               </div>
+              <AgentWorkingDirectoryField
+                value={workingDirectory}
+                onChange={setWorkingDirectory}
+              />
             </div>
           )}
 

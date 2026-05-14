@@ -36,6 +36,7 @@ test('hasCreateAgentDraftChanges 会忽略仅空白字符的未持久化差异',
     description: '',
     systemPrompt: ' ',
     identity: '',
+    workingDirectory: ' ',
     icon: '   ',
     skillIds: [],
     toolBundleIds: [],
@@ -49,6 +50,7 @@ test('hasCreateAgentDraftChanges 只关注会实际持久化的字段', () => {
     description: '',
     systemPrompt: '',
     identity: '',
+    workingDirectory: '',
     icon: '',
     skillIds: ['skill-a'],
     toolBundleIds: [],
@@ -60,11 +62,64 @@ test('hasCreateAgentDraftChanges 只关注会实际持久化的字段', () => {
     description: '',
     systemPrompt: '',
     identity: '',
+    workingDirectory: '',
     icon: '',
     skillIds: [],
     toolBundleIds: ['bundle-a'],
     boundBindingKeys: new Set(['qq']),
   })).toBe(true);
+});
+
+test('hasCreateAgentDraftChanges 会把默认工作目录变化视为可保存改动', () => {
+  expect(hasCreateAgentDraftChanges(
+    {
+      name: 'Agent',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      workingDirectory: '/tmp/new-workspace',
+      icon: '',
+      skillIds: [],
+      toolBundleIds: [],
+      boundBindingKeys: new Set(),
+    },
+    {
+      name: 'Agent',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      workingDirectory: '/tmp/old-workspace',
+      icon: '',
+      skillIds: [],
+      toolBundleIds: [],
+      boundBindingKeys: new Set(),
+    },
+  )).toBe(true);
+
+  expect(hasCreateAgentDraftChanges(
+    {
+      name: 'Agent',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      workingDirectory: ' /tmp/workspace ',
+      icon: '',
+      skillIds: [],
+      toolBundleIds: [],
+      boundBindingKeys: new Set(),
+    },
+    {
+      name: 'Agent',
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      workingDirectory: '/tmp/workspace',
+      icon: '',
+      skillIds: [],
+      toolBundleIds: [],
+      boundBindingKeys: new Set(),
+    },
+  )).toBe(false);
 });
 
 test('hasCreateAgentDraftChanges 会把 IM 实例绑定变化视为可保存改动', () => {

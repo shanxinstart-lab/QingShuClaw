@@ -49,6 +49,7 @@ import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import AgentToolBundleSelector from './AgentToolBundleSelector';
 import AgentAvatarPicker from './AgentAvatarPicker';
 import AgentConfirmDialog from './AgentConfirmDialog';
+import AgentWorkingDirectoryField from './AgentWorkingDirectoryField';
 import { AgentConfirmDialogVariant } from './constants';
 
 type SettingsTab = 'basic' | 'skills' | 'im';
@@ -71,6 +72,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
+  const [workingDirectory, setWorkingDirectory] = useState('');
   const [icon, setIcon] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [managedBaseSkillIds, setManagedBaseSkillIds] = useState<string[]>([]);
@@ -107,6 +109,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         setDescription(a.description);
         setSystemPrompt(a.systemPrompt);
         setIdentity(a.identity);
+        setWorkingDirectory(a.workingDirectory ?? '');
         setIcon(a.icon);
         setSkillIds(a.skillIds ?? []);
         setManagedBaseSkillIds(a.managedBaseSkillIds ?? []);
@@ -254,6 +257,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         description,
         systemPrompt,
         identity,
+        workingDirectory,
         icon,
         skillIds,
         toolBundleIds,
@@ -264,6 +268,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         description: agent.description,
         systemPrompt: agent.systemPrompt,
         identity: agent.identity,
+        workingDirectory: agent.workingDirectory ?? '',
         icon: agent.icon,
         skillIds: agent.skillIds ?? [],
         toolBundleIds: savedToolBundleIds,
@@ -292,6 +297,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
     skillIds,
     systemPrompt,
     toolBundleIds,
+    workingDirectory,
   ]);
 
   if (!agentId) return null;
@@ -358,6 +364,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         description,
         systemPrompt,
         identity,
+        workingDirectory,
         icon,
         skillIds,
         toolBundleIds,
@@ -556,6 +563,12 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                   className="w-full px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm resize-none"
                 />
               </div>
+              {!isManagedReadOnly && (
+                <AgentWorkingDirectoryField
+                  value={workingDirectory}
+                  onChange={setWorkingDirectory}
+                />
+              )}
               {agent?.policyNote && (
                 <div className="rounded-lg border border-border bg-surface-raised/60 px-3 py-2 text-xs text-secondary">
                   {agent.policyNote}

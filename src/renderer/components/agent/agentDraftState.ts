@@ -3,6 +3,7 @@ export interface CreateAgentDraftState {
   description: string;
   systemPrompt: string;
   identity: string;
+  workingDirectory?: string;
   icon: string;
   skillIds: readonly string[];
   toolBundleIds?: readonly string[];
@@ -60,6 +61,9 @@ export const hasCreateAgentDraftChanges = (
     return true;
   }
   if (normalizeDraftText(current.identity) !== normalizeDraftText(initial?.identity)) {
+    return true;
+  }
+  if (normalizeDraftText(current.workingDirectory) !== normalizeDraftText(initial?.workingDirectory)) {
     return true;
   }
   if (normalizeDraftText(current.icon) !== normalizeDraftText(initial?.icon)) {
