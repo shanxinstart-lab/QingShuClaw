@@ -1,13 +1,43 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { PET_NOTIFICATION_LIFETIME_MS, PetStatus } from '../../shared/pet/constants';
+import { DEFAULT_PET_CONFIG } from '../../shared/pet/config';
+import {
+  PET_NOTIFICATION_LIFETIME_MS,
+  PetMode,
+  PetSource,
+  PetStatus,
+} from '../../shared/pet/constants';
+import type { PetCatalogEntry, PetRuntimeState } from '../../shared/pet/types';
 import {
   mergePetSessionNotifications,
+  petService,
   resolvePetActiveSessionsFromCoworkState,
   resolvePetMessageFromCoworkState,
   resolvePetSessionSnapshotsFromCoworkState,
   resolvePetStatusFromCoworkState,
 } from './petService';
+
+const pet: PetCatalogEntry = {
+  id: 'codex',
+  displayName: 'Codex',
+  description: 'Codex pet',
+  source: PetSource.Bundled,
+  bundled: true,
+  installed: true,
+  selectable: true,
+};
+
+afterEach(() => {
+  Object.assign(petService, {
+    state: null,
+    cleanup: null,
+    lastSentStatus: null,
+    sessionMessages: new Map(),
+    trackedSessions: new Map(),
+    acknowledgedSessionAt: new Map(),
+  });
+  vi.restoreAllMocks();
+});
 
 describe('resolvePetStatusFromCoworkState', () => {
   const state = (input: {
@@ -242,5 +272,113 @@ describe('mergePetSessionNotifications', () => {
     );
 
     expect(merged).toEqual([]);
+  });
+});
+
+describe('petService session acknowledgement', () => {
+  test('removes only the acknowledged session after syncing runtime state from main', async () => {
+    const stateChangedCallbacks: Array<(state: PetRuntimeState) => void> = [];
+    const runtimeState: PetRuntimeState = {
+      config: {
+        ...DEFAULT_PET_CONFIG,
+        enabled: true,
+        mode: PetMode.Floating,
+      },
+      status: PetStatus.Running,
+      message: 'Thinking',
+      session: { id: 'task-1', title: 'Task 1' },
+      activePet: pet,
+      pets: [pet],
+      activeSessions: [
+        {
+          id: 'task-1',
+          title: 'Task 1',
+          status: PetStatus.Running,
+          message: 'Working',
+          progressLabel: 'Loading',
+          updatedAt: 20,
+        },
+        {
+          id: 'task-2',
+          title: 'Task 2',
+          status: PetStatus.Review,
+          message: 'Done',
+          progressLabel: 'Ready',
+          updatedAt: 10,
+        },
+      ],
+    };
+    const setRuntimeProjection = vi.fn(async (projection) => ({
+      success: true,
+      state: {
+        ...runtimeState,
+        activeSessions: projection.activeSessions,
+      },
+    }));
+    vi.stubGlobal('window', {
+      electron: {
+        pet: {
+          getConfig: vi.fn(async () => ({ success: true, config: runtimeState.config })),
+          getState: vi.fn(async () => ({ success: false })),
+          listPets: vi.fn(async () => ({ success: true, pets: runtimeState.pets })),
+          onStateChanged: vi.fn((callback) => {
+            stateChangedCallbacks.push(callback);
+            return vi.fn();
+          }),
+          setRuntimeProjection,
+        },
+      },
+    });
+
+    await petService.init();
+    stateChangedCallbacks[0]?.(runtimeState);
+    await petService.acknowledgeSession('task-1');
+
+    expect(setRuntimeProjection).toHaveBeenCalledWith(expect.objectContaining({
+      activeSessions: [
+        expect.objectContaining({ id: 'task-2' }),
+      ],
+    }));
+  });
+
+  test('loads full runtime state on init so floating windows survive reloads', async () => {
+    const runtimeState: PetRuntimeState = {
+      config: {
+        ...DEFAULT_PET_CONFIG,
+        enabled: true,
+        mode: PetMode.Floating,
+      },
+      status: PetStatus.Running,
+      message: 'Thinking',
+      session: { id: 'task-1', title: 'Task 1' },
+      activePet: pet,
+      pets: [pet],
+      activeSessions: [
+        {
+          id: 'task-1',
+          title: 'Task 1',
+          status: PetStatus.Running,
+          message: 'Working',
+          progressLabel: 'Loading',
+          updatedAt: 20,
+        },
+      ],
+    };
+    vi.stubGlobal('window', {
+      electron: {
+        pet: {
+          getConfig: vi.fn(async () => ({ success: true, config: runtimeState.config })),
+          getState: vi.fn(async () => ({ success: true, state: runtimeState })),
+          listPets: vi.fn(async () => ({ success: true, pets: runtimeState.pets })),
+          onStateChanged: vi.fn(() => vi.fn()),
+        },
+      },
+    });
+
+    await petService.init();
+
+    expect(petService.getState()?.activeSessions).toEqual([
+      expect.objectContaining({ id: 'task-1' }),
+    ]);
   });
 });

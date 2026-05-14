@@ -145,6 +145,7 @@ export class PetStore {
   listPets(): PetCatalogEntry[] {
     return [
       ...this.listBuiltinPets(),
+      ...this.listBundledCustomPets(),
       ...this.listCustomPets(),
       ...this.listCodexCustomPets(),
     ].sort((left, right) => {
@@ -313,6 +314,16 @@ export class PetStore {
     return entries;
   }
 
+  private listBundledCustomPets(): PetCatalogEntry[] {
+    return this.listManifestPets([
+      {
+        baseDir: path.join(this.bundledPetsDir, 'custom'),
+        manifestFile: 'pet.json',
+        source: PetSource.Bundled,
+      },
+    ], true);
+  }
+
   private listCodexCustomPets(): PetCatalogEntry[] {
     return this.listManifestPets([
       {
@@ -335,7 +346,7 @@ export class PetStore {
     manifestFile: 'pet.json' | 'avatar.json';
     source: PetSource;
     idPrefix?: string;
-  }>): PetCatalogEntry[] {
+  }>, bundled = false): PetCatalogEntry[] {
     const entriesById = new Map<string, PetCatalogEntry>();
     for (const source of sources) {
       if (!fs.existsSync(source.baseDir)) continue;
@@ -352,7 +363,7 @@ export class PetStore {
             displayName: manifest.displayName,
             description: manifest.description,
             source: source.source,
-            bundled: false,
+            bundled,
             installed: true,
             selectable: true,
             manifest: {

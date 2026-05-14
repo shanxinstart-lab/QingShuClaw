@@ -27,7 +27,6 @@ import type {
 } from '../renderer/types/im';
 import type { McpServerFormData } from '../renderer/types/mcp';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
-import { NimQrLoginIpc } from './ipcHandlers/nimQrLogin';
 import type {
   RunFilter,
   ScheduledTaskInput,
@@ -48,6 +47,7 @@ import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
 import { WakeInputIpcChannel } from '../shared/wakeInput/constants';
+import { NimQrLoginIpc } from './ipcHandlers/nimQrLogin';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -483,6 +483,7 @@ contextBridge.exposeInMainWorld('electron', {
     set: (enabled: boolean) => ipcRenderer.invoke('app:setPreventSleep', enabled),
   },
   pet: {
+    getState: () => ipcRenderer.invoke(PetIpcChannel.GetState),
     getConfig: () => ipcRenderer.invoke(PetIpcChannel.GetConfig),
     setConfig: (config: Partial<PetConfig>) => ipcRenderer.invoke(PetIpcChannel.SetConfig, config),
     listPets: () => ipcRenderer.invoke(PetIpcChannel.ListPets),

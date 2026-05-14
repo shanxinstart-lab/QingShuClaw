@@ -3,7 +3,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { PetMode, PetSource, PetStatus } from '../../shared/pet/constants';
 import type { PetCatalogEntry, PetRuntimeState } from '../../shared/pet/types';
 import { i18nService } from '../services/i18n';
-import { nextPetFrameIndex, resolveFramePosition, resolvePetAnimation } from './animation';
+import {
+  nextPetFrameIndex,
+  PetInteractionState,
+  resolveFramePosition,
+  resolvePetAnimation,
+} from './animation';
 import { petService } from './petService';
 
 type PetCompanionProps = {
@@ -38,6 +43,54 @@ const canToggleFloatingWindow = (state: PetRuntimeState): boolean => (
   state.config.mode === PetMode.Floating || state.config.mode === PetMode.Both
 );
 
+const sessionStatusDotClass = (status: PetStatus): string => {
+  switch (status) {
+    case PetStatus.Waiting:
+      return 'bg-orange-500';
+    case PetStatus.Review:
+      return 'bg-green-500';
+    case PetStatus.Failed:
+      return 'bg-red-500';
+    case PetStatus.Running:
+      return 'bg-blue-500 animate-pulse';
+    case PetStatus.Idle:
+    default:
+      return 'bg-neutral-400';
+  }
+};
+
+const sessionStatusBadgeClass = (status: PetStatus): string => {
+  switch (status) {
+    case PetStatus.Waiting:
+      return 'bg-orange-500 text-white';
+    case PetStatus.Review:
+      return 'bg-green-500 text-white';
+    case PetStatus.Failed:
+      return 'bg-red-500 text-white';
+    case PetStatus.Running:
+      return 'bg-blue-500 text-white';
+    case PetStatus.Idle:
+    default:
+      return 'bg-neutral-300 text-neutral-800';
+  }
+};
+
+const sessionStatusMark = (status: PetStatus): string => {
+  switch (status) {
+    case PetStatus.Review:
+      return '✓';
+    case PetStatus.Waiting:
+      return '!';
+    case PetStatus.Failed:
+      return '×';
+    case PetStatus.Running:
+      return '…';
+    case PetStatus.Idle:
+    default:
+      return '';
+  }
+};
+
 const sourceLabel = (pet: PetCatalogEntry): string => {
   if (pet.source === PetSource.Custom) return i18nService.t('petSourceCustom');
   if (pet.source === PetSource.LegacyAvatar) return i18nService.t('petSourceLegacyAvatar');
@@ -50,18 +103,20 @@ export const PetSprite: React.FC<{
   pet: PetCatalogEntry;
   status: PetStatus;
   animationsEnabled: boolean;
+  interaction?: PetInteractionState;
+  animationKey?: string | null;
   size?: number;
-}> = ({ pet, status, animationsEnabled, size = 84 }) => {
+}> = ({ pet, status, animationsEnabled, interaction = PetInteractionState.None, animationKey = null, size = 84 }) => {
   const manifest = pet.manifest;
   const animation = useMemo(
-    () => manifest ? resolvePetAnimation(manifest, status) : null,
-    [manifest, status],
+    () => manifest ? resolvePetAnimation(manifest, status, interaction) : null,
+    [manifest, status, interaction],
   );
   const [frameIndex, setFrameIndex] = useState(0);
 
   useEffect(() => {
     setFrameIndex(0);
-  }, [pet.id, status]);
+  }, [pet.id, status, interaction, animationKey]);
 
   useEffect(() => {
     if (!animation || !animationsEnabled || animation.frames.length <= 1) return;
@@ -109,12 +164,14 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   className = '',
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
+  const [petHovered, setPetHovered] = useState(false);
+  const [collapsedSessionIds, setCollapsedSessionIds] = useState<Record<string, boolean>>({});
   const [dragState, setDragState] = useState<{
     pointerId: number;
     lastX: number;
     lastY: number;
     moved: boolean;
+    direction: 'left' | 'right' | null;
   } | null>(null);
   const pet = state.activePet;
   const visible = variant === 'floating'
@@ -127,6 +184,11 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   const activeSessions = state.activeSessions;
   const hasActiveSessions = activeSessions.length > 0;
   const activeSessionCount = activeSessions.length;
+  const spriteAnimationKey = [
+    state.session?.id ?? 'none',
+    state.message ?? '',
+    activeSessions.map((session) => `${session.id}:${session.status}:${session.updatedAt}`).join('|'),
+  ].join(':');
   const bubbleTitle = state.session?.title ?? statusLabel(state.status);
   const bubbleMessage = state.message ?? statusLabel(state.status);
   const handlePetActivate = () => {
@@ -144,6 +206,18 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
       pet={pet}
       status={state.status}
       animationsEnabled={state.config.animationsEnabled}
+      animationKey={spriteAnimationKey}
+      interaction={
+        dragState?.direction === 'left'
+          ? PetInteractionState.DraggingLeft
+          : dragState?.direction === 'right'
+            ? PetInteractionState.DraggingRight
+            : dragState
+              ? PetInteractionState.Dragging
+              : petHovered
+                ? PetInteractionState.Hover
+                : PetInteractionState.None
+      }
       size={spriteSize}
     />
   );
@@ -153,13 +227,28 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     void window.electron.pet.activateSession(sessionId);
   };
 
+  const closeSessionNotification = (event: React.MouseEvent<HTMLButtonElement>, sessionId: string) => {
+    event.stopPropagation();
+    void petService.acknowledgeSession(sessionId);
+  };
+
+  const toggleSessionExpanded = (event: React.MouseEvent<HTMLButtonElement>, sessionId: string) => {
+    event.stopPropagation();
+    setCollapsedSessionIds((current) => ({
+      ...current,
+      [sessionId]: !current[sessionId],
+    }));
+  };
+
   const handleFloatingPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       pointerId: event.pointerId,
       lastX: event.screenX,
       lastY: event.screenY,
       moved: false,
+      direction: null,
     });
   };
 
@@ -173,6 +262,9 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
       lastX: event.screenX,
       lastY: event.screenY,
       moved: dragState.moved || Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2,
+      direction: Math.abs(deltaX) >= 1
+        ? deltaX > 0 ? 'right' : 'left'
+        : dragState.direction,
     });
     void window.electron.pet.moveFloatingWindowBy({ deltaX, deltaY });
   };
@@ -189,14 +281,17 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   };
 
   return (
-    <div className={`pet-companion relative ${variant === 'floating' ? 'h-screen w-screen app-drag' : ''} ${className}`}>
+    <div className={`pet-companion relative ${variant === 'floating' ? 'h-screen w-screen' : ''} ${className}`}>
       {isFloating ? (
         <button
           type="button"
-          className="pet-companion-trigger non-draggable m-3 inline-flex cursor-grab touch-none items-end border-0 bg-transparent p-0 text-left shadow-none transition active:cursor-grabbing focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="pet-companion-trigger non-draggable absolute right-3 top-3 inline-flex cursor-grab touch-none select-none items-end border-0 bg-transparent p-0 text-left shadow-none transition active:cursor-grabbing focus:outline-none"
           onPointerDown={handleFloatingPointerDown}
           onPointerMove={handleFloatingPointerMove}
           onPointerUp={handleFloatingPointerUp}
+          onPointerEnter={() => setPetHovered(true)}
+          onPointerLeave={() => setPetHovered(false)}
+          onDragStart={(event) => event.preventDefault()}
           onPointerCancel={() => {
             setDragState(null);
             void window.electron.pet.persistFloatingWindowPosition();
@@ -205,12 +300,19 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
           aria-label={`${pet.displayName} - ${statusLabel(state.status)}`}
         >
           {sprite}
+          {hasActiveSessions && (
+            <span className="pointer-events-none absolute right-0 top-0 z-10 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-black px-1 text-[11px] font-semibold leading-5 text-white shadow-md ring-2 ring-white">
+              {activeSessionCount}
+            </span>
+          )}
         </button>
       ) : (
         <button
           type="button"
           className="pet-companion-trigger non-draggable flex items-end gap-2 border-0 bg-transparent p-0 text-left shadow-none transition hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           onClick={() => setMenuOpen((open) => !open)}
+          onPointerEnter={() => setPetHovered(true)}
+          onPointerLeave={() => setPetHovered(false)}
           onContextMenu={(event) => {
             event.preventDefault();
             setMenuOpen(true);
@@ -222,62 +324,79 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
       )}
 
       {isFloating && hasActiveSessions && (
-        <div className="non-draggable absolute left-[90px] top-4 z-[70] flex w-[260px] flex-col overflow-hidden rounded-lg border border-border/70 bg-surface/95 p-1.5 text-left shadow-lg backdrop-blur">
-          <div className="mb-1 flex h-6 items-center justify-between gap-2 px-1">
-            <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-5 text-primary-foreground">
-              {activeSessionCount}
-            </span>
-            <button
-              type="button"
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-secondary transition hover:bg-surface-hover hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              onClick={() => setSessionListCollapsed((collapsed) => !collapsed)}
-              title={sessionListCollapsed ? 'Show sessions' : 'Hide sessions'}
-              aria-label={sessionListCollapsed ? 'Show sessions' : 'Hide sessions'}
-            >
-              <span className="text-[13px] leading-none">
-                {sessionListCollapsed ? '+' : '-'}
-              </span>
-            </button>
-          </div>
-          {!sessionListCollapsed && (
-            <div className="flex max-h-[154px] flex-col gap-1 overflow-hidden">
-              {activeSessions.map((session) => (
+        <div className="non-draggable absolute right-[118px] top-3 z-[70] flex w-[310px] flex-col items-stretch gap-2 text-left">
+          {activeSessions.map((session) => {
+            const collapsed = collapsedSessionIds[session.id] ?? false;
+            return (
+              <div
+                key={session.id}
+                className="group relative overflow-hidden rounded-xl border border-neutral-200 bg-white text-black shadow-lg"
+              >
                 <button
-                  key={session.id}
                   type="button"
-                  className="flex min-h-[44px] w-full min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  onClick={() => activateSession(session.id)}
-                  title={session.message ?? session.title}
+                  className="absolute left-1.5 top-1.5 z-10 hidden h-5 w-5 items-center justify-center rounded-full bg-white/95 text-[13px] font-semibold leading-none text-neutral-500 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:inline-flex"
+                  onClick={(event) => closeSessionNotification(event, session.id)}
+                  title={i18nService.t('petCloseSession')}
+                  aria-label={i18nService.t('petCloseSession')}
                 >
-                  <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${
-                    session.status === PetStatus.Waiting
-                      ? 'bg-amber-500'
-                      : session.status === PetStatus.Failed
-                        ? 'bg-red-500'
-                        : session.status === PetStatus.Review
-                          ? 'bg-emerald-500'
-                          : 'bg-primary'
-                  } ${session.status === PetStatus.Running ? 'animate-pulse' : ''}`} />
-                  <span className="min-w-0 flex-1">
+                  ×
+                </button>
+                {sessionStatusMark(session.status) && (
+                  <span className={`absolute right-2 top-2 z-10 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold leading-5 shadow-sm ${sessionStatusBadgeClass(session.status)}`}>
+                    {sessionStatusMark(session.status)}
+                  </span>
+                )}
+                <div className="flex w-full min-w-0 items-start gap-2 px-3 py-2.5 text-left transition hover:bg-neutral-50">
+                  <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${sessionStatusDotClass(session.status)}`} />
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 pr-6 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    onClick={() => activateSession(session.id)}
+                    title={session.message ?? session.title}
+                  >
                     <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[11px] font-medium leading-tight text-foreground">
+                      <span className="truncate text-[12px] font-semibold leading-tight text-black">
                         {session.title}
                       </span>
-                      <span className="shrink-0 text-[9px] leading-tight text-secondary">
+                      <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[9px] font-medium leading-tight text-neutral-700">
                         {session.progressLabel ?? statusLabel(session.status)}
                       </span>
                     </span>
-                    <span className="line-clamp-2 text-[10px] leading-snug text-secondary">
-                      {session.message ?? statusLabel(session.status)}
-                    </span>
+                    {!collapsed && (
+                      <span className="mt-1 line-clamp-3 block text-[11px] leading-snug text-neutral-700">
+                        {session.message ?? statusLabel(session.status)}
+                      </span>
+                    )}
+                  </button>
+                  <span className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded text-[12px] font-semibold text-neutral-500 transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      onClick={(event) => toggleSessionExpanded(event, session.id)}
+                      title={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
+                      aria-label={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
+                    >
+                      {collapsed ? '+' : '-'}
+                    </button>
                   </span>
+                </div>
+                <button
+                  type="button"
+                  className="absolute bottom-1.5 right-2 hidden rounded-full bg-black px-2 py-0.5 text-[10px] font-medium leading-4 text-white shadow-sm transition hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:inline-flex"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    activateSession(session.id);
+                  }}
+                  title={i18nService.t('petReplyInSession')}
+                  aria-label={i18nService.t('petReplyInSession')}
+                >
+                  {i18nService.t('petReplyInSession')}
                 </button>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+          })}
         </div>
       )}
-
       {!isFloating && (state.status !== PetStatus.Idle || !!state.message || !!state.session) && (
         <button
           type="button"

@@ -1,6 +1,16 @@
 import { PetStatus } from '../../shared/pet/constants';
 import type { PetAnimation, PetManifest } from '../../shared/pet/types';
 
+export const PetInteractionState = {
+  None: 'none',
+  Hover: 'hover',
+  Dragging: 'dragging',
+  DraggingLeft: 'dragging-left',
+  DraggingRight: 'dragging-right',
+} as const;
+
+export type PetInteractionState = typeof PetInteractionState[keyof typeof PetInteractionState];
+
 const statusAnimationName = (status: PetStatus): string => {
   switch (status) {
     case PetStatus.Running:
@@ -17,11 +27,31 @@ const statusAnimationName = (status: PetStatus): string => {
   }
 };
 
+const interactionAnimationNames = (interaction: PetInteractionState): string[] => {
+  switch (interaction) {
+    case PetInteractionState.DraggingRight:
+      return ['running-right', 'move_right', 'running', 'bounce', 'jumping', 'wave'];
+    case PetInteractionState.DraggingLeft:
+      return ['running-left', 'move_left', 'running', 'bounce', 'jumping', 'wave'];
+    case PetInteractionState.Dragging:
+      return ['running-right', 'move_right', 'running-left', 'move_left', 'running', 'bounce', 'jumping', 'wave'];
+    case PetInteractionState.Hover:
+      return ['jumping', 'bounce', 'wave'];
+    case PetInteractionState.None:
+    default:
+      return [];
+  }
+};
+
 export const resolvePetAnimation = (
   manifest: PetManifest,
   status: PetStatus,
+  interaction: PetInteractionState = PetInteractionState.None,
 ): PetAnimation => (
-  manifest.animations[statusAnimationName(status)]
+  interactionAnimationNames(interaction)
+    .map((name) => manifest.animations[name])
+    .find(Boolean)
+  ?? manifest.animations[statusAnimationName(status)]
   ?? manifest.animations.idle
   ?? {
     frames: [{ spriteIndex: 0, durationMs: 1000 }],

@@ -145,10 +145,10 @@ export class PetWindowController {
     const workArea = configuredDisplay?.workArea ?? screen.getPrimaryDisplay().workArea;
     const activeSessionCount = this.latestState?.activeSessions.length ?? 0;
     const width = activeSessionCount > 0
-      ? Math.max(config.floatingWindow.width, 360)
+      ? Math.max(config.floatingWindow.width, 430)
       : config.floatingWindow.width;
     const height = activeSessionCount > 0
-      ? Math.max(config.floatingWindow.height, 218)
+      ? Math.max(config.floatingWindow.height, 320)
       : config.floatingWindow.height;
     const rawX = typeof config.floatingWindow.x === 'number'
       ? config.floatingWindow.x

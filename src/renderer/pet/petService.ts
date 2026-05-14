@@ -258,26 +258,35 @@ class PetService {
     this.cleanup = window.electron.pet.onStateChanged((state) => {
       this.state = state;
       this.lastSentStatus = state.status;
+      this.syncTrackedSessionsFromState(state);
       this.notify();
     });
-    const [configResult, petsResult] = await Promise.all([
-      window.electron.pet.getConfig(),
-      window.electron.pet.listPets(),
-    ]);
-    if (configResult.success && configResult.config && petsResult.success) {
-      const pets = petsResult.pets ?? [];
-      const activePet = this.resolveActivePet(configResult.config, pets);
-      this.state = {
-        config: configResult.config,
-        status: PetStatus.Idle,
-        message: null,
-        session: null,
-        activeSessions: [],
-        activePet,
-        pets,
-      };
+    const stateResult = await window.electron.pet.getState();
+    if (stateResult.success && stateResult.state) {
+      this.state = stateResult.state;
       this.lastSentStatus = this.state.status;
+      this.syncTrackedSessionsFromState(this.state);
       this.notify();
+    } else {
+      const [configResult, petsResult] = await Promise.all([
+        window.electron.pet.getConfig(),
+        window.electron.pet.listPets(),
+      ]);
+      if (configResult.success && configResult.config && petsResult.success) {
+        const pets = petsResult.pets ?? [];
+        const activePet = this.resolveActivePet(configResult.config, pets);
+        this.state = {
+          config: configResult.config,
+          status: PetStatus.Idle,
+          message: null,
+          session: null,
+          activeSessions: [],
+          activePet,
+          pets,
+        };
+        this.lastSentStatus = this.state.status;
+        this.notify();
+      }
     }
     return this.state;
   }
@@ -391,8 +400,15 @@ class PetService {
   async acknowledgeSession(sessionId: string): Promise<void> {
     if (!sessionId) return;
     this.acknowledgedSessionAt.set(sessionId, Date.now());
-    this.trackedSessions.delete(sessionId);
     if (!this.state) return;
+    const nextTrackedSessions = new Map(
+      (this.trackedSessions.size > 0
+        ? [...this.trackedSessions.values()]
+        : this.state.activeSessions
+      ).map((session) => [session.id, session]),
+    );
+    nextTrackedSessions.delete(sessionId);
+    this.trackedSessions = nextTrackedSessions;
     const projection: PetRuntimeProjection = {
       status: this.state.status,
       message: this.state.message,
@@ -449,6 +465,15 @@ class PetService {
   }
 
   async refresh(): Promise<void> {
+    const stateResult = await window.electron.pet.getState();
+    if (stateResult.success && stateResult.state) {
+      this.state = stateResult.state;
+      this.lastSentStatus = this.state.status;
+      this.syncTrackedSessionsFromState(this.state);
+      this.notify();
+      return;
+    }
+
     const [configResult, petsResult] = await Promise.all([
       window.electron.pet.getConfig(),
       window.electron.pet.listPets(),
@@ -465,6 +490,7 @@ class PetService {
         pets,
       };
       this.lastSentStatus = this.state.status;
+      this.syncTrackedSessionsFromState(this.state);
       this.notify();
     }
   }
@@ -478,6 +504,10 @@ class PetService {
   private notify(): void {
     if (!this.state) return;
     this.listeners.forEach((listener) => listener(this.state!));
+  }
+
+  private syncTrackedSessionsFromState(state: PetRuntimeState): void {
+    this.trackedSessions = new Map(state.activeSessions.map((activeSession) => [activeSession.id, activeSession]));
   }
 }
 

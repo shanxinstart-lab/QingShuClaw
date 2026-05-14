@@ -482,8 +482,9 @@ select::-ms-expand {
   .qs-lobster-scan-sweep,
   .qs-lobster-ripple,
   .qs-lobster-trace,
-.qs-lobster-core {
-  animation: none;
+  .qs-lobster-core {
+    animation: none;
+  }
 }
 
 .pet-floating-window,
@@ -498,20 +499,16 @@ select::-ms-expand {
   overflow: hidden;
 }
 
-.app-drag {
-  -webkit-app-region: drag;
-}
-
-.non-draggable,
-button,
-input,
-select,
-textarea {
-  -webkit-app-region: no-drag;
+.pet-floating-window * {
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .pet-companion img {
   display: block;
   object-fit: unset;
-}
+  -webkit-user-drag: none;
+  user-select: none;
 }

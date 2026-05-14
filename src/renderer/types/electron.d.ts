@@ -591,6 +591,7 @@ interface IElectronAPI {
     onStateChanged: (callback: (state: WindowState) => void) => () => void;
   };
   pet: {
+    getState: () => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
     getConfig: () => Promise<{ success: boolean; config?: PetConfig; error?: string }>;
     setConfig: (config: Partial<PetConfig>) => Promise<{ success: boolean; config?: PetConfig; error?: string }>;
     listPets: () => Promise<{ success: boolean; pets?: PetCatalogEntry[]; error?: string }>;

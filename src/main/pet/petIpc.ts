@@ -135,6 +135,10 @@ export function registerPetIpc(options: RegisterPetIpcOptions): {
     return state;
   };
 
+  ipcMain.handle(PetIpcChannel.GetState, () => {
+    return { success: true, state: buildPetRuntimeState(options.configStore, options.petStore, currentProjection) };
+  });
+
   ipcMain.handle(PetIpcChannel.GetConfig, () => {
     return { success: true, config: options.configStore.getConfig() };
   });
