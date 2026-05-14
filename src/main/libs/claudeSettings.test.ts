@@ -13,6 +13,18 @@ vi.mock('./coworkOpenAICompatProxy', () => ({
   getCoworkOpenAICompatProxyStatus: () => ({ running: true }),
 }));
 
+const openAICodexAuthState = vi.hoisted(() => ({
+  tokens: null as null | {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+  },
+}));
+
+vi.mock('./openaiCodexAuth', () => ({
+  readOpenAICodexAuthFile: () => openAICodexAuthState.tokens,
+}));
+
 import {
   clearServerModelMetadata,
   getAllServerModelMetadata,
@@ -30,6 +42,7 @@ const createStore = (appConfig: unknown) => ({
 describe('claudeSettings MiniMax OAuth credentials', () => {
   beforeEach(() => {
     setStoreGetter(() => null);
+    openAICodexAuthState.tokens = null;
   });
 
   test('rejects MiniMax OAuth when login has not completed', () => {
@@ -99,9 +112,82 @@ describe('claudeSettings MiniMax OAuth credentials', () => {
   });
 });
 
+describe('claudeSettings OpenAI Codex OAuth credentials', () => {
+  beforeEach(() => {
+    setStoreGetter(() => null);
+    openAICodexAuthState.tokens = null;
+  });
+
+  test('rejects OpenAI Codex OAuth when login has not completed', () => {
+    setStoreGetter(() => createStore({
+      model: {
+        defaultModel: 'gpt-5.3-codex',
+        defaultModelProvider: 'openai',
+      },
+      providers: {
+        openai: {
+          enabled: true,
+          apiKey: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiFormat: 'openai',
+          authType: 'oauth',
+          models: [{ id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' }],
+        },
+      },
+    }) as never);
+
+    const raw = resolveRawApiConfig();
+    const envKeys = resolveAllProviderApiKeys();
+    const providerConfigs = resolveAllEnabledProviderConfigs();
+
+    expect(raw.config).toBeNull();
+    expect(raw.error).toBe('OpenAI Codex OAuth mode selected but login not completed.');
+    expect(envKeys).not.toHaveProperty('OPENAI');
+    expect(providerConfigs).toHaveLength(0);
+  });
+
+  test('uses OpenAI Codex OAuth marker after login without exporting token env', () => {
+    openAICodexAuthState.tokens = {
+      accessToken: 'codex-access-token',
+      refreshToken: 'codex-refresh-token',
+      expiresAt: 1893456000000,
+    };
+    setStoreGetter(() => createStore({
+      model: {
+        defaultModel: 'gpt-5.3-codex',
+        defaultModelProvider: 'openai',
+      },
+      providers: {
+        openai: {
+          enabled: true,
+          apiKey: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiFormat: 'openai',
+          authType: 'oauth',
+          models: [{ id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' }],
+        },
+      },
+    }) as never);
+
+    const raw = resolveRawApiConfig();
+    const envKeys = resolveAllProviderApiKeys();
+    const providerConfigs = resolveAllEnabledProviderConfigs();
+
+    expect(raw.config).toMatchObject({
+      apiKey: 'codex-oauth',
+      baseURL: 'https://api.openai.com/v1',
+      apiType: 'openai',
+    });
+    expect(raw.providerMetadata?.authType).toBe('oauth');
+    expect(envKeys).not.toHaveProperty('OPENAI');
+    expect(providerConfigs).toHaveLength(0);
+  });
+});
+
 describe('claudeSettings provider model metadata', () => {
   beforeEach(() => {
     setStoreGetter(() => null);
+    openAICodexAuthState.tokens = null;
     clearServerModelMetadata();
   });
 

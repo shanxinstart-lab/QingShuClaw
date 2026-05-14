@@ -188,6 +188,16 @@ interface ProvidersImportPayload {
 const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama' && provider !== 'lm-studio' && provider !== 'github-copilot';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
 
+type OpenAIOAuthPhase =
+  | { kind: 'idle' }
+  | { kind: 'pending' }
+  | { kind: 'success'; email?: string }
+  | { kind: 'error'; message: string };
+
+type OpenAIOAuthStatus =
+  | { loggedIn: false }
+  | { loggedIn: true; email?: string; accountId?: string; expiresAt: number };
+
 const WAKE_INPUT_SEPARATOR_PATTERN = /[\n,，;；、]+/u;
 
 const stringifyWakeWords = (wakeWords: string[]): string => wakeWords.join('\n');
@@ -496,11 +506,15 @@ const Settings: React.FC<SettingsProps> = ({
   const [copilotVerificationUri, setCopilotVerificationUri] = useState('');
   const [copilotGithubUser, setCopilotGithubUser] = useState('');
   const [copilotError, setCopilotError] = useState<string | null>(null);
+  const [openaiOAuthPhase, setOpenaiOAuthPhase] = useState<OpenAIOAuthPhase>({ kind: 'idle' });
+  const [openaiOAuthStatus, setOpenaiOAuthStatus] = useState<OpenAIOAuthStatus | null>(null);
 
   // Add state for providers configuration
   const [providers, setProviders] = useState<ProvidersConfig>(() => getDefaultProviders());
 
-  const isBaseUrlLocked = (isCodingPlanProvider(activeProvider) && isCodingPlanEnabled(providers[activeProvider])) || (activeProvider === 'minimax' && providers.minimax.authType === 'oauth');
+  const isOpenAIOAuthMode = activeProvider === 'openai' && providers.openai.authType === 'oauth';
+  const hasOpenAIOAuthCredential = openaiOAuthStatus?.loggedIn === true;
+  const isBaseUrlLocked = (isCodingPlanProvider(activeProvider) && isCodingPlanEnabled(providers[activeProvider])) || (activeProvider === 'minimax' && providers.minimax.authType === 'oauth') || isOpenAIOAuthMode;
   
   // 创建引用来确保内容区域的滚动
   const contentRef = useRef<HTMLDivElement>(null);
@@ -592,6 +606,52 @@ const Settings: React.FC<SettingsProps> = ({
       setCopilotAuthStatus('authenticated');
     });
   }, []);
+
+  useEffect(() => {
+    if (activeProvider !== 'openai') {
+      return;
+    }
+
+    let cancelled = false;
+    void window.electron.openaiCodexOAuth.status()
+      .then((status) => {
+        if (cancelled) return;
+        if (status.loggedIn) {
+          setOpenaiOAuthStatus({
+            loggedIn: true,
+            email: status.email ?? undefined,
+            accountId: status.accountId ?? undefined,
+            expiresAt: status.expiresAt,
+          });
+          return;
+        }
+
+        setOpenaiOAuthStatus({ loggedIn: false });
+        setProviders(prev => {
+          if (prev.openai.authType !== 'oauth') {
+            return prev;
+          }
+          return {
+            ...prev,
+            openai: {
+              ...prev.openai,
+              authType: 'apikey',
+              enabled: false,
+            },
+          };
+        });
+      })
+      .catch((error) => {
+        console.error('[Settings] Failed to read OpenAI Codex OAuth status:', error);
+        if (!cancelled) {
+          setOpenaiOAuthStatus({ loggedIn: false });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProvider]);
 
   const handleCheckUpdate = useCallback(async () => {
     if (
@@ -1497,10 +1557,10 @@ const Settings: React.FC<SettingsProps> = ({
     setMinimaxOAuthPhase({ kind: 'idle' });
   };
 
-	  const handleMiniMaxOAuthLogout = () => {
-	    setProviders(prev => ({
-	      ...prev,
-	      minimax: {
+  const handleMiniMaxOAuthLogout = () => {
+    setProviders(prev => ({
+      ...prev,
+      minimax: {
 	        ...prev.minimax,
 	        apiKey: '',
 	        oauthAccessToken: undefined,
@@ -1510,6 +1570,65 @@ const Settings: React.FC<SettingsProps> = ({
 	      },
 	    }));
     setMinimaxOAuthPhase({ kind: 'idle' });
+  };
+
+  const handleOpenAIOAuthLogin = async () => {
+    setOpenaiOAuthPhase({ kind: 'pending' });
+    try {
+      const result = await window.electron.openaiCodexOAuth.start();
+      if (!result.success) {
+        setOpenaiOAuthPhase({ kind: 'error', message: result.error });
+        return;
+      }
+
+      setProviders(prev => ({
+        ...prev,
+        openai: {
+          ...prev.openai,
+          enabled: true,
+          authType: 'oauth',
+        },
+      }));
+      setOpenaiOAuthStatus({
+        loggedIn: true,
+        email: result.email ?? undefined,
+        accountId: result.accountId ?? undefined,
+        expiresAt: result.expiresAt,
+      });
+      setOpenaiOAuthPhase({ kind: 'success', email: result.email ?? undefined });
+      window.setTimeout(() => setOpenaiOAuthPhase({ kind: 'idle' }), 1500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setOpenaiOAuthPhase({ kind: 'error', message });
+    }
+  };
+
+  const handleCancelOpenAIOAuthLogin = async () => {
+    try {
+      await window.electron.openaiCodexOAuth.cancel();
+    } catch {
+      // ignore cancel races
+    }
+    setOpenaiOAuthPhase({ kind: 'idle' });
+  };
+
+  const handleOpenAIOAuthLogout = async () => {
+    try {
+      await window.electron.openaiCodexOAuth.logout();
+    } catch (error) {
+      console.error('[Settings] OpenAI Codex OAuth logout failed:', error);
+    }
+
+    setOpenaiOAuthStatus({ loggedIn: false });
+    setOpenaiOAuthPhase({ kind: 'idle' });
+    setProviders(prev => ({
+      ...prev,
+      openai: {
+        ...prev.openai,
+        enabled: false,
+        authType: 'apikey',
+      },
+    }));
   };
 
   const handleCopilotSignIn = async () => {
@@ -1760,10 +1879,17 @@ const Settings: React.FC<SettingsProps> = ({
   const toggleProviderEnabled = (provider: ProviderType) => {
     const providerConfig = providers[provider];
     const isEnabling = !providerConfig.enabled;
-    const missingApiKey = providerRequiresApiKey(provider) && !providerConfig.apiKey.trim();
+    const missingApiKey = providerRequiresApiKey(provider)
+      && !(provider === 'openai' && providerConfig.authType === 'oauth' && hasOpenAIOAuthCredential)
+      && !providerConfig.apiKey.trim();
 
     if (provider === 'github-copilot' && isEnabling && !providerConfig.apiKey.trim()) {
       void handleCopilotSignIn();
+      return;
+    }
+
+    if (provider === 'openai' && isEnabling && providerConfig.authType === 'oauth' && !hasOpenAIOAuthCredential) {
+      void handleOpenAIOAuthLogin();
       return;
     }
 
@@ -3636,7 +3762,9 @@ const Settings: React.FC<SettingsProps> = ({
               {Object.entries(visibleProviders).map(([provider, config]) => {
                 const providerKey = provider as ProviderType;
                 const isCustom = isCustomProvider(provider);
-                const missingApiKey = providerRequiresApiKey(providerKey) && !config.apiKey.trim();
+                const missingApiKey = providerRequiresApiKey(providerKey)
+                  && !(providerKey === 'openai' && config.authType === 'oauth' && hasOpenAIOAuthCredential)
+                  && !config.apiKey.trim();
                 const canToggleProvider = config.enabled || !missingApiKey;
                 const displayLabel = isCustom
                   ? ((config as ProviderConfig).displayName || getCustomProviderDefaultName(provider))
@@ -4078,8 +4206,147 @@ const Settings: React.FC<SettingsProps> = ({
                 </div>
               )}
 
+              {activeProvider === 'openai' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-foreground mb-2">
+                      {i18nService.t('openaiAuthMethodLabel')}
+                    </label>
+                    <div className="flex rounded-xl overflow-hidden border border-border mb-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProviders(prev => ({
+                            ...prev,
+                            openai: {
+                              ...prev.openai,
+                              authType: 'apikey',
+                            },
+                          }));
+                          setOpenaiOAuthPhase({ kind: 'idle' });
+                        }}
+                        className={`flex-1 py-1.5 text-xs font-medium transition-colors ${!isOpenAIOAuthMode ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
+                      >
+                        {i18nService.t('openaiOAuthTabApiKey')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProviders(prev => ({
+                          ...prev,
+                          openai: {
+                            ...prev.openai,
+                            authType: 'oauth',
+                          },
+                        }))}
+                        className={`flex-1 py-1.5 text-xs font-medium transition-colors ${isOpenAIOAuthMode ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-raised'}`}
+                      >
+                        {i18nService.t('openaiOAuthTabOAuth')}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isOpenAIOAuthMode && (
+                    <div className="space-y-2">
+                      {openaiOAuthPhase.kind === 'idle' && openaiOAuthStatus?.loggedIn && (
+                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 space-y-2">
+                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
+                            {i18nService.t('openaiOAuthLoggedIn')}
+                            {openaiOAuthStatus.email ? ` (${openaiOAuthStatus.email})` : ''}
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => { void handleOpenAIOAuthLogin(); }}
+                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
+                            >
+                              {i18nService.t('openaiOAuthRelogin')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { void handleOpenAIOAuthLogout(); }}
+                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+                            >
+                              {i18nService.t('openaiOAuthLogout')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {openaiOAuthPhase.kind === 'idle' && openaiOAuthStatus && !openaiOAuthStatus.loggedIn && (
+                        <div className="space-y-2">
+                          <button
+                            type="button"
+                            onClick={() => { void handleOpenAIOAuthLogin(); }}
+                            className="w-full py-2 text-xs font-medium rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors"
+                          >
+                            {i18nService.t('openaiOAuthLogin')}
+                          </button>
+                          <p className="text-[11px] text-secondary">
+                            {i18nService.t('openaiOAuthHint')}
+                          </p>
+                        </div>
+                      )}
+
+                      {openaiOAuthPhase.kind === 'pending' && (
+                        <div className="p-3 rounded-xl bg-surface-inset border border-border space-y-2">
+                          <p className="text-xs text-foreground font-medium">
+                            {i18nService.t('openaiOAuthOpenBrowserHint')}
+                          </p>
+                          <p className="text-[11px] text-secondary">
+                            {i18nService.t('openaiOAuthStatusPending')}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => { void handleCancelOpenAIOAuthLogin(); }}
+                            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
+                          >
+                            {i18nService.t('openaiOAuthCancel')}
+                          </button>
+                        </div>
+                      )}
+
+                      {openaiOAuthPhase.kind === 'success' && (
+                        <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20">
+                          <p className="text-xs text-green-600 dark:text-green-400 font-medium">
+                            {i18nService.t('openaiOAuthStatusSuccess')}
+                            {openaiOAuthPhase.email ? ` (${openaiOAuthPhase.email})` : ''}
+                          </p>
+                        </div>
+                      )}
+
+                      {openaiOAuthPhase.kind === 'error' && (
+                        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 space-y-2">
+                          <p className="text-xs text-red-600 dark:text-red-400 font-medium">
+                            {i18nService.t('openaiOAuthStatusError')}
+                          </p>
+                          <p className="text-[11px] text-red-600/80 dark:text-red-400/80 break-words">
+                            {openaiOAuthPhase.message}
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => { void handleOpenAIOAuthLogin(); }}
+                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors"
+                            >
+                              {i18nService.t('openaiOAuthRelogin')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setOpenaiOAuthPhase({ kind: 'idle' })}
+                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-border text-foreground hover:bg-surface-raised transition-colors"
+                            >
+                              {i18nService.t('openaiOAuthCancel')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Standard API key section for non-MiniMax providers */}
-              {providerRequiresApiKey(activeProvider) && activeProvider !== 'minimax' && (
+              {providerRequiresApiKey(activeProvider) && activeProvider !== 'minimax' && !isOpenAIOAuthMode && (
                 <div>
                   <div className="mb-1 flex items-center justify-between">
                     <label htmlFor={`${activeProvider}-apiKey`} className="block text-xs font-medium text-foreground">
@@ -4144,7 +4411,7 @@ const Settings: React.FC<SettingsProps> = ({
                 </div>
               )}
 
-              {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && (
+              {!(activeProvider === 'minimax' && providers.minimax.authType === 'oauth') && !isOpenAIOAuthMode && (
               <div>
                 <label htmlFor={`${activeProvider}-baseUrl`} className="block text-xs font-medium text-foreground mb-1">
                   {i18nService.t('baseUrl')}
@@ -4462,7 +4729,7 @@ const Settings: React.FC<SettingsProps> = ({
                 <button
                   type="button"
                   onClick={handleTestConnection}
-                  disabled={isTesting || (providerRequiresApiKey(activeProvider) && !providers[activeProvider].apiKey)}
+                  disabled={isTesting || (providerRequiresApiKey(activeProvider) && !providers[activeProvider].apiKey && !isOpenAIOAuthMode)}
                   className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-xl border border-border text-foreground hover:bg-surface-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
                 >
                   <SignalIcon className="h-3.5 w-3.5 mr-1.5" />

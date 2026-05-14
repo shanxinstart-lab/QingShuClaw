@@ -51,7 +51,7 @@ describe('openaiCodexAuth', () => {
   });
 
   test('returns null when ChatGPT Codex auth file is missing or invalid', async () => {
-    const { getCodexAuthFilePath, readOpenAICodexAuthFile } = await import('./openaiCodexAuth');
+    const { getCodexAuthFilePath, logoutOpenAICodex, readOpenAICodexAuthFile } = await import('./openaiCodexAuth');
     const authPath = getCodexAuthFilePath();
     fs.rmSync(path.dirname(authPath), { recursive: true, force: true });
     expect(readOpenAICodexAuthFile()).toBeNull();
@@ -66,5 +66,6 @@ describe('openaiCodexAuth', () => {
     }), 'utf8');
 
     expect(readOpenAICodexAuthFile()).toBeNull();
+    expect(() => logoutOpenAICodex()).not.toThrow();
   });
 });

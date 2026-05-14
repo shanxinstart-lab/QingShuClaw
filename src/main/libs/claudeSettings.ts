@@ -12,6 +12,7 @@ import {
   getCoworkOpenAICompatProxyStatus,
   type OpenAICompatProxyTarget,
 } from './coworkOpenAICompatProxy';
+import { readOpenAICodexAuthFile } from './openaiCodexAuth';
 
 const LOBSTERAI_SERVER_PROXY_PATH = '/api/qingshu-claw/proxy/v1';
 
@@ -176,6 +177,14 @@ function resolveProviderCredential(providerName: string, providerConfig: Provide
   apiFormatOverride?: AnthropicApiFormat;
   isOAuth: boolean;
 } {
+  if (providerName === ProviderName.OpenAI && providerConfig.authType === 'oauth') {
+    const codexAuth = readOpenAICodexAuthFile();
+    return {
+      apiKey: codexAuth ? 'codex-oauth' : '',
+      isOAuth: true,
+    };
+  }
+
   if (providerName === ProviderName.Minimax && providerConfig.authType === 'oauth') {
     const oauthToken = providerConfig.oauthAccessToken?.trim() || '';
     return {
@@ -314,6 +323,11 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
 
   const [providerName, providerConfig] = providerEntry;
   const credential = resolveProviderCredential(providerName, providerConfig);
+  if (providerName === ProviderName.OpenAI && credential.isOAuth && !credential.apiKey) {
+    const serverFallback = tryLobsteraiServerFallback(modelId);
+    if (serverFallback) return { matched: serverFallback };
+    return { matched: null, error: 'OpenAI Codex OAuth mode selected but login not completed.' };
+  }
   if (credential.isOAuth && !credential.apiKey) {
     const serverFallback = tryLobsteraiServerFallback(modelId);
     if (serverFallback) return { matched: serverFallback };
@@ -518,6 +532,7 @@ export function resolveAllProviderApiKeys(): Record<string, string> {
   for (const [providerName, providerConfig] of Object.entries(appConfig.providers)) {
     if (!providerConfig?.enabled) continue;
     const apiKey = resolveProviderCredential(providerName, providerConfig).apiKey;
+    if (providerName === ProviderName.OpenAI && providerConfig.authType === 'oauth') continue;
     if (!apiKey && providerRequiresApiKey(providerName)) continue;
     const envName = providerName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     result[envName] = apiKey || 'sk-lobsterai-local';
@@ -550,6 +565,7 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
 
     const credential = resolveProviderCredential(providerName, providerConfig);
     const apiKey = credential.apiKey;
+    if (providerName === ProviderName.OpenAI && providerConfig.authType === 'oauth') continue;
     if (!apiKey && providerRequiresApiKey(providerName)) continue;
 
     const baseURL = credential.baseURLOverride || providerConfig.baseUrl?.trim() || '';

@@ -66,9 +66,20 @@ describe('imGatewayConfigState', () => {
       },
     ];
     config.telegram.enabled = true;
+    config.email.instances = [
+      {
+        enabled: true,
+        instanceId: 'email-1',
+        instanceName: 'Email 1',
+        transport: 'ws',
+        email: 'bot@example.com',
+        agentId: 'main',
+      },
+    ];
 
     expect(isPlatformEnabled(config, 'feishu')).toBe(true);
     expect(isPlatformEnabled(config, 'telegram')).toBe(true);
+    expect(isPlatformEnabled(config, 'email')).toBe(true);
     expect(isPlatformEnabled(config, 'qq')).toBe(false);
   });
 
@@ -89,5 +100,21 @@ describe('imGatewayConfigState', () => {
       },
     ];
     expect(isAnyGatewayConnected(status)).toBe(true);
+
+    const emailStatus = structuredClone(DEFAULT_IM_STATUS);
+    emailStatus.email.instances = [
+      {
+        connected: true,
+        startedAt: null,
+        lastError: null,
+        email: 'bot@example.com',
+        transport: 'ws',
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        instanceId: 'email-1',
+        instanceName: 'Email 1',
+      },
+    ];
+    expect(isAnyGatewayConnected(emailStatus)).toBe(true);
   });
 });

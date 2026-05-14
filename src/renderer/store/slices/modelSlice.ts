@@ -65,6 +65,12 @@ interface ModelState {
   selectedModelByAgent: Record<string, Model>;
 }
 
+type SelectedModelPayload = Model | { agentId: string; model: Model };
+
+function isAgentSelectedModelPayload(payload: SelectedModelPayload): payload is { agentId: string; model: Model } {
+  return 'agentId' in payload && 'model' in payload;
+}
+
 export function selectAgentSelectedModel(
   modelState: Pick<ModelState, 'selectedModel' | 'availableModels' | 'selectedModelByAgent'>,
   agentId: string,
@@ -112,7 +118,11 @@ const modelSlice = createSlice({
   name: 'model',
   initialState,
   reducers: {
-    setSelectedModel: (state, action: PayloadAction<Model>) => {
+    setSelectedModel: (state, action: PayloadAction<SelectedModelPayload>) => {
+      if (isAgentSelectedModelPayload(action.payload)) {
+        state.selectedModelByAgent[action.payload.agentId] = action.payload.model;
+        return;
+      }
       state.selectedModel = action.payload;
       state.selectedModelDirty = true;
     },

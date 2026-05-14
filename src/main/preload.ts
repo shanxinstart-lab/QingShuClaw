@@ -15,6 +15,7 @@ import type {
 } from '../renderer/types/cowork';
 import type {
   DingTalkInstanceConfig,
+  EmailInstanceConfig,
   FeishuInstanceConfig,
   IMGatewayConfig,
   IMGatewayStatus,
@@ -582,6 +583,12 @@ contextBridge.exposeInMainWorld('electron', {
     setWecomInstanceConfig: (instanceId: string, config: Partial<WecomInstanceConfig>, options?: { syncGateway?: boolean }) =>
       ipcRenderer.invoke('im:wecom:instance:config:set', instanceId, config, options),
 
+    // Email Multi-Instance
+    addEmailInstance: (name: string) => ipcRenderer.invoke('im:email:instance:add', name),
+    deleteEmailInstance: (instanceId: string) => ipcRenderer.invoke('im:email:instance:delete', instanceId),
+    setEmailInstanceConfig: (instanceId: string, config: Partial<EmailInstanceConfig>, options?: { syncGateway?: boolean }) =>
+      ipcRenderer.invoke('im:email:instance:config:set', instanceId, config, options),
+
     // Event listeners
     onStatusChange: (callback: (status: IMGatewayStatus) => void) => {
       const handler = (_event: IpcRendererEvent, status: IMGatewayStatus) => callback(status);
@@ -741,5 +748,19 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('github-copilot:token-updated', handler);
       return () => ipcRenderer.removeListener('github-copilot:token-updated', handler);
     },
+  },
+  openaiCodexOAuth: {
+    start: () =>
+      ipcRenderer.invoke('openai-codex-oauth:start') as Promise<
+        | { success: true; email: string | null; accountId: string | null; expiresAt: number }
+        | { success: false; error: string }
+      >,
+    cancel: () => ipcRenderer.invoke('openai-codex-oauth:cancel') as Promise<void>,
+    logout: () => ipcRenderer.invoke('openai-codex-oauth:logout') as Promise<void>,
+    status: () =>
+      ipcRenderer.invoke('openai-codex-oauth:status') as Promise<
+        | { loggedIn: true; email: string | null; accountId: string | null; expiresAt: number }
+        | { loggedIn: false }
+      >,
   },
 });

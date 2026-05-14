@@ -11,6 +11,8 @@ import {
   DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
   DEFAULT_DINGTALK_OPENCLAW_CONFIG,
   DEFAULT_DISCORD_OPENCLAW_CONFIG,
+  DEFAULT_EMAIL_INSTANCE_CONFIG,
+  DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG,
   DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
   DEFAULT_FEISHU_OPENCLAW_CONFIG,
   DEFAULT_IM_SETTINGS,
@@ -29,6 +31,8 @@ import {
   DingTalkMultiInstanceConfig,
   DingTalkOpenClawConfig,
   DiscordOpenClawConfig,
+  EmailInstanceConfig,
+  EmailMultiInstanceConfig,
   FeishuInstanceConfig,
   FeishuMultiInstanceConfig,
   FeishuOpenClawConfig,
@@ -85,6 +89,12 @@ function mapIMSessionMappingRow(row: IMSessionMappingRow): IMSessionMapping {
     createdAt: row.created_at,
     lastActiveAt: row.last_active_at,
   };
+}
+
+function isLegacyEmailInstanceConfig(
+  value: EmailMultiInstanceConfig | (Partial<EmailInstanceConfig> & { email?: string }),
+): value is Partial<EmailInstanceConfig> & { email: string } {
+  return !('instances' in value) && typeof value.email === 'string' && value.email.length > 0;
 }
 
 function pickPrimaryNimInstance(instances: readonly NimInstanceConfig[]): NimInstanceConfig | null {
@@ -685,6 +695,7 @@ export class IMStore {
     const wecom = this.getWecomMultiInstanceConfig();
     const popoMulti = this.getPopoMultiInstanceConfig();
     const weixin = this.getConfigValue<WeixinOpenClawConfig>('weixin') ?? DEFAULT_WEIXIN_CONFIG;
+    const email = this.getEmailConfig();
     const settings = this.getConfigValue<IMSettings>('settings') ?? DEFAULT_IM_SETTINGS;
 
     // Resolve enabled field: default to false for safety
@@ -731,6 +742,7 @@ export class IMStore {
       wecom: resolveInstanceEnabled(wecom, DEFAULT_WECOM_MULTI_INSTANCE_CONFIG),
       popo,
       weixin: resolveEnabled(weixin, DEFAULT_WEIXIN_CONFIG),
+      email: resolveInstanceEnabled(email, DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG),
       settings: { ...DEFAULT_IM_SETTINGS, ...settings },
     };
   }
@@ -776,6 +788,9 @@ export class IMStore {
     }
     if (config.weixin) {
       this.setWeixinConfig(config.weixin);
+    }
+    if (config.email) {
+      this.setEmailConfig(config.email);
     }
   }
 
@@ -1303,6 +1318,69 @@ export class IMStore {
   setWeixinConfig(config: Partial<WeixinOpenClawConfig>): void {
     const current = this.getWeixinConfig();
     this.setConfigValue('weixin', { ...current, ...config });
+  }
+
+  // ==================== Email Channel Config ====================
+
+  getEmailConfig(): EmailMultiInstanceConfig {
+    const stored = this.getConfigValue<EmailMultiInstanceConfig | (Partial<EmailInstanceConfig> & { email?: string })>('email');
+    if (!stored) {
+      return DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG;
+    }
+
+    if ('instances' in stored && Array.isArray(stored.instances)) {
+      return {
+        instances: stored.instances.map((instance) => ({
+          ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+          ...instance,
+        } as EmailInstanceConfig)),
+      };
+    }
+
+    if (isLegacyEmailInstanceConfig(stored)) {
+      return {
+        instances: [{
+          ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+          ...stored,
+          instanceId: stored.instanceId ?? 'email-1',
+          instanceName: stored.instanceName ?? 'Default',
+          enabled: stored.enabled ?? false,
+          transport: stored.transport ?? 'imap',
+          email: stored.email,
+          agentId: stored.agentId ?? 'main',
+        } as EmailInstanceConfig],
+      };
+    }
+
+    return DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG;
+  }
+
+  setEmailConfig(config: EmailMultiInstanceConfig): void {
+    this.setConfigValue('email', config);
+  }
+
+  setEmailInstanceConfig(instanceId: string, config: Partial<EmailInstanceConfig>): void {
+    const current = this.getEmailConfig();
+    const existing = current.instances.find((instance) => instance.instanceId === instanceId);
+    const nextInstance = {
+      ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+      ...existing,
+      ...config,
+      instanceId,
+      instanceName: config.instanceName ?? existing?.instanceName ?? 'Email Bot',
+    } as EmailInstanceConfig;
+    const nextInstances = existing
+      ? current.instances.map((instance) => instance.instanceId === instanceId ? nextInstance : instance)
+      : [...current.instances, nextInstance];
+    this.setEmailConfig({ instances: nextInstances });
+  }
+
+  deleteEmailInstance(instanceId: string): void {
+    this.deletePlatformAgentBinding(`email:${instanceId}`);
+    const current = this.getEmailConfig();
+    this.setEmailConfig({
+      instances: current.instances.filter((instance) => instance.instanceId !== instanceId),
+    });
   }
 
   // ==================== IM Settings ====================

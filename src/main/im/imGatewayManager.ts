@@ -82,6 +82,17 @@ const pickConfiguredPopoInstance = (config: IMGatewayConfig) => pickConfiguredIn
   ),
 );
 
+const pickConfiguredEmailInstance = (config: IMGatewayConfig) => pickConfiguredInstance(
+  config.email?.instances ?? [],
+  (instance) => Boolean(
+    instance.email
+    && (
+      (instance.transport === 'imap' && instance.password)
+      || (instance.transport === 'ws' && instance.apiKey)
+    ),
+  ),
+);
+
 const mergeNimConfigOverride = (
   current: IMGatewayConfig['nim'],
   override?: Partial<IMGatewayConfig['nim'] & NimConfig>,
@@ -642,6 +653,19 @@ export class IMGatewayManager extends EventEmitter {
         lastInboundAt: null as number | null,
         lastOutboundAt: null as number | null,
       },
+      email: {
+        instances: (config.email?.instances || []).map((inst) => ({
+          instanceId: inst.instanceId,
+          instanceName: inst.instanceName,
+          connected: Boolean(inst.enabled && inst.email),
+          startedAt: null as number | null,
+          lastError: null as string | null,
+          email: inst.email || null,
+          transport: inst.transport || null,
+          lastInboundAt: null as number | null,
+          lastOutboundAt: null as number | null,
+        })),
+      },
     };
   }
 
@@ -771,6 +795,36 @@ export class IMGatewayManager extends EventEmitter {
     // QQ always uses OpenClaw mode
     if (platform === 'qq') {
       return this.testQQOpenClawConnectivity(configOverride);
+    }
+
+    if (platform === 'email') {
+      const checks: IMConnectivityCheck[] = [];
+      const testedAt = Date.now();
+      const config = this.buildMergedConfig(configOverride);
+      const emailConfig = pickConfiguredEmailInstance(config);
+      if (!emailConfig?.email) {
+        checks.push({
+          code: 'missing_credentials',
+          level: 'fail',
+          message: t('imMissingCredentials', { fields: 'email' }),
+          suggestion: t('imFillCredentials'),
+        });
+        return { platform, testedAt, verdict: 'fail', checks };
+      }
+
+      const connected = this.isConnected(platform);
+      checks.push({
+        code: 'gateway_running',
+        level: connected ? 'pass' : 'info',
+        message: connected ? t('imChannelRunning') : t('imChannelNotEnabled'),
+        suggestion: connected ? undefined : t('imChannelNotEnabledSuggestion'),
+      });
+      return {
+        platform,
+        testedAt,
+        verdict: this.calculateVerdict(checks),
+        checks,
+      };
     }
 
     // NetEase Bee is an internal relay channel with no standalone gateway to test
@@ -1113,6 +1167,9 @@ export class IMGatewayManager extends EventEmitter {
     if (pickConfiguredNimInstance(config)?.enabled) {
       openClawPlatformsToStart.push('nim');
     }
+    if (pickConfiguredEmailInstance(config)?.enabled) {
+      openClawPlatformsToStart.push('email');
+    }
     if (config['netease-bee']?.enabled && config['netease-bee']?.clientId && config['netease-bee']?.secret) {
       openClawPlatformsToStart.push('netease-bee');
     }
@@ -1189,6 +1246,10 @@ export class IMGatewayManager extends EventEmitter {
       // POPO runs via OpenClaw; consider it connected when enabled and configured
       const config = this.getConfig();
       return Boolean(pickConfiguredPopoInstance(config)?.enabled);
+    }
+    if (platform === 'email') {
+      const config = this.getConfig();
+      return Boolean(pickConfiguredEmailInstance(config)?.enabled);
     }
     return false;
   }
@@ -2037,6 +2098,7 @@ export class IMGatewayManager extends EventEmitter {
       wecom: configOverride.wecom || current.wecom,
       weixin: { ...current.weixin, ...(configOverride.weixin || {}) },
       popo: mergePopoConfigOverride(current.popo, configOverride.popo),
+      email: configOverride.email || current.email,
       settings: { ...current.settings, ...(configOverride.settings || {}) },
     };
   }
@@ -2106,6 +2168,14 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'weixin') {
       // Weixin has no credentials; nothing to check
       return [];
+    }
+    if (platform === 'email') {
+      const emailConfig = pickConfiguredEmailInstance(config);
+      const fields: string[] = [];
+      if (!emailConfig?.email) fields.push('email');
+      if (emailConfig?.transport === 'imap' && !emailConfig.password) fields.push('password');
+      if (emailConfig?.transport === 'ws' && !emailConfig.apiKey) fields.push('apiKey');
+      return fields;
     }
     if (platform === 'popo') {
       const popoConfig = pickConfiguredPopoInstance(config);
@@ -2204,6 +2274,14 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'weixin') {
       // Weixin has no credentials to probe; just confirm enabled
       return t('imWeixinConfigReadyOpenClaw');
+    }
+
+    if (platform === 'email') {
+      const emailConfig = pickConfiguredEmailInstance(config);
+      if (!emailConfig?.email) {
+        throw new Error(t('imConfigIncomplete'));
+      }
+      return t('imChannelRunning');
     }
 
     if (platform === 'popo') {
@@ -2697,6 +2775,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'netease-bee') return status['netease-bee'].startedAt;
     if (platform === 'qq') return status.qq.instances.find((item) => item.connected)?.startedAt ?? status.qq.instances[0]?.startedAt ?? null;
     if (platform === 'wecom') return status.wecom.instances.find((item) => item.connected)?.startedAt ?? status.wecom.instances[0]?.startedAt ?? null;
+    if (platform === 'email') return status.email.instances.find((item) => item.connected)?.startedAt ?? status.email.instances[0]?.startedAt ?? null;
     if (platform === 'weixin') return status.weixin.startedAt;
     if (platform === 'popo') return status.popo.startedAt;
     return status.discord.startedAt;
@@ -2714,6 +2793,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'netease-bee') return status['netease-bee'].lastInboundAt;
     if (platform === 'qq') return status.qq.instances.find((item) => item.connected)?.lastInboundAt ?? status.qq.instances[0]?.lastInboundAt ?? null;
     if (platform === 'wecom') return status.wecom.instances.find((item) => item.connected)?.lastInboundAt ?? status.wecom.instances[0]?.lastInboundAt ?? null;
+    if (platform === 'email') return status.email.instances.find((item) => item.connected)?.lastInboundAt ?? status.email.instances[0]?.lastInboundAt ?? null;
     if (platform === 'weixin') return status.weixin.lastInboundAt;
     if (platform === 'popo') return status.popo.lastInboundAt;
     return status.discord.lastInboundAt;
@@ -2727,6 +2807,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'netease-bee') return status['netease-bee'].lastOutboundAt;
     if (platform === 'qq') return status.qq.instances.find((item) => item.connected)?.lastOutboundAt ?? status.qq.instances[0]?.lastOutboundAt ?? null;
     if (platform === 'wecom') return status.wecom.instances.find((item) => item.connected)?.lastOutboundAt ?? status.wecom.instances[0]?.lastOutboundAt ?? null;
+    if (platform === 'email') return status.email.instances.find((item) => item.connected)?.lastOutboundAt ?? status.email.instances[0]?.lastOutboundAt ?? null;
     if (platform === 'weixin') return status.weixin.lastOutboundAt;
     if (platform === 'popo') return status.popo.lastOutboundAt;
     return status.discord.lastOutboundAt;
@@ -2740,6 +2821,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'netease-bee') return status['netease-bee'].lastError;
     if (platform === 'qq') return status.qq.instances.find((item) => item.lastError)?.lastError ?? status.qq.instances[0]?.lastError ?? null;
     if (platform === 'wecom') return status.wecom.instances.find((item) => item.lastError)?.lastError ?? status.wecom.instances[0]?.lastError ?? null;
+    if (platform === 'email') return status.email.instances.find((item) => item.lastError)?.lastError ?? status.email.instances[0]?.lastError ?? null;
     if (platform === 'weixin') return status.weixin.lastError;
     if (platform === 'popo') return status.popo.lastError;
     return status.discord.lastError;

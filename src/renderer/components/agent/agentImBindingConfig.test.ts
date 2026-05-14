@@ -3,6 +3,7 @@ import { expect, test } from 'vitest';
 import {
   DEFAULT_IM_CONFIG,
   type DingTalkInstanceConfig,
+  type EmailInstanceConfig,
   type FeishuInstanceConfig,
   type IMGatewayConfig,
   type NimInstanceConfig,
@@ -194,6 +195,97 @@ test('getAgentImBindingEnabledInstances 支持未来 NIM 和 POPO 实例数组',
   ).toEqual(['nim-enabled']);
 });
 
+test('hasAgentImBindingInstanceConfigs 可识别 Email 实例数组', () => {
+  const config = createConfig({
+    email: {
+      instances: [
+        {
+          instanceId: 'email-enabled',
+          instanceName: 'Email Enabled',
+          enabled: true,
+          transport: 'ws',
+          email: 'bot@example.com',
+          apiKey: 'ck_test',
+          agentId: 'main',
+        } as EmailInstanceConfig,
+      ],
+    } as IMGatewayConfig['email'],
+  });
+
+  expect(hasAgentImBindingInstanceConfigs(config, 'email')).toBe(true);
+  expect(hasAgentImBindingInstanceConfigs(DEFAULT_IM_CONFIG, 'email')).toBe(false);
+});
+
+test('getAgentImBindingEnabledInstances 仅返回已启用 Email 实例', () => {
+  const config = createConfig({
+    email: {
+      instances: [
+        {
+          instanceId: 'email-disabled',
+          instanceName: 'Email Disabled',
+          enabled: false,
+          transport: 'ws',
+          email: 'disabled@example.com',
+          apiKey: 'ck_disabled',
+          agentId: 'main',
+        } as EmailInstanceConfig,
+        {
+          instanceId: 'email-enabled',
+          instanceName: 'Email Enabled',
+          enabled: true,
+          transport: 'ws',
+          email: 'bot@example.com',
+          apiKey: 'ck_test',
+          agentId: 'main',
+        } as EmailInstanceConfig,
+      ],
+    } as IMGatewayConfig['email'],
+  });
+
+  expect(
+    getAgentImBindingEnabledInstances(config, 'email').map((instance) => instance.instanceId),
+  ).toEqual(['email-enabled']);
+});
+
+test('collectAgentBoundBindingKeys 会过滤已禁用的 Email 实例绑定', () => {
+  const config = createConfig({
+    email: {
+      instances: [
+        {
+          instanceId: 'email-disabled',
+          instanceName: 'Email Disabled',
+          enabled: false,
+          transport: 'ws',
+          email: 'disabled@example.com',
+          apiKey: 'ck_disabled',
+          agentId: 'main',
+        } as EmailInstanceConfig,
+        {
+          instanceId: 'email-enabled',
+          instanceName: 'Email Enabled',
+          enabled: true,
+          transport: 'ws',
+          email: 'bot@example.com',
+          apiKey: 'ck_test',
+          agentId: 'main',
+        } as EmailInstanceConfig,
+      ],
+    } as IMGatewayConfig['email'],
+  });
+
+  expect(
+    collectAgentBoundBindingKeys(
+      {
+        'email:email-disabled': 'agent-1',
+        'email:email-enabled': 'agent-1',
+      },
+      'agent-1',
+      ['email'],
+      config,
+    ),
+  ).toEqual(new Set(['email:email-enabled']));
+});
+
 test('collectAgentBoundBindingKeys 会按可见平台列表回填绑定 key', () => {
   expect(
     collectAgentBoundBindingKeys(
@@ -255,6 +347,22 @@ test('buildAgentBindingKeyBindings 会同时清理同一 Agent 的平台级和�
   ).toEqual({
     'feishu:bot-other': 'agent-2',
     'feishu:bot-new': 'agent-1',
+  });
+});
+
+test('buildAgentBindingKeyBindings 会写入 Email 实例 key 并清理同 Agent 旧绑定', () => {
+  expect(
+    buildAgentBindingKeyBindings(
+      {
+        'email:email-old': 'agent-1',
+        'email:email-other': 'agent-2',
+      },
+      'agent-1',
+      ['email:email-enabled'],
+    ),
+  ).toEqual({
+    'email:email-other': 'agent-2',
+    'email:email-enabled': 'agent-1',
   });
 });
 

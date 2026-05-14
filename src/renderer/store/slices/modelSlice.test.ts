@@ -4,6 +4,7 @@ import reducer, {
   clearAgentSelectedModel,
   selectAgentSelectedModel,
   setAgentSelectedModel,
+  setSelectedModel,
   setAvailableModels,
   type Model,
 } from './modelSlice';
@@ -72,5 +73,20 @@ describe('modelSlice per-agent compatibility layer', () => {
     state = reducer(state, clearAgentSelectedModel('agentA'));
 
     expect(state.selectedModelByAgent.agentA).toBeUndefined();
+  });
+
+  test('setSelectedModel keeps legacy global selected model behavior', () => {
+    const state = reducer(undefined, setSelectedModel(globalModel));
+
+    expect(state.selectedModel).toEqual(globalModel);
+    expect(state.selectedModelDirty).toBe(true);
+    expect(state.selectedModelByAgent.agentA).toBeUndefined();
+  });
+
+  test('setSelectedModel can store a per-agent selected model', () => {
+    const state = reducer(undefined, setSelectedModel({ agentId: 'agentA', model: overrideModel }));
+
+    expect(state.selectedModelByAgent.agentA).toEqual(overrideModel);
+    expect(state.selectedModelDirty).toBe(false);
   });
 });

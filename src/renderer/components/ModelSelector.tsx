@@ -8,7 +8,7 @@ import { getProviderIcon, ProviderIconId } from '../providers/uiRegistry';
 import { i18nService } from '../services/i18n';
 import { RootState } from '../store';
 import type { Model } from '../store/slices/modelSlice';
-import { getModelIdentityKey, isSameModelIdentity, setSelectedModel } from '../store/slices/modelSlice';
+import { getModelIdentityKey, isSameModelIdentity, selectAgentSelectedModel, setSelectedModel } from '../store/slices/modelSlice';
 
 interface ModelSelectorProps {
   dropdownDirection?: 'up' | 'down' | 'auto';
@@ -64,7 +64,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const selectedItemRef = React.useRef<HTMLButtonElement>(null);
   const controlled = onChange !== undefined;
   const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
-  const selectedModel = controlled ? value ?? null : globalSelectedModel;
+  const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const currentAgentModelRef = useSelector((state: RootState) => {
+    const currentAgent = state.agent.agents.find(agent => agent.id === state.agent.currentAgentId);
+    return currentAgent?.model ?? '';
+  });
+  const agentSelectedModel = useSelector((state: RootState) => (
+    selectAgentSelectedModel(state.model, state.agent.currentAgentId, currentAgentModelRef)
+  ));
+  const selectedModel = controlled ? value ?? null : agentSelectedModel ?? globalSelectedModel;
   const selectedModelKey = selectedModel ? getModelIdentityKey(selectedModel) : '';
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
   const serverModels = availableModels.filter(m => m.isServerModel);
@@ -198,7 +206,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     if (controlled) {
       onChange(model);
     } else if (model) {
-      dispatch(setSelectedModel(model));
+      dispatch(setSelectedModel({ agentId: currentAgentId, model }));
     }
     setIsOpen(false);
   };

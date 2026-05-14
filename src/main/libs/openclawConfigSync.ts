@@ -5,7 +5,7 @@ import path from 'path';
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
 import { AuthType, OpenClawApi as OpenClawApiConst, OpenClawProviderId, ProviderName, ProviderRegistry } from '../../shared/providers';
 import type { Agent,CoworkConfig, CoworkExecutionMode } from '../coworkStore';
-import type { DiscordOpenClawConfig, IMSettings,TelegramOpenClawConfig } from '../im/types';
+import type { DiscordOpenClawConfig, EmailMultiInstanceConfig, IMSettings,TelegramOpenClawConfig } from '../im/types';
 import type { DingTalkInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig,NimConfig, NimInstanceConfig, PopoInstanceConfig, PopoOpenClawConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
 import {
   type QingShuAgentToolBundleSelection,
@@ -996,6 +996,7 @@ type OpenClawConfigSyncDeps = {
   getNimInstances?: () => NimInstanceConfig[];
   getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
   getWeixinConfig: () => WeixinOpenClawConfig | null;
+  getEmailOpenClawConfig?: () => EmailMultiInstanceConfig | null;
   getIMSettings?: () => IMSettings | null;
   getMcpBridgeConfig?: () => McpBridgeConfig | null;
   getMcpBridgeSecret?: () => string | null;
@@ -1020,6 +1021,7 @@ export class OpenClawConfigSync {
   private readonly getNimInstances?: () => NimInstanceConfig[];
   private readonly getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
   private readonly getWeixinConfig: () => WeixinOpenClawConfig | null;
+  private readonly getEmailOpenClawConfig?: () => EmailMultiInstanceConfig | null;
   private readonly getIMSettings?: () => IMSettings | null;
   private readonly getMcpBridgeConfig?: () => McpBridgeConfig | null;
   private readonly getMcpBridgeSecret?: () => string | null;
@@ -1043,6 +1045,7 @@ export class OpenClawConfigSync {
     this.getNimInstances = deps.getNimInstances;
     this.getNeteaseBeeChanConfig = deps.getNeteaseBeeChanConfig;
     this.getWeixinConfig = deps.getWeixinConfig;
+    this.getEmailOpenClawConfig = deps.getEmailOpenClawConfig;
     this.getIMSettings = deps.getIMSettings;
     this.getMcpBridgeConfig = deps.getMcpBridgeConfig;
     this.getMcpBridgeSecret = deps.getMcpBridgeSecret;
@@ -1260,6 +1263,9 @@ export class OpenClawConfigSync {
     const neteaseBeeChanConfig = this.getNeteaseBeeChanConfig();
 
     const weixinConfig = this.getWeixinConfig();
+    const emailConfig = this.getEmailOpenClawConfig?.();
+    const enabledEmailInstances = (emailConfig?.instances ?? [])
+      .filter((instance) => instance.enabled && instance.email);
 
     const dingTalkPluginId = (
       enabledDingTalkInstances.length > 0
@@ -1291,6 +1297,10 @@ export class OpenClawConfigSync {
       weixinConfig?.enabled
       && resolveExternalPluginConfigId('openclaw-weixin')
     ) || null;
+    const emailPluginId = (
+      enabledEmailInstances.length > 0
+      && resolveExternalPluginConfigId('clawemail-email')
+    ) || null;
     const missingExternalPluginIds = [
       enabledDingTalkInstances.length > 0 && !dingTalkPluginId ? 'dingtalk-connector' : null,
       enabledFeishuInstances.length > 0 && !feishuPluginId ? 'openclaw-lark' : null,
@@ -1299,6 +1309,7 @@ export class OpenClawConfigSync {
       configuredNimInstances.length > 0 && !nimPluginId ? 'openclaw-nim-channel' : null,
       neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret && !neteaseBeePluginId ? 'openclaw-netease-bee' : null,
       weixinConfig?.enabled && !weixinPluginId ? 'openclaw-weixin' : null,
+      enabledEmailInstances.length > 0 && !emailPluginId ? 'clawemail-email' : null,
     ].filter((id): id is string => Boolean(id));
     if (missingExternalPluginIds.length > 0) {
       console.warn(
@@ -1314,6 +1325,7 @@ export class OpenClawConfigSync {
       nimPluginId,
       neteaseBeePluginId,
       weixinPluginId,
+      emailPluginId,
       hasMcpBridgePlugin ? 'mcp-bridge' : null,
       hasAskUserPlugin ? 'ask-user-question' : null,
       qwenPortalAuthPluginId,
@@ -1396,6 +1408,7 @@ export class OpenClawConfigSync {
         mergePluginEntry(pluginEntries, nimPluginId, { enabled: true });
         mergePluginEntry(pluginEntries, neteaseBeePluginId, { enabled: true });
         mergePluginEntry(pluginEntries, weixinPluginId, { enabled: true });
+        mergePluginEntry(pluginEntries, emailPluginId, { enabled: true });
         mergePluginEntry(pluginEntries, hasMcpBridgePlugin ? 'mcp-bridge' : null, { enabled: true });
         mergePluginEntry(pluginEntries, hasAskUserPlugin ? 'ask-user-question' : null, { enabled: true });
         mergePluginEntry(pluginEntries, qwenPortalAuthPluginId, { enabled: true });
@@ -1738,6 +1751,52 @@ export class OpenClawConfigSync {
       }
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'moltbot-popo': { enabled: true, accounts } };
     }
+
+    // Sync Email OpenClaw channel config (via clawemail-email plugin) — multi-instance via accounts.
+    if (enabledEmailInstances.length > 0) {
+      const accounts: Record<string, unknown> = {};
+      for (const instance of enabledEmailInstances) {
+        const accountId = instance.instanceId;
+        const envSuffix = accountId.replace(/^email-/, '').replace(/-/g, '_').toUpperCase();
+        const account: Record<string, unknown> = {
+          enabled: true,
+          name: instance.instanceName,
+          email: instance.email,
+          transport: instance.transport,
+        };
+
+        if (instance.transport === 'imap') {
+          account.password = `\${LOBSTER_EMAIL_${envSuffix}_PASSWORD}`;
+          if (instance.imapHost) account.imapHost = instance.imapHost;
+          if (instance.imapPort) account.imapPort = instance.imapPort;
+          if (instance.smtpHost) account.smtpHost = instance.smtpHost;
+          if (instance.smtpPort) account.smtpPort = instance.smtpPort;
+        } else {
+          account.apiKey = `\${LOBSTER_EMAIL_${envSuffix}_APIKEY}`;
+        }
+
+        if (instance.allowFrom?.length) account.allowFrom = instance.allowFrom;
+        if (instance.replyMode) account.replyMode = instance.replyMode;
+        if (instance.replyTo) account.replyTo = instance.replyTo;
+        if (
+          instance.a2aEnabled !== undefined
+          || instance.a2aAgentDomains?.length
+          || instance.a2aMaxPingPongTurns
+        ) {
+          account.a2a = {
+            enabled: instance.a2aEnabled ?? true,
+            ...(instance.a2aAgentDomains?.length ? { agentDomains: instance.a2aAgentDomains } : {}),
+            ...(instance.a2aMaxPingPongTurns ? { maxPingPongTurns: instance.a2aMaxPingPongTurns } : {}),
+          };
+        }
+
+        accounts[accountId] = account;
+      }
+      managedConfig.channels = {
+        ...(managedConfig.channels as Record<string, unknown> || {}),
+        email: { enabled: true, accounts },
+      };
+    }
     // Sync NIM OpenClaw channel config (via openclaw-nim plugin) — multi-instance via accounts
     if (configuredNimInstances.length > 0) {
       const accounts: Record<string, Record<string, unknown>> = {};
@@ -2002,6 +2061,19 @@ export class OpenClawConfigSync {
     for (let index = 0; index < nimInstances.length; index += 1) {
       const key = index === 0 ? 'LOBSTER_NIM_TOKEN' : `LOBSTER_NIM_TOKEN_${index}`;
       env[key] = nimInstances[index].token;
+    }
+
+    // Email
+    const emailInstances = (this.getEmailOpenClawConfig?.()?.instances ?? [])
+      .filter((instance) => instance.enabled && instance.email);
+    for (const instance of emailInstances) {
+      const envSuffix = instance.instanceId.replace(/^email-/, '').replace(/-/g, '_').toUpperCase();
+      if (instance.transport === 'imap' && instance.password) {
+        env[`LOBSTER_EMAIL_${envSuffix}_PASSWORD`] = instance.password;
+      }
+      if (instance.transport === 'ws' && instance.apiKey) {
+        env[`LOBSTER_EMAIL_${envSuffix}_APIKEY`] = instance.apiKey;
+      }
     }
 
     return env;
@@ -2381,6 +2453,7 @@ export class OpenClawConfigSync {
       nim: { channel: 'nim', getInstances: () => this.getNimInstances?.() ?? [] },
       wecom: { channel: 'wecom', getInstances: () => this.getWecomInstances() },
       popo: { channel: 'moltbot-popo', getInstances: () => this.getPopoInstances?.() ?? [] },
+      email: { channel: 'email', getInstances: () => this.getEmailOpenClawConfig?.()?.instances ?? [] },
     };
 
     for (const [platform, { channel, getInstances }] of Object.entries(multiInstanceChannels)) {

@@ -17,9 +17,9 @@ import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
 import { NimQrLoginErrorCode, NimQrLoginStatus, pollQrLogin, startQrLogin } from '../../services/nimQrLogin';
 import { RootState } from '../../store';
-import { clearError, setDingTalkInstanceConfig, setDiscordConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimInstanceConfig, setPopoInstanceConfig, setQQInstanceConfig, setTelegramOpenClawConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
-import type { DiscordOpenClawConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, NimInstanceConfig, PopoInstanceConfig, PopoOpenClawConfig,TelegramOpenClawConfig, WeixinOpenClawConfig } from '../../types/im';
-import { DEFAULT_NIM_CONFIG, DEFAULT_POPO_CONFIG, MAX_DINGTALK_INSTANCES, MAX_FEISHU_INSTANCES, MAX_NIM_INSTANCES, MAX_POPO_INSTANCES, MAX_QQ_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
+import { clearError, setDingTalkInstanceConfig, setDiscordConfig, setEmailInstanceConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimInstanceConfig, setPopoInstanceConfig, setQQInstanceConfig, setTelegramOpenClawConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
+import type { DiscordOpenClawConfig, EmailInstanceConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, NimInstanceConfig, PopoInstanceConfig, PopoOpenClawConfig,TelegramOpenClawConfig, WeixinOpenClawConfig } from '../../types/im';
+import { DEFAULT_EMAIL_INSTANCE_CONFIG, DEFAULT_NIM_CONFIG, DEFAULT_POPO_CONFIG, MAX_DINGTALK_INSTANCES, MAX_EMAIL_INSTANCES, MAX_FEISHU_INSTANCES, MAX_NIM_INSTANCES, MAX_POPO_INSTANCES, MAX_QQ_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import Modal from '../common/Modal';
 import DingTalkInstanceSettings from './DingTalkInstanceSettings';
@@ -372,6 +372,8 @@ const IMSettings: React.FC = () => {
   const [popoExpanded, setPopoExpanded] = useState(false);
   const [activeWecomInstanceId, setActiveWecomInstanceId] = useState<string | null>(null);
   const [wecomExpanded, setWecomExpanded] = useState(false);
+  const [activeEmailInstanceId, setActiveEmailInstanceId] = useState<string | null>(null);
+  const [emailExpanded, setEmailExpanded] = useState(false);
   const [testingPlatform, setTestingPlatform] = useState<Platform | null>(null);
   const [connectivityResults, setConnectivityResults] = useState<Partial<Record<Platform, IMConnectivityTestResult>>>({});
   const [connectivityModalPlatform, setConnectivityModalPlatform] = useState<Platform | null>(null);
@@ -621,6 +623,26 @@ const IMSettings: React.FC = () => {
     instanceName: 'POPO Bot 1',
   };
 
+  const emailInstances = config.email.instances;
+  useEffect(() => {
+    if (emailInstances.length > 0 && !emailInstances.some((instance) => instance.instanceId === activeEmailInstanceId)) {
+      setActiveEmailInstanceId(emailInstances[0].instanceId);
+    }
+  }, [activeEmailInstanceId, emailInstances]);
+  const activeEmailInstance = (
+    emailInstances.find((instance) => instance.instanceId === activeEmailInstanceId)
+    ?? emailInstances[0]
+  ) as EmailInstanceConfig | undefined;
+  const emailConfig: EmailInstanceConfig = activeEmailInstance ?? {
+    ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+    instanceId: 'email-draft',
+    instanceName: 'Email Bot 1',
+    email: '',
+    agentId: 'main',
+    enabled: false,
+    transport: 'ws',
+  };
+
 
   // Handle NetEase Bee config change
   const handleNeteaseBeeChanChange = (field: 'clientId' | 'secret', value: string) => {
@@ -683,6 +705,31 @@ const IMSettings: React.FC = () => {
       ? { ...targetInstance, ...override }
       : { ...targetInstance, ...popoConfig };
     await imService.persistPopoInstanceConfig(targetInstance.instanceId, configToSave);
+  };
+
+  const ensurePrimaryEmailInstance = async (): Promise<EmailInstanceConfig | null> => {
+    if (activeEmailInstance) return activeEmailInstance;
+    if (emailInstances.length >= MAX_EMAIL_INSTANCES) return null;
+    const instance = await imService.addEmailInstance(`Email Bot ${emailInstances.length + 1}`);
+    if (instance) {
+      setActiveEmailInstanceId(instance.instanceId);
+      setEmailExpanded(true);
+    }
+    return instance;
+  };
+
+  const handleEmailChange = (update: Partial<EmailInstanceConfig>) => {
+    dispatch(setEmailInstanceConfig({ instanceId: emailConfig.instanceId, config: update }));
+  };
+
+  const handleSaveEmailConfig = async (override?: Partial<EmailInstanceConfig>) => {
+    if (!configLoaded) return;
+    const targetInstance = await ensurePrimaryEmailInstance();
+    if (!targetInstance) return;
+    const configToSave = override
+      ? { ...targetInstance, ...override }
+      : { ...targetInstance, ...emailConfig };
+    await imService.persistEmailInstanceConfig(targetInstance.instanceId, configToSave);
   };
 
   const handleWeixinQrLogin = async () => {
@@ -952,6 +999,11 @@ const IMSettings: React.FC = () => {
       return;
     }
 
+    if (activePlatform === 'email') {
+      await handleSaveEmailConfig();
+      return;
+    }
+
     await imService.persistConfig({ [activePlatform]: config[activePlatform] });
   };
 
@@ -1088,6 +1140,27 @@ const IMSettings: React.FC = () => {
         return;
       }
 
+      if (platform === 'email') {
+        const newEnabled = !emailConfig.enabled;
+        const targetInstance = await ensurePrimaryEmailInstance();
+        if (!targetInstance) return;
+        const canEnable = Boolean(
+          emailConfig.email
+          && (
+            (emailConfig.transport === 'imap' && emailConfig.password)
+            || (emailConfig.transport === 'ws' && emailConfig.apiKey)
+          ),
+        );
+        if (newEnabled && !canEnable) return;
+        const success = await imService.updateEmailInstanceConfig(targetInstance.instanceId, { ...targetInstance, ...emailConfig, enabled: newEnabled });
+        if (success) {
+          dispatch(setEmailInstanceConfig({ instanceId: targetInstance.instanceId, config: { enabled: newEnabled } }));
+          if (newEnabled) dispatch(clearError());
+          await imService.loadStatus();
+        }
+        return;
+      }
+
       if (platform === 'netease-bee') {
         const newEnabled = !config['netease-bee'].enabled;
         const success = await imService.updateConfig({
@@ -1119,6 +1192,7 @@ const IMSettings: React.FC = () => {
   const wecomConnected = status.wecom?.instances?.some(i => i.connected) ?? false;
   const weixinConnected = status.weixin?.connected ?? false;
   const popoConnected = status.popo?.connected ?? false;
+  const emailConnected = status.email?.instances?.some(i => i.connected) ?? false;
 
   // Compute visible platforms based on language
   const platforms = useMemo<Platform[]>(() => {
@@ -1165,6 +1239,15 @@ const IMSettings: React.FC = () => {
     if (platform === 'popo') {
       return true; // Credentials provisioned via QR scan or manual input in openclaw.json
     }
+    if (platform === 'email') {
+      return config.email.instances.some((instance) => Boolean(
+        instance.email
+        && (
+          (instance.transport === 'imap' && instance.password)
+          || (instance.transport === 'ws' && instance.apiKey)
+        ),
+      ));
+    }
     return config.feishu.instances?.some(i => !!(i.appId && i.appSecret));
   };
 
@@ -1182,6 +1265,9 @@ const IMSettings: React.FC = () => {
     if (platform === 'wecom') {
       return config.wecom.instances?.some(i => i.enabled);
     }
+    if (platform === 'email') {
+      return config.email.instances?.some(i => i.enabled);
+    }
     return (config[platform] as { enabled: boolean }).enabled;
   };
 
@@ -1196,6 +1282,7 @@ const IMSettings: React.FC = () => {
     if (platform === 'wecom') return wecomConnected;
     if (platform === 'weixin') return weixinConnected;
     if (platform === 'popo') return popoConnected;
+    if (platform === 'email') return emailConnected;
     return feishuConnected;
   };
 
@@ -1318,6 +1405,24 @@ const IMSettings: React.FC = () => {
           if (authCheck && authCheck.level === 'pass') {
             dispatch(setFeishuInstanceConfig({ instanceId: activeFeishuInstanceId, config: { enabled: true } }));
             await imService.updateFeishuInstanceConfig(activeFeishuInstanceId, { enabled: true });
+          }
+        }
+      }
+      return;
+    }
+
+    if (platform === 'email') {
+      await imService.persistConfig({ email: config.email });
+      const result = await runConnectivityTest(platform, {
+        email: config.email,
+      } as Partial<IMGatewayConfig>);
+      if (activeEmailInstanceId && result) {
+        const inst = config.email.instances.find(i => i.instanceId === activeEmailInstanceId);
+        if (inst && !inst.enabled) {
+          const gatewayCheck = result.checks.find((c) => c.code === 'gateway_running');
+          if (gatewayCheck && gatewayCheck.level !== 'fail') {
+            dispatch(setEmailInstanceConfig({ instanceId: activeEmailInstanceId, config: { enabled: true } }));
+            await imService.updateEmailInstanceConfig(activeEmailInstanceId, { enabled: true });
           }
         }
       }
@@ -1761,6 +1866,54 @@ const IMSettings: React.FC = () => {
             );
           }
 
+          if (platform === 'email') {
+            return (
+              <div key="email">
+                <div
+                  onClick={() => { setActivePlatform('email'); setActiveEmailInstanceId(null); setEmailExpanded(!emailExpanded); }}
+                  className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    activePlatform === 'email'
+                      ? 'bg-primary-muted border border-primary shadow-subtle'
+                      : 'bg-surface hover:bg-surface-raised border border-transparent'
+                  }`}
+                >
+                  <div className="flex flex-1 items-center">
+                    <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                      <img src={PlatformRegistry.logo('email')} alt="Email" className="w-6 h-6 object-contain rounded-md" />
+                    </div>
+                    <span className={`text-sm font-medium truncate ${activePlatform === 'email' ? 'text-primary' : 'text-foreground'}`}>
+                      {i18nService.t('emailTab') || 'Email'}
+                    </span>
+                  </div>
+                  <span className="text-xs opacity-50">{emailExpanded ? '\u25BC' : '\u25B6'}</span>
+                </div>
+                {emailExpanded && (
+                  <div className="ml-5 mt-1 space-y-1">
+                    {config.email.instances.map((inst) => {
+                      const instStatus = status.email?.instances?.find(s => s.instanceId === inst.instanceId);
+                      const isSelected = activePlatform === 'email' && activeEmailInstanceId === inst.instanceId;
+                      const dotColor = !inst.enabled ? 'bg-gray-400' : (instStatus?.connected ? 'bg-green-500' : 'bg-yellow-500');
+                      return (
+                        <div
+                          key={inst.instanceId}
+                          onClick={() => { setActivePlatform('email'); setActiveEmailInstanceId(inst.instanceId); }}
+                          className={`flex items-center p-1.5 pl-2 rounded-lg cursor-pointer transition-colors text-sm ${
+                            isSelected ? 'bg-primary/10 dark:bg-primary/20' : 'hover:bg-surface-raised'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
+                          <span className={`truncate flex-1 ${isSelected ? 'text-primary font-medium' : 'text-foreground'}`}>
+                            {inst.instanceName}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           return (
             <div
               key={platform}
@@ -2053,6 +2206,226 @@ const IMSettings: React.FC = () => {
               connectivityResults={connectivityResults}
               language={language}
             />
+          );
+        })()}
+
+        {/* Email Settings (multi-instance) */}
+        {activePlatform === 'email' && !activeEmailInstanceId && (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <img src={PlatformRegistry.logo('email')} alt="Email" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
+            <p className="text-sm text-secondary mb-4">
+              {config.email.instances.length === 0
+                ? (language === 'zh' ? '尚未添加邮箱实例，点击下方按钮添加' : 'No Email instances yet. Click below to add one.')
+                : (language === 'zh' ? '请在左侧选择一个邮箱实例' : 'Select an Email instance from the sidebar.')}
+            </p>
+            {config.email.instances.length < MAX_EMAIL_INSTANCES && (
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const inst = await imService.addEmailInstance(`Email Bot ${config.email.instances.length + 1}`);
+                  if (inst) { setActiveEmailInstanceId(inst.instanceId); setEmailExpanded(true); }
+                }}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+              >
+                + {language === 'zh' ? '添加邮箱实例' : 'Add Email Instance'}
+              </button>
+            )}
+          </div>
+        )}
+        {activePlatform === 'email' && activeEmailInstanceId && (() => {
+          const selectedInstance = config.email.instances.find(i => i.instanceId === activeEmailInstanceId);
+          if (!selectedInstance) return null;
+          const selectedStatus = status.email?.instances?.find(s => s.instanceId === activeEmailInstanceId);
+          const canEnable = Boolean(
+            selectedInstance.email
+            && (
+              (selectedInstance.transport === 'imap' && selectedInstance.password)
+              || (selectedInstance.transport === 'ws' && selectedInstance.apiKey)
+            ),
+          );
+          return (
+            <div className="space-y-4">
+              <InlineInstanceList
+                title={language === 'zh' ? '邮箱实例' : 'Email Instances'}
+                hint={language === 'zh' ? '可为不同邮箱账号配置独立 Agent 绑定。' : 'Configure separate Agent bindings for different email accounts.'}
+                primaryTag={language === 'zh' ? '主实例' : 'Primary'}
+                emptyText={language === 'zh' ? '暂无邮箱实例' : 'No email instances yet'}
+                addLabel={language === 'zh' ? '添加邮箱实例' : 'Add Email'}
+                maxInstances={MAX_EMAIL_INSTANCES}
+                instances={config.email.instances.map((instance) => ({
+                  instanceId: instance.instanceId,
+                  instanceName: instance.instanceName,
+                  enabled: instance.enabled,
+                  detail: instance.email || instance.transport,
+                }))}
+                activeInstanceId={activeEmailInstanceId}
+                onSelect={setActiveEmailInstanceId}
+                onAdd={async () => {
+                  const inst = await imService.addEmailInstance(`Email Bot ${config.email.instances.length + 1}`);
+                  if (inst) setActiveEmailInstanceId(inst.instanceId);
+                }}
+                onRename={(instanceId, name) => {
+                  dispatch(setEmailInstanceConfig({ instanceId, config: { instanceName: name } }));
+                  void imService.persistEmailInstanceConfig(instanceId, { instanceName: name });
+                }}
+                onDelete={async (instanceId) => {
+                  await imService.deleteEmailInstance(instanceId);
+                  const remaining = config.email.instances.filter((instance) => instance.instanceId !== instanceId);
+                  setActiveEmailInstanceId(remaining.length > 0 ? remaining[0].instanceId : null);
+                }}
+              />
+
+              <div className="rounded-xl border border-border-subtle bg-surface-raised/40 p-4 space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground">{selectedInstance.instanceName}</h4>
+                    <p className="text-xs text-secondary">
+                      {selectedStatus?.connected
+                        ? (language === 'zh' ? '邮箱通道已启用' : 'Email channel is enabled')
+                        : (language === 'zh' ? '配置邮箱地址和凭据后可启用' : 'Configure email credentials before enabling')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!selectedInstance.enabled && !canEnable}
+                    onClick={() => void toggleGateway('email')}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                      selectedInstance.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                        selectedInstance.enabled ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-secondary">{i18nService.t('emailAddress')}</span>
+                    <input
+                      type="email"
+                      value={selectedInstance.email}
+                      onChange={(event) => handleEmailChange({ email: event.target.value })}
+                      onBlur={() => void handleSaveEmailConfig()}
+                      placeholder="bot@example.com"
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-secondary">Agent ID</span>
+                    <input
+                      type="text"
+                      value={selectedInstance.agentId}
+                      onChange={(event) => handleEmailChange({ agentId: event.target.value || 'main' })}
+                      onBlur={() => void handleSaveEmailConfig()}
+                      placeholder="main"
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-secondary">{language === 'zh' ? '传输模式' : 'Transport'}</span>
+                    <select
+                      value={selectedInstance.transport}
+                      onChange={(event) => {
+                        const transport = event.target.value as EmailInstanceConfig['transport'];
+                        handleEmailChange({ transport });
+                        void handleSaveEmailConfig({ transport });
+                      }}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+                    >
+                      <option value="ws">WebSocket API</option>
+                      <option value="imap">IMAP / SMTP</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-secondary">
+                      {selectedInstance.transport === 'imap' ? i18nService.t('emailPassword') : 'API Key'}
+                    </span>
+                    <div className="relative">
+                      <input
+                        type={showSecrets[`email.${selectedInstance.instanceId}.secret`] ? 'text' : 'password'}
+                        value={selectedInstance.transport === 'imap' ? (selectedInstance.password || '') : (selectedInstance.apiKey || '')}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          handleEmailChange(selectedInstance.transport === 'imap' ? { password: value } : { apiKey: value });
+                        }}
+                        onBlur={() => void handleSaveEmailConfig()}
+                        placeholder={selectedInstance.transport === 'imap' ? i18nService.t('emailPasswordPlaceholder') : 'ck_...'}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 pr-10 text-sm text-foreground outline-none focus:border-primary/50"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSecrets(prev => ({
+                          ...prev,
+                          [`email.${selectedInstance.instanceId}.secret`]: !prev[`email.${selectedInstance.instanceId}.secret`],
+                        }))}
+                        className="absolute inset-y-0 right-2 flex items-center text-secondary hover:text-foreground"
+                      >
+                        {showSecrets[`email.${selectedInstance.instanceId}.secret`] ? <EyeIcon className="h-4 w-4" /> : <EyeSlashIcon className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </label>
+                  {selectedInstance.transport === 'imap' && (
+                    <>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-secondary">IMAP Host</span>
+                        <input
+                          type="text"
+                          value={selectedInstance.imapHost || ''}
+                          onChange={(event) => handleEmailChange({ imapHost: event.target.value })}
+                          onBlur={() => void handleSaveEmailConfig()}
+                          placeholder="imap.example.com"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-secondary">SMTP Host</span>
+                        <input
+                          type="text"
+                          value={selectedInstance.smtpHost || ''}
+                          onChange={(event) => handleEmailChange({ smtpHost: event.target.value })}
+                          onBlur={() => void handleSaveEmailConfig()}
+                          placeholder="smtp.example.com"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+                        />
+                      </label>
+                    </>
+                  )}
+                  <label className="space-y-1 md:col-span-2">
+                    <span className="text-xs font-medium text-secondary">{language === 'zh' ? '允许发件人' : 'Allowed Senders'}</span>
+                    <input
+                      type="text"
+                      value={(selectedInstance.allowFrom || ['*']).join(', ')}
+                      onChange={(event) => handleEmailChange({
+                        allowFrom: event.target.value.split(',').map((item) => item.trim()).filter(Boolean),
+                      })}
+                      onBlur={() => void handleSaveEmailConfig()}
+                      placeholder="*, user@example.com, *.trusted.com"
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveEmailConfig()}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-hover"
+                  >
+                    {i18nService.t('save')}
+                  </button>
+                  {renderConnectivityTestButton('email')}
+                  {!canEnable && (
+                    <span className="text-xs text-amber-600 dark:text-amber-400">
+                      {language === 'zh' ? '启用前需要邮箱地址和对应凭据。' : 'Email address and credentials are required before enabling.'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
           );
         })()}
 

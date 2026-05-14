@@ -1317,6 +1317,13 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           return null;
         }
       },
+      getEmailOpenClawConfig: () => {
+        try {
+          return getIMGatewayManager().getIMStore().getEmailConfig();
+        } catch {
+          return null;
+        }
+      },
       getIMSettings: () => {
         try {
           return getIMGatewayManager().getConfig().settings;
@@ -5067,7 +5074,7 @@ if (!gotTheLock) {
       // Only trigger sync when explicitly requested via syncGateway flag (e.g. from
       // the global Save button), to avoid frequent gateway restarts on every field blur.
       const hasOpenClawChange = config.telegram || config.discord || config.dingtalk
-        || config.feishu || config.qq || config.wecom || config.popo || config.weixin;
+        || config.feishu || config.qq || config.wecom || config.popo || config.weixin || config.email;
       if (options?.syncGateway && hasOpenClawChange && getOpenClawEngineManager().getStatus().phase === 'running') {
         scheduleImConfigSync();
       }
@@ -5566,6 +5573,60 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle('im:email:instance:add', async (_event, name: string) => {
+    try {
+      const { DEFAULT_EMAIL_INSTANCE_CONFIG } = await import('./im/types');
+      type EmailInstanceConfig = import('./im/types').EmailInstanceConfig;
+      const instanceId = crypto.randomUUID();
+      const instance: EmailInstanceConfig = {
+        ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+        instanceId,
+        instanceName: name || 'Email Bot',
+        email: '',
+        agentId: 'main',
+        enabled: false,
+        transport: 'ws',
+      };
+      getIMGatewayManager().getIMStore().setEmailInstanceConfig(instanceId, instance);
+      return { success: true, instance };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add Email instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:email:instance:delete', async (_event, instanceId: string) => {
+    try {
+      getIMGatewayManager().getIMStore().deleteEmailInstance(instanceId);
+      if (getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete Email instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:email:instance:config:set', async (_event, instanceId: string, config: Record<string, unknown>, options?: { syncGateway?: boolean }) => {
+    try {
+      getIMGatewayManager().getIMStore().setEmailInstanceConfig(instanceId, config as never);
+      if (options?.syncGateway && getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to set Email instance config',
+      };
+    }
+  });
+
   // Feishu bot install helpers
   ipcMain.handle('feishu:install:qrcode', async (_event, { isLark }: { isLark: boolean }) => {
     try {
@@ -5638,6 +5699,43 @@ if (!gotTheLock) {
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Token refresh failed' };
     }
+  });
+
+  ipcMain.handle('openai-codex-oauth:start', async () => {
+    const { startOpenAICodexLogin } = await import('./libs/openaiCodexAuth');
+    try {
+      const tokens = await startOpenAICodexLogin();
+      return {
+        success: true as const,
+        email: tokens.email ?? null,
+        accountId: tokens.accountId ?? null,
+        expiresAt: tokens.expiresAt,
+      };
+    } catch (error) {
+      return { success: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  ipcMain.handle('openai-codex-oauth:cancel', async () => {
+    const { cancelOpenAICodexLogin } = await import('./libs/openaiCodexAuth');
+    cancelOpenAICodexLogin();
+  });
+
+  ipcMain.handle('openai-codex-oauth:logout', async () => {
+    const { logoutOpenAICodex } = await import('./libs/openaiCodexAuth');
+    logoutOpenAICodex();
+  });
+
+  ipcMain.handle('openai-codex-oauth:status', async () => {
+    const { readOpenAICodexAuthFile } = await import('./libs/openaiCodexAuth');
+    const tokens = readOpenAICodexAuthFile();
+    if (!tokens) return { loggedIn: false as const };
+    return {
+      loggedIn: true as const,
+      email: tokens.email ?? null,
+      accountId: tokens.accountId ?? null,
+      expiresAt: tokens.expiresAt,
+    };
   });
 
   ipcMain.handle('generate-session-title', async (_event, userInput: string | null) => {

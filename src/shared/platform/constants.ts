@@ -103,6 +103,15 @@ const DEFINITIONS = [
     logo: 'popo.png',
     guideUrl: '',
   },
+  {
+    id: 'email',
+    label: 'Email',
+    region: 'china',
+    channel: 'email',
+    channelAliases: ['clawemail', 'clawemail-email'],
+    logo: 'email.svg',
+    guideUrl: '',
+  },
   // ── Global ──
   {
     id: 'telegram',

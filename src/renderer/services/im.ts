@@ -9,12 +9,14 @@ import { PlatformRegistry } from '@shared/platform';
 import { store } from '../store';
 import {
   addDingTalkInstance,
+  addEmailInstance,
   addFeishuInstance,
   addNimInstance,
   addPopoInstance,
   addQQInstance,
   addWecomInstance,
   removeDingTalkInstance,
+  removeEmailInstance,
   removeFeishuInstance,
   removeNimInstance,
   removePopoInstance,
@@ -22,6 +24,7 @@ import {
   removeWecomInstance,
   setConfig,
   setDingTalkInstanceConfig,
+  setEmailInstanceConfig,
   setError,
   setFeishuInstanceConfig,
   setLoading,
@@ -33,6 +36,7 @@ import {
 } from '../store/slices/imSlice';
 import type {
   DingTalkInstanceConfig,
+  EmailInstanceConfig,
   FeishuInstanceConfig,
   IMConfigResult,
   IMConnectivityTestResponse,
@@ -292,6 +296,9 @@ class IMService {
       }
       if (platform === 'wecom') {
         return status.wecom.instances.some((item) => item.connected);
+      }
+      if (platform === 'email') {
+        return status.email.instances.some((item) => item.connected);
       }
       return Boolean(status[platform]?.connected);
     });
@@ -597,6 +604,53 @@ class IMService {
       return true;
     }
     store.dispatch(setError(result.error || 'Failed to delete WeCom instance'));
+    return false;
+  }
+
+  async addEmailInstance(name: string): Promise<EmailInstanceConfig | null> {
+    const result = await window.electron.im.addEmailInstance(name);
+    if (result.success && result.instance) {
+      store.dispatch(addEmailInstance(result.instance));
+      return result.instance;
+    }
+    store.dispatch(setError(result.error || 'Failed to add Email instance'));
+    return null;
+  }
+
+  async updateEmailInstanceConfig(
+    instanceId: string,
+    config: Partial<EmailInstanceConfig>,
+    options?: { syncGateway?: boolean }
+  ): Promise<boolean> {
+    const syncGateway = options?.syncGateway ?? true;
+    const result = await window.electron.im.setEmailInstanceConfig(instanceId, config, { syncGateway });
+    if (result.success) {
+      if (syncGateway) {
+        await this.loadConfig();
+        await this.loadStatus();
+      } else {
+        store.dispatch(setEmailInstanceConfig({ instanceId, config }));
+      }
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to update Email instance'));
+    return false;
+  }
+
+  async persistEmailInstanceConfig(
+    instanceId: string,
+    config: Partial<EmailInstanceConfig>
+  ): Promise<boolean> {
+    return this.updateEmailInstanceConfig(instanceId, config, { syncGateway: false });
+  }
+
+  async deleteEmailInstance(instanceId: string): Promise<boolean> {
+    const result = await window.electron.im.deleteEmailInstance(instanceId);
+    if (result.success) {
+      store.dispatch(removeEmailInstance(instanceId));
+      return true;
+    }
+    store.dispatch(setError(result.error || 'Failed to delete Email instance'));
     return false;
   }
 

@@ -10,6 +10,8 @@ import type {
   DingTalkMultiInstanceConfig,
   DingTalkOpenClawConfig,
   DiscordOpenClawConfig,
+  EmailInstanceConfig,
+  EmailMultiInstanceConfig,
   FeishuInstanceConfig,
   FeishuMultiInstanceConfig,
   FeishuOpenClawConfig,
@@ -53,7 +55,7 @@ const initialState: IMState = {
 
 const removeStaleInstanceBindings = (
   settings: IMSettings,
-  platform: 'dingtalk' | 'feishu' | 'nim' | 'popo' | 'qq' | 'wecom',
+  platform: 'dingtalk' | 'email' | 'feishu' | 'nim' | 'popo' | 'qq' | 'wecom',
   instances: readonly { instanceId: string }[],
 ): void => {
   const bindings = settings.platformAgentBindings;
@@ -75,6 +77,7 @@ const removeStaleInstanceBindings = (
 
 const removeAllStaleMultiInstanceBindings = (config: IMGatewayConfig): void => {
   removeStaleInstanceBindings(config.settings, 'dingtalk', config.dingtalk.instances);
+  removeStaleInstanceBindings(config.settings, 'email', config.email.instances);
   removeStaleInstanceBindings(config.settings, 'feishu', config.feishu.instances);
   removeStaleInstanceBindings(config.settings, 'nim', config.nim.instances ?? []);
   removeStaleInstanceBindings(config.settings, 'popo', config.popo.instances ?? []);
@@ -110,6 +113,27 @@ const imSlice = createSlice({
         (item) => item.instanceId !== action.payload
       );
       delete state.config.settings.platformAgentBindings?.[`dingtalk:${action.payload}`];
+    },
+    setEmailInstances: (state, action: PayloadAction<EmailInstanceConfig[]>) => {
+      state.config.email = { instances: action.payload };
+      removeStaleInstanceBindings(state.config.settings, 'email', action.payload);
+    },
+    setEmailMultiInstanceConfig: (state, action: PayloadAction<EmailMultiInstanceConfig>) => {
+      state.config.email = action.payload;
+      removeStaleInstanceBindings(state.config.settings, 'email', action.payload.instances);
+    },
+    setEmailInstanceConfig: (state, action: PayloadAction<{ instanceId: string; config: Partial<EmailInstanceConfig> }>) => {
+      const inst = state.config.email.instances.find((item) => item.instanceId === action.payload.instanceId);
+      if (inst) Object.assign(inst, action.payload.config);
+    },
+    addEmailInstance: (state, action: PayloadAction<EmailInstanceConfig>) => {
+      state.config.email.instances.push(action.payload);
+    },
+    removeEmailInstance: (state, action: PayloadAction<string>) => {
+      state.config.email.instances = state.config.email.instances.filter(
+        (item) => item.instanceId !== action.payload
+      );
+      delete state.config.settings.platformAgentBindings?.[`email:${action.payload}`];
     },
     setFeishuInstances: (state, action: PayloadAction<FeishuInstanceConfig[]>) => {
       state.config.feishu = { instances: action.payload };
@@ -270,6 +294,11 @@ export const {
   setDingTalkInstanceConfig,
   addDingTalkInstance,
   removeDingTalkInstance,
+  setEmailInstances,
+  setEmailMultiInstanceConfig,
+  setEmailInstanceConfig,
+  addEmailInstance,
+  removeEmailInstance,
   setFeishuInstances,
   setFeishuMultiInstanceConfig,
   setFeishuInstanceConfig,

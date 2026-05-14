@@ -56,6 +56,7 @@ vi.mock('./openclawLocalExtensions', () => ({
     'openclaw-nim-channel',
     'nimsuite-openclaw-nim-channel',
     'qwen-portal-auth',
+    'clawemail-email',
   ].includes(id),
   resolveOpenClawExtensionConfigId: (id: string) => ({
     'openclaw-nim-channel': 'nimsuite-openclaw-nim-channel',
@@ -153,6 +154,7 @@ describe('OpenClawConfigSync runtime config output', () => {
       getWecomInstances: () => [],
       getPopoConfig: () => null,
       getNimConfig: () => null,
+      getEmailOpenClawConfig: () => null,
       getNeteaseBeeChanConfig: () => null,
       getWeixinConfig: () => null,
       getIMSettings: () => null,
@@ -526,6 +528,23 @@ describe('OpenClawConfigSync runtime config output', () => {
         groupPolicy: 'open',
         groupAllowFrom: [],
       }],
+      getEmailOpenClawConfig: () => ({
+        instances: [{
+          enabled: true,
+          instanceId: 'email-work',
+          instanceName: 'Work Email',
+          transport: 'ws',
+          email: 'bot@example.com',
+          apiKey: 'email-secret-api-key',
+          agentId: 'main',
+          allowFrom: ['*@example.com'],
+          replyMode: 'complete',
+          replyTo: 'sender',
+          a2aEnabled: true,
+          a2aAgentDomains: ['example.com'],
+          a2aMaxPingPongTurns: 8,
+        }],
+      }),
     });
 
     const result = sync.sync('multi-instance-channel-enabled');
@@ -536,6 +555,31 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.channels.dingtalk.enabled).toBe(true);
     expect(config.channels.qqbot.enabled).toBe(true);
     expect(config.channels.wecom.enabled).toBe(true);
+    expect(config.channels.email).toEqual({
+      enabled: true,
+      accounts: {
+        'email-work': {
+          enabled: true,
+          name: 'Work Email',
+          email: 'bot@example.com',
+          transport: 'ws',
+          apiKey: '${LOBSTER_EMAIL_WORK_APIKEY}',
+          allowFrom: ['*@example.com'],
+          replyMode: 'complete',
+          replyTo: 'sender',
+          a2a: {
+            enabled: true,
+            agentDomains: ['example.com'],
+            maxPingPongTurns: 8,
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(config)).not.toContain('email-secret-api-key');
+    expect(config.plugins.entries['clawemail-email']).toEqual({ enabled: true });
+
+    const env = sync.collectSecretEnvVars();
+    expect(env.LOBSTER_EMAIL_WORK_APIKEY).toBe('email-secret-api-key');
   });
 
   test('cleans stale plugin package ids and preserves manifest entry config', async () => {
@@ -625,9 +669,21 @@ describe('OpenClawConfigSync runtime config output', () => {
         allowFrom: [],
         debug: false,
       }),
+      getEmailOpenClawConfig: () => ({
+        instances: [{
+          enabled: true,
+          instanceId: 'email-sales',
+          instanceName: 'Sales Email',
+          transport: 'imap',
+          email: 'sales@example.com',
+          password: 'email-password',
+          agentId: 'main',
+        }],
+      }),
       getIMSettings: () => ({
         platformAgentBindings: {
           'dingtalk:b8a32c47-c852-4ad2-bbfa-631797fc56ea': 'instance-agent',
+          'email:email-sales': 'email-agent',
           dingtalk: 'platform-agent',
           weixin: 'weixin-agent',
         },
@@ -657,6 +713,14 @@ describe('OpenClawConfigSync runtime config output', () => {
           model: 'openai/gpt-test',
           source: 'user',
         },
+        {
+          id: 'email-agent',
+          enabled: true,
+          name: 'Email Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
       ],
     });
 
@@ -677,6 +741,13 @@ describe('OpenClawConfigSync runtime config output', () => {
         match: {
           channel: 'dingtalk',
           accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+        },
+      },
+      {
+        agentId: 'email-agent',
+        match: {
+          channel: 'email',
+          accountId: 'email-sa',
         },
       },
       {

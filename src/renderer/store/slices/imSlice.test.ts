@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'vitest';
 
 import reducer, {
+  addEmailInstance,
   addFeishuInstance,
   removeDingTalkInstance,
+  removeEmailInstance,
   removeFeishuInstance,
   removeQQInstance,
   removeWecomInstance,
   setConfig,
   setDingTalkInstances,
+  setEmailInstances,
   setFeishuMultiInstanceConfig,
   setQQInstances,
   setFeishuInstanceConfig,
@@ -18,6 +21,7 @@ import reducer, {
   setPopoInstances,
 } from './imSlice';
 import {
+  DEFAULT_EMAIL_INSTANCE_CONFIG,
   DEFAULT_FEISHU_OPENCLAW_CONFIG,
   DEFAULT_IM_CONFIG,
   DEFAULT_NIM_CONFIG,
@@ -25,10 +29,25 @@ import {
 } from '../../types/im';
 
 const withPlatformInstances = (
-  platform: 'dingtalk' | 'feishu' | 'qq' | 'wecom',
+  platform: 'dingtalk' | 'email' | 'feishu' | 'qq' | 'wecom',
   instanceIds: string[],
 ) => {
   const config = structuredClone(DEFAULT_IM_CONFIG);
+  if (platform === 'email') {
+    config.email = {
+      instances: instanceIds.map((instanceId) => ({
+        ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+        instanceId,
+        instanceName: `${platform}-${instanceId}`,
+        email: `${instanceId}@example.com`,
+        agentId: 'main',
+        enabled: false,
+        transport: 'ws',
+      })),
+    };
+    return config;
+  }
+
   config[platform] = {
     instances: instanceIds.map((instanceId) => ({
       ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
@@ -57,6 +76,7 @@ describe('imSlice multi-instance bindings', () => {
         platformAgentBindings: {
           'feishu:removed': 'agent-removed',
           'feishu:kept': 'agent-kept',
+          'email:removed': 'email-removed',
           telegram: 'telegram-agent',
         },
       },
@@ -134,6 +154,7 @@ describe('imSlice multi-instance bindings', () => {
 
   test.each([
     ['dingtalk', removeDingTalkInstance],
+    ['email', removeEmailInstance],
     ['feishu', removeFeishuInstance],
     ['qq', removeQQInstance],
     ['wecom', removeWecomInstance],
@@ -160,6 +181,7 @@ describe('imSlice multi-instance bindings', () => {
 
   test.each([
     ['dingtalk', setDingTalkInstances, 'instances'],
+    ['email', setEmailInstances, 'instances'],
     ['feishu', setFeishuMultiInstanceConfig, 'multi'],
     ['qq', setQQInstances, 'instances'],
     ['wecom', setWecomMultiInstanceConfig, 'multi'],
@@ -176,11 +198,21 @@ describe('imSlice multi-instance bindings', () => {
       },
     }));
     const nextInstances = [
-      {
-        ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
-        instanceId: 'kept',
-        instanceName: 'Kept Bot',
-      },
+      platform === 'email'
+        ? {
+            ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+            instanceId: 'kept',
+            instanceName: 'Kept Email',
+            email: 'kept@example.com',
+            agentId: 'main',
+            enabled: false,
+            transport: 'ws',
+          }
+        : {
+            ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
+            instanceId: 'kept',
+            instanceName: 'Kept Bot',
+          },
     ];
     const payload = payloadKind === 'multi'
       ? { instances: nextInstances }
@@ -217,6 +249,41 @@ describe('imSlice multi-instance bindings', () => {
       appId: 'new-app',
       enabled: true,
     });
+  });
+
+  test('updates an existing email instance locally without replacing the full config', () => {
+    const initialState = reducer(undefined, addEmailInstance({
+      ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+      instanceId: 'email-1',
+      instanceName: 'Email 1',
+      enabled: false,
+      transport: 'ws',
+      email: 'old@example.com',
+      agentId: 'main',
+    }));
+
+    const nextState = reducer(initialState, setEmailInstances([
+      {
+        ...DEFAULT_EMAIL_INSTANCE_CONFIG,
+        instanceId: 'email-1',
+        instanceName: 'Email 1',
+        enabled: true,
+        transport: 'imap',
+        email: 'new@example.com',
+        agentId: 'agent-email',
+      },
+    ]));
+
+    expect(nextState.config.email.instances).toEqual([
+      expect.objectContaining({
+        instanceId: 'email-1',
+        instanceName: 'Email 1',
+        enabled: true,
+        transport: 'imap',
+        email: 'new@example.com',
+        agentId: 'agent-email',
+      }),
+    ]);
   });
 
   test('setNimInstances replaces the projection and removes stale instance bindings', () => {

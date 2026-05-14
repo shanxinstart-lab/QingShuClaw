@@ -463,6 +463,65 @@ export interface WeixinGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+// ==================== Email Channel Types ====================
+
+export interface EmailInstanceConfig {
+  instanceId: string;
+  instanceName: string;
+  enabled: boolean;
+  transport: 'imap' | 'ws';
+  email: string;
+  password?: string;
+  apiKey?: string;
+  agentId: string;
+  imapHost?: string;
+  imapPort?: number;
+  smtpHost?: string;
+  smtpPort?: number;
+  allowFrom?: string[];
+  replyMode?: 'immediate' | 'accumulated' | 'complete';
+  replyTo?: 'sender' | 'all';
+  a2aEnabled?: boolean;
+  a2aAgentDomains?: string[];
+  a2aMaxPingPongTurns?: number;
+}
+
+export interface EmailMultiInstanceConfig {
+  instances: EmailInstanceConfig[];
+}
+
+export interface EmailInstanceStatus {
+  instanceId: string;
+  instanceName: string;
+  connected: boolean;
+  startedAt: number | null;
+  lastError: string | null;
+  email: string | null;
+  transport: 'imap' | 'ws' | null;
+  lastInboundAt: number | null;
+  lastOutboundAt: number | null;
+}
+
+export interface EmailMultiInstanceStatus {
+  instances: EmailInstanceStatus[];
+}
+
+export const DEFAULT_EMAIL_INSTANCE_CONFIG: Partial<EmailInstanceConfig> = {
+  enabled: false,
+  transport: 'ws',
+  agentId: 'main',
+  replyMode: 'complete',
+  replyTo: 'sender',
+  a2aEnabled: true,
+  a2aMaxPingPongTurns: 20,
+};
+
+export const DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG: EmailMultiInstanceConfig = {
+  instances: [],
+};
+
+export const MAX_EMAIL_INSTANCES = 5;
+
 // ==================== Common IM Types ====================
 
 export interface IMGatewayConfig {
@@ -476,6 +535,7 @@ export interface IMGatewayConfig {
   wecom: WecomMultiInstanceConfig;
   popo: PopoMultiInstanceConfig;
   weixin: WeixinOpenClawConfig;
+  email: EmailMultiInstanceConfig;
   settings: IMSettings;
 }
 
@@ -497,6 +557,7 @@ export interface IMGatewayStatus {
   wecom: WecomMultiInstanceStatus;
   popo: PopoGatewayStatus;
   weixin: WeixinGatewayStatus;
+  email: EmailMultiInstanceStatus;
 }
 
 // ==================== Media Attachment Types ====================
@@ -793,6 +854,7 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
   wecom: DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
   popo: DEFAULT_POPO_MULTI_INSTANCE_CONFIG,
   weixin: DEFAULT_WEIXIN_CONFIG,
+  email: DEFAULT_EMAIL_MULTI_INSTANCE_CONFIG,
   settings: DEFAULT_IM_SETTINGS,
 };
 
@@ -909,6 +971,9 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   },
   popo: DEFAULT_POPO_STATUS,
   weixin: DEFAULT_WEIXIN_STATUS,
+  email: {
+    instances: [],
+  },
 };
 
 // ==================== Media Marker Types ====================
