@@ -629,6 +629,8 @@ const IMSettings: React.FC = () => {
 
   // Handle Weixin OpenClaw config
   const weixinOpenClawConfig = config.weixin;
+  const weixinRuntimeAccountId = status.weixin?.accountId || '';
+  const weixinAccountId = weixinOpenClawConfig.accountId || weixinRuntimeAccountId;
   const handleWeixinChange = (update: Partial<WeixinOpenClawConfig>) => {
     dispatch(setWeixinConfig(update));
   };
@@ -638,6 +640,13 @@ const IMSettings: React.FC = () => {
       ? { ...weixinOpenClawConfig, ...override }
       : weixinOpenClawConfig;
     await imService.persistConfig({ weixin: configToSave });
+  };
+  const persistConnectedWeixinConfig = async (accountId: string) => {
+    const nextConfig = { ...weixinOpenClawConfig, enabled: true, accountId };
+    dispatch(setWeixinConfig({ enabled: true, accountId }));
+    dispatch(clearError());
+    await imService.persistConfig({ weixin: nextConfig });
+    await imService.loadStatus();
   };
 
   const ensurePrimaryNimInstance = async (): Promise<NimInstanceConfig | null> => {
@@ -691,6 +700,11 @@ const IMSettings: React.FC = () => {
 
       setWeixinQrUrl(startResult.qrDataUrl);
       setWeixinQrStatus('showing');
+      if (!startResult.sessionKey) {
+        setWeixinQrStatus('error');
+        setWeixinQrError(i18nService.t('imWeixinQrFailed'));
+        return;
+      }
 
       // QR expires in ~2 minutes. Show error and let user retry.
       if (weixinTimerRef.current) clearTimeout(weixinTimerRef.current);
@@ -706,15 +720,16 @@ const IMSettings: React.FC = () => {
       if (weixinTimerRef.current) { clearTimeout(weixinTimerRef.current); weixinTimerRef.current = null; }
       if (!isMountedRef.current) return;
 
-      if (waitResult.success && waitResult.connected) {
+      if (waitResult.success && (waitResult.connected || waitResult.alreadyConnected)) {
+        const accountId = waitResult.accountId || weixinAccountId;
+        if (!accountId) {
+          setWeixinQrStatus('error');
+          setWeixinQrError(i18nService.t('imWeixinQrAccountMissing'));
+          return;
+        }
+
         setWeixinQrStatus('success');
-        // Enable weixin and save config with accountId
-        const accountId = waitResult.accountId || '';
-        const fullConfig = { ...weixinOpenClawConfig, enabled: true, accountId };
-        dispatch(setWeixinConfig({ enabled: true, accountId }));
-        dispatch(clearError());
-        await imService.persistConfig({ weixin: fullConfig });
-        await imService.loadStatus();
+        await persistConnectedWeixinConfig(accountId);
       } else {
         setWeixinQrStatus('error');
         setWeixinQrError(waitResult.message || i18nService.t('imWeixinQrFailed'));
@@ -3042,9 +3057,9 @@ const IMSettings: React.FC = () => {
             </div>
 
             {/* Account ID display */}
-            {weixinOpenClawConfig.accountId && (
+            {weixinAccountId && (
               <div className="text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
-                Account ID: {weixinOpenClawConfig.accountId}
+                Account ID: {weixinAccountId}
               </div>
             )}
 

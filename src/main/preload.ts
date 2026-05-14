@@ -508,7 +508,7 @@ contextBridge.exposeInMainWorld('electron', {
 
     // Weixin QR login
     weixinQrLoginStart: () => ipcRenderer.invoke('im:weixin:qr-login-start'),
-    weixinQrLoginWait: (accountId?: string) => ipcRenderer.invoke('im:weixin:qr-login-wait', accountId),
+    weixinQrLoginWait: (sessionKey?: string) => ipcRenderer.invoke('im:weixin:qr-login-wait', sessionKey),
     popoQrLoginStart: () => ipcRenderer.invoke('im:popo:qr-login-start'),
     popoQrLoginPoll: (taskToken: string) => ipcRenderer.invoke('im:popo:qr-login-poll', taskToken),
     nimQrLoginStart: () => ipcRenderer.invoke(NimQrLoginIpc.Start),

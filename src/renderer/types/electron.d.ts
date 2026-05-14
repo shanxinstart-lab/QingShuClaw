@@ -689,7 +689,7 @@ interface IElectronAPI {
     getLocalIp: () => Promise<string>;
     getOpenClawConfigSchema: () => Promise<{ success: boolean; result?: { schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> }; error?: string }>;
     weixinQrLoginStart: () => Promise<{ success: boolean; qrDataUrl?: string; message: string; sessionKey?: string }>;
-    weixinQrLoginWait: (accountId?: string) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string }>;
+    weixinQrLoginWait: (sessionKey?: string) => Promise<{ success: boolean; connected: boolean; message: string; accountId?: string; alreadyConnected?: boolean }>;
     popoQrLoginStart: () => Promise<{ success: boolean; qrUrl?: string; taskToken?: string; timeoutMs?: number; message?: string }>;
     popoQrLoginPoll: (taskToken: string) => Promise<{ success: boolean; message: string; appKey?: string; appSecret?: string; aesKey?: string }>;
     nimQrLoginStart: () => Promise<NimQrLoginStartResult>;
@@ -1297,6 +1297,7 @@ interface PopoGatewayStatus {
 
 interface WeixinGatewayStatus {
   connected: boolean;
+  accountId: string | null;
   startedAt: number | null;
   lastError: string | null;
   lastInboundAt: number | null;
