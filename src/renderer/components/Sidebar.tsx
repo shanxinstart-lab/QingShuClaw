@@ -106,7 +106,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     dispatch(beginLoadSession(sessionId));
     const loadedSession = await coworkService.loadSession(sessionId);
     if (!loadedSession) {
-      coworkService.clearSession();
+      coworkService.clearSession({ restoreAgentSkills: true });
       window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
         detail: i18nService.t('coworkLoadSessionFailed'),
       }));

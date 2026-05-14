@@ -886,15 +886,15 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                             const bindingKey = `${platform}:${instance.instanceId}`;
                             const isBound = boundBindingKeys.has(bindingKey);
                             const otherAgentId = bindings[bindingKey];
-                            const boundToOther = Boolean(otherAgentId && otherAgentId !== agentId);
+                            const boundToOther = Boolean(otherAgentId && otherAgentId !== agentId && !isBound);
                             const otherAgentName = otherAgentId ? getAgentName(otherAgentId) : null;
                             return (
                               <div
                                 key={instance.instanceId}
                                 className={`flex items-center justify-between px-3 py-2 pl-14 transition-colors ${
-                                  boundToOther ? 'opacity-55' : 'cursor-pointer hover:bg-surface-raised'
+                                  'cursor-pointer hover:bg-surface-raised'
                                 } ${index < enabledInstances.length - 1 ? 'border-b border-border/60' : ''}`}
-                                onClick={() => !boundToOther && handleToggleIMBinding(bindingKey)}
+                                onClick={() => handleToggleIMBinding(bindingKey)}
                               >
                                 <div className="flex items-center gap-2 min-w-0">
                                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
@@ -907,7 +907,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                                     </span>
                                   )}
                                 </div>
-                                {boundToOther ? <div className="w-9 h-5" /> : renderToggle(isBound)}
+                                {renderToggle(isBound)}
                               </div>
                             );
                           })}
@@ -918,17 +918,17 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                     const configured = isPlatformConfigured(platform);
                     const isBound = boundBindingKeys.has(platform);
                     const otherAgentId = bindings[platform];
-                    const boundToOther = configured && Boolean(otherAgentId && otherAgentId !== agentId);
+                    const boundToOther = configured && Boolean(otherAgentId && otherAgentId !== agentId && !isBound);
                     const otherAgentName = otherAgentId ? getAgentName(otherAgentId) : null;
                     return (
                       <div
                         key={platform}
                         className={`flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${
-                          configured && !boundToOther
+                          configured
                             ? 'hover:bg-surface-raised cursor-pointer'
-                            : boundToOther ? 'opacity-55' : 'opacity-50'
+                            : 'opacity-50'
                         }`}
-                        onClick={() => configured && !boundToOther && handleToggleIMBinding(platform)}
+                        onClick={() => configured && handleToggleIMBinding(platform)}
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div className="flex h-8 w-8 items-center justify-center">
@@ -952,7 +952,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                         </div>
                         <div className="flex items-center gap-2">
                           {configured ? (
-                            boundToOther ? <div className="w-9 h-5" /> : renderToggle(isBound)
+                            renderToggle(isBound)
                           ) : (
                             <span className="text-xs text-secondary/50">
                               {i18nService.t('agentIMNotConfigured') || 'Not configured'}

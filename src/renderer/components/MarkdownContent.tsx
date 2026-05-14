@@ -24,6 +24,7 @@ const SYNTAX_HIGHLIGHTER_STYLE = {
   borderRadius: 0,
 };
 const SAFE_URL_PROTOCOLS = new Set(['http', 'https', 'mailto', 'tel', 'file']);
+const LINK_CLASS_NAME = 'text-primary hover:text-primary-hover underline decoration-primary/50 hover:decoration-primary transition-colors break-words [overflow-wrap:anywhere]';
 
 const encodeFileUrl = (url: string): string => {
   const encoded = encodeURI(url);
@@ -257,7 +258,7 @@ const CodeBlock: React.FC<any> = ({ node, className, children, ...props }) => {
                 <ClipboardDocumentIcon className="h-5 w-5" />
               )}
             </button>
-            <code className="block px-4 py-3 font-mono dark:text-gray-100 text-gray-800 whitespace-pre">
+            <code className="block px-4 py-3 font-mono dark:text-gray-100 text-gray-800 whitespace-pre dark:bg-[#282c34] bg-[#f0f2f5] w-max min-w-full">
               {trimmedCodeText}
             </code>
           </div>
@@ -295,7 +296,7 @@ const CodeBlock: React.FC<any> = ({ node, className, children, ...props }) => {
           </SyntaxHighlighter>
         ) : (
           <div className="m-0 overflow-x-auto dark:bg-[#282c34] bg-[#f0f2f5] text-[13px] leading-6">
-            <code className="block px-4 py-3 font-mono dark:text-gray-100 text-gray-800 whitespace-pre">
+            <code className="block px-4 py-3 font-mono dark:text-gray-100 text-gray-800 whitespace-pre dark:bg-[#282c34] bg-[#f0f2f5] w-max min-w-full">
               {trimmedCodeText}
             </code>
           </div>
@@ -467,7 +468,7 @@ const createMarkdownComponents = (
     </li>
   ),
   blockquote: ({ node, className, children, ...props }: any) => (
-    <blockquote className="border-l-4 border-primary pl-4 py-1 my-2 bg-surface-raised/30 rounded-r-lg text-foreground" {...props}>
+    <blockquote className="border-l-4 border-primary pl-4 py-1 my-2 bg-surface-raised/30 rounded-r-lg text-foreground overflow-x-auto" {...props}>
       {children}
     </blockquote>
   ),
@@ -615,11 +616,11 @@ const createMarkdownComponents = (
           <a
             href={toFileHref(filePath)}
             onClick={handleClick}
-            className="text-primary hover:text-primary-hover underline decoration-primary/50 hover:decoration-primary transition-colors cursor-pointer inline-flex items-center gap-1"
+            className={`${LINK_CLASS_NAME} cursor-pointer inline-flex max-w-full flex-wrap items-center gap-1`}
             title={filePath}
             {...props}
           >
-            {children}
+            <span className="min-w-0 break-words [overflow-wrap:anywhere]">{children}</span>
             {isDirectoryLink ? (
               <FolderIcon className="h-3.5 w-3.5 inline" />
             ) : (
@@ -661,7 +662,7 @@ const createMarkdownComponents = (
           target="_blank"
           rel="noopener noreferrer"
           onClick={handleExternalClick}
-          className="text-primary hover:text-primary-hover underline decoration-primary/50 hover:decoration-primary transition-colors"
+          className={LINK_CLASS_NAME}
           {...props}
         >
           {children}
@@ -674,7 +675,7 @@ const createMarkdownComponents = (
         href={hrefValue}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-primary hover:text-primary-hover underline decoration-primary/50 hover:decoration-primary transition-colors"
+        className={LINK_CLASS_NAME}
         {...props}
       >
         {children}
@@ -704,7 +705,7 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   );
   const normalizedContent = useMemo(() => normalizeDisplayMath(encodeFileUrlsInMarkdown(content)), [content]);
   return (
-    <div className={`markdown-content text-[15px] leading-6 ${className}`}>
+    <div className={`markdown-content min-w-0 max-w-full text-[15px] leading-6 ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}

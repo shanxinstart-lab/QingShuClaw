@@ -545,6 +545,98 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries['qwen-portal-auth']).toEqual({ enabled: true });
   });
 
+  test('writes platform-level agent bindings with account wildcard and keeps instance bindings exact', async () => {
+    const {
+      OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+    } = await import('./openclawConfigSync');
+    const sync = await createSync({
+      getDingTalkInstances: () => [{
+        enabled: true,
+        clientId: 'ding-client-id',
+        clientSecret: 'ding-secret',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        groupPolicy: 'open',
+        sessionTimeout: 0,
+        separateSessionByConversation: false,
+        groupSessionScope: 'group',
+        sharedMemoryAcrossConversations: false,
+        gatewayBaseUrl: '',
+        debug: false,
+        instanceId: 'b8a32c47-c852-4ad2-bbfa-631797fc56ea',
+        instanceName: 'DingTalk Bot 1',
+      }],
+      getWeixinConfig: () => ({
+        enabled: true,
+        accountId: '97a130e3b62f@im.bot',
+        dmPolicy: 'open',
+        allowFrom: [],
+        debug: false,
+      }),
+      getIMSettings: () => ({
+        platformAgentBindings: {
+          'dingtalk:b8a32c47-c852-4ad2-bbfa-631797fc56ea': 'instance-agent',
+          dingtalk: 'platform-agent',
+          weixin: 'weixin-agent',
+        },
+      }),
+      getAgents: () => [
+        {
+          id: 'instance-agent',
+          enabled: true,
+          name: 'Instance Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
+        {
+          id: 'platform-agent',
+          enabled: true,
+          name: 'Platform Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
+        {
+          id: 'weixin-agent',
+          enabled: true,
+          name: 'Weixin Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
+      ],
+    });
+
+    const result = sync.sync('platform-binding-wildcard');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.bindings).toEqual([
+      {
+        agentId: 'instance-agent',
+        match: {
+          channel: 'dingtalk',
+          accountId: 'b8a32c47',
+        },
+      },
+      {
+        agentId: 'platform-agent',
+        match: {
+          channel: 'dingtalk',
+          accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+        },
+      },
+      {
+        agentId: 'weixin-agent',
+        match: {
+          channel: 'openclaw-weixin',
+          accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+        },
+      },
+    ]);
+  });
+
   test('does not create an agent model allowlist for OpenAI OAuth when system proxy is enabled', async () => {
     const { ProviderName } = await import('../../shared/providers');
     const { setSystemProxyEnabled } = await import('./systemProxy');

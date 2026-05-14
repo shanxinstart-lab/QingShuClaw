@@ -19,6 +19,7 @@ import {
   updateSessionStatus,
   updateSessionTitle,
 } from '../store/slices/coworkSlice';
+import { clearActiveSkills, setActiveSkillIds } from '../store/slices/skillSlice';
 import type {
   CoworkApiConfig,
   CoworkConfigUpdate,
@@ -785,8 +786,20 @@ class CoworkService {
     return window.electron.getRecentCwds(limit);
   }
 
-  clearSession(): void {
+  clearSession(options: { restoreAgentSkills?: boolean } = {}): void {
     store.dispatch(clearCurrentSession());
+    if (!options.restoreAgentSkills) {
+      return;
+    }
+
+    const state = store.getState();
+    const currentAgent = state.agent.agents.find((agent) => agent.id === state.agent.currentAgentId);
+    const skillIds = currentAgent?.skillIds ?? [];
+    if (skillIds.length > 0) {
+      store.dispatch(setActiveSkillIds(skillIds));
+    } else {
+      store.dispatch(clearActiveSkills());
+    }
   }
 
   destroy(): void {

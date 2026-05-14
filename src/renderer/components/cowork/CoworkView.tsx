@@ -22,6 +22,7 @@ import type { SettingsOpenOptions } from '../Settings';
 import WindowTitleBar from '../window/WindowTitleBar';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import CoworkSessionDetail from './CoworkSessionDetail';
+import { buildCoworkContinuationSystemPrompt, buildCoworkSystemPrompt } from './skillSystemPrompt';
 
 export interface CoworkViewProps {
   onRequestAppSettings?: (options?: SettingsOpenOptions) => void;
@@ -259,9 +260,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       if (!skillPrompt && !isOpenClawEngine) {
         effectiveSkillPrompt = await skillService.getAutoRoutingPrompt() || undefined;
       }
-      const combinedSystemPrompt = [effectiveSkillPrompt, config.systemPrompt]
-        .filter(p => p?.trim())
-        .join('\n\n') || undefined;
+      const combinedSystemPrompt = buildCoworkSystemPrompt(effectiveSkillPrompt, config.systemPrompt);
 
       // Start the actual session immediately with fallback title
       const { session: startedSession, error: startError } = await coworkService.startSession({
@@ -336,9 +335,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       if (!skillPrompt && !isOpenClawEngine) {
         effectiveSkillPrompt = await skillService.getAutoRoutingPrompt() || undefined;
       }
-      const combinedSystemPrompt = [effectiveSkillPrompt, config.systemPrompt]
-        .filter(p => p?.trim())
-        .join('\n\n') || undefined;
+      const combinedSystemPrompt = buildCoworkContinuationSystemPrompt(effectiveSkillPrompt, config.systemPrompt);
 
       await coworkService.continueSession({
         sessionId: currentSession.id,

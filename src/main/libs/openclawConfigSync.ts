@@ -59,6 +59,7 @@ const mapExecutionModeToSandboxMode = (mode: CoworkExecutionMode): 'off' | 'non-
  * Also used by the runtime adapter's client-side timeout watchdog.
  */
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
+export const OPENCLAW_BINDING_ANY_ACCOUNT_ID = '*';
 const DEFAULT_OPENCLAW_SESSION_KEEP_ALIVE = '30d';
 const SUPPORTED_MEMORY_SEARCH_PROVIDERS = ['openai', 'gemini', 'voyage', 'mistral', 'ollama'] as const;
 const OPENCLAW_SESSION_MAINTENANCE = {
@@ -2381,7 +2382,10 @@ export class OpenClawConfigSync {
         if (!platformAgentId || platformAgentId === 'main') continue;
         const targetAgent = agents.find((agent) => agent.id === platformAgentId && agent.enabled);
         if (targetAgent && instances.some((instance) => instance.enabled)) {
-          bindings.push({ agentId: platformAgentId, match: { channel } });
+          bindings.push({
+            agentId: platformAgentId,
+            match: { channel, accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID },
+          });
         }
       } catch {
         // Skip channels that fail to load config.
@@ -2403,7 +2407,10 @@ export class OpenClawConfigSync {
       try {
         const config = getter();
         if (config?.enabled) {
-          bindings.push({ agentId, match: { channel } });
+          bindings.push({
+            agentId,
+            match: { channel, accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID },
+          });
         }
       } catch {
         // Skip channels that fail to load config.

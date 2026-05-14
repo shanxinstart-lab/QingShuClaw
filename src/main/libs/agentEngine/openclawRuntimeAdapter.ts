@@ -37,6 +37,8 @@ import {
   isHeartbeatAckText,
   isTransientGatewayStatusText,
   shouldSuppressHeartbeatText,
+  stripTrailingSilentReplyTail,
+  stripTrailingSilentReplyToken,
 } from '../openclawHistory';
 import { buildOpenClawLocalTimeContextPrompt } from '../openclawLocalTimeContextPrompt';
 import { buildTransientSessionFromOpenClawTranscript } from '../openclawTranscript';
@@ -709,7 +711,8 @@ const extractCurrentTurnAssistantText = (messages: unknown[]): string => {
     if (!isRecord(msg)) continue;
     const role = typeof msg.role === 'string' ? msg.role.trim().toLowerCase() : '';
     if (role !== 'assistant') continue;
-    const text = extractMessageText(msg).trim();
+    let text = extractMessageText(msg).trim();
+    text = stripTrailingSilentReplyToken(text);
     if (text && !isTransientGatewayStatusText(text)) {
       textParts.push(text);
     }
@@ -3324,7 +3327,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     // Update turn text state and push to store.
     turn.currentText = text;
-    turn.currentAssistantSegmentText = this.resolveAssistantSegmentText(turn, text);
+    const displayText = stripTrailingSilentReplyTail(text);
+    turn.currentAssistantSegmentText = this.resolveAssistantSegmentText(turn, displayText);
 
     if (!turn.assistantMessageId && turn.currentAssistantSegmentText) {
       // Create a new message for the new text segment (after split).
@@ -3436,7 +3440,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
       return;
     }
-    const segmentText = this.resolveAssistantSegmentText(turn, streamedText);
+    const displayStreamedText = stripTrailingSilentReplyTail(streamedText);
+    const segmentText = this.resolveAssistantSegmentText(turn, displayStreamedText);
     if (!segmentText) return;
     if (segmentText === previousSegmentText && streamedText === previousText) return;
 
@@ -3509,12 +3514,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       this.resolveTurn(sessionId);
       return;
     }
-    turn.currentText = finalText;
-    if (finalText && turn.currentContentBlocks.length === 0) {
-      turn.currentContentText = finalText;
-      turn.currentContentBlocks = [finalText];
+    const displayFinalText = stripTrailingSilentReplyTail(finalText);
+    turn.currentText = displayFinalText;
+    if (displayFinalText && turn.currentContentBlocks.length === 0) {
+      turn.currentContentText = displayFinalText;
+      turn.currentContentBlocks = [displayFinalText];
     }
-    const finalSegmentText = this.resolveAssistantSegmentText(turn, finalText);
+    const finalSegmentText = this.resolveAssistantSegmentText(turn, displayFinalText);
     const finalMessageMetadata: CoworkMessage['metadata'] = this.enrichAssistantMetadataWithCachedContext(turn.sessionKey, {
       isStreaming: false,
       isFinal: true,

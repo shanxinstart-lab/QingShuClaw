@@ -14,9 +14,21 @@ import {
   updateAgent as updateAgentAction,
 } from '../store/slices/agentSlice';
 import { clearCurrentSession } from '../store/slices/coworkSlice';
-import { clearActiveSkills,setActiveSkillIds } from '../store/slices/skillSlice';
+import { clearActiveSkills, setActiveSkillIds } from '../store/slices/skillSlice';
 import type { Agent, PresetAgent } from '../types/agent';
 import { i18nService } from './i18n';
+
+const syncActiveSkillsForCurrentAgent = (agentId: string, skillIds: string[]): void => {
+  if (store.getState().agent.currentAgentId !== agentId) {
+    return;
+  }
+
+  if (skillIds.length > 0) {
+    store.dispatch(setActiveSkillIds(skillIds));
+  } else {
+    store.dispatch(clearActiveSkills());
+  }
+};
 
 class AgentService {
   private showManagedUnavailableToast() {
@@ -160,6 +172,7 @@ class AgentService {
     try {
       const agent = await window.electron?.agents?.update(id, updates);
       if (agent) {
+        const skillIds = agent.skillIds ?? [];
         store.dispatch(updateAgentAction({
           id: agent.id,
           updates: {
@@ -177,10 +190,11 @@ class AgentService {
             managedBaseSkillIds: agent.managedBaseSkillIds ?? [],
             managedExtraSkillIds: agent.managedExtraSkillIds ?? [],
             policyNote: agent.policyNote,
-            skillIds: agent.skillIds ?? [],
+            skillIds,
             toolBundleIds: agent.toolBundleIds ?? [],
           },
         }));
+        syncActiveSkillsForCurrentAgent(agent.id, skillIds);
         return agent;
       }
       return null;
