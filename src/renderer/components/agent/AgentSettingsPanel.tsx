@@ -1,4 +1,4 @@
-import { ExclamationTriangleIcon, LockClosedIcon, PlusIcon, TrashIcon,WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { LockClosedIcon, PlusIcon, TrashIcon,WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type { Platform } from '@shared/platform';
 import { PlatformRegistry } from '@shared/platform';
 import { QingShuManagedAccessState } from '@shared/qingshuManaged/access';
@@ -48,6 +48,8 @@ import AgentToolBundleDebugSelector from './AgentToolBundleDebugSelector';
 import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import AgentToolBundleSelector from './AgentToolBundleSelector';
 import AgentAvatarPicker from './AgentAvatarPicker';
+import AgentConfirmDialog from './AgentConfirmDialog';
+import { AgentConfirmDialogVariant } from './constants';
 
 type SettingsTab = 'basic' | 'skills' | 'im';
 
@@ -980,26 +982,6 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                 {i18nService.t('delete') || 'Delete'}
               </button>
             )}
-            {showDeleteConfirm && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-red-500">{i18nService.t('confirmDelete') || 'Confirm?'}</span>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  disabled={isManagedReadOnly}
-                  className="px-2 py-1 text-xs font-medium rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {i18nService.t('delete') || 'Delete'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="px-2 py-1 text-xs font-medium rounded text-secondary hover:bg-surface-raised"
-                >
-                  {i18nService.t('cancel') || 'Cancel'}
-                </button>
-              </div>
-            )}
           </div>
           <div className="flex items-center gap-3">
             <div className="min-h-[1rem]">
@@ -1058,48 +1040,27 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
           </div>
         </div>
       </div>
+      {showDeleteConfirm && (
+        <AgentConfirmDialog
+          variant={AgentConfirmDialogVariant.Delete}
+          title={i18nService.t('confirmDelete')}
+          message={i18nService.t('confirmDeleteMessage')}
+          cancelLabel={i18nService.t('cancel')}
+          confirmLabel={i18nService.t('delete')}
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={handleDelete}
+        />
+      )}
       {showUnsavedConfirm && (
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center"
-          onClick={(event) => {
-            event.stopPropagation();
-            setShowUnsavedConfirm(false);
-          }}
-        >
-          <div className="absolute inset-0 bg-black/40 dark:bg-black/60" />
-          <div
-            className="relative w-80 rounded-xl shadow-2xl bg-surface border border-border p-5"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex flex-col items-center text-center">
-              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mb-3">
-                <ExclamationTriangleIcon className="w-5 h-5 text-amber-500" />
-              </div>
-              <h3 className="text-sm font-semibold text-foreground mb-2">
-                {i18nService.t('agentUnsavedTitle')}
-              </h3>
-              <p className="text-sm text-secondary mb-5">
-                {i18nService.t('agentUnsavedMessage')}
-              </p>
-              <div className="flex items-center gap-3 w-full">
-                <button
-                  type="button"
-                  onClick={() => setShowUnsavedConfirm(false)}
-                  className="flex-1 px-4 py-2 text-sm rounded-lg text-foreground border border-border hover:bg-surface-raised transition-colors"
-                >
-                  {i18nService.t('cancel')}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmDiscard}
-                  className="flex-1 px-4 py-2 text-sm rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors"
-                >
-                  {i18nService.t('discard')}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AgentConfirmDialog
+          variant={AgentConfirmDialogVariant.Unsaved}
+          title={i18nService.t('agentUnsavedTitle')}
+          message={i18nService.t('agentUnsavedMessage')}
+          cancelLabel={i18nService.t('cancel')}
+          confirmLabel={i18nService.t('discard')}
+          onCancel={() => setShowUnsavedConfirm(false)}
+          onConfirm={handleConfirmDiscard}
+        />
       )}
     </div>
   );

@@ -33,6 +33,8 @@ import AgentToolBundleDebugSelector from './AgentToolBundleDebugSelector';
 import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import AgentToolBundleSelector from './AgentToolBundleSelector';
 import AgentAvatarPicker from './AgentAvatarPicker';
+import AgentConfirmDialog from './AgentConfirmDialog';
+import { AgentConfirmDialogVariant } from './constants';
 
 type CreateTab = 'basic' | 'skills' | 'im';
 type CreateMode = 'blank' | 'preset';
@@ -693,43 +695,15 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
         </div>
       </div>
       {showUnsavedConfirm && (
-        <div
-          className="absolute inset-0 z-10 flex items-center justify-center bg-black/40"
-          onClick={(event) => {
-            event.stopPropagation();
-            setShowUnsavedConfirm(false);
-          }}
-        >
-          <div
-            className="w-full max-w-sm mx-4 rounded-2xl border border-border bg-surface shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="px-5 py-4 border-b border-border">
-              <h3 className="text-base font-semibold text-foreground">
-                {i18nService.t('agentCreateDiscardTitle')}
-              </h3>
-              <p className="mt-1 text-sm text-secondary">
-                {i18nService.t('agentCreateDiscardMessage')}
-              </p>
-            </div>
-            <div className="flex items-center justify-end gap-3 px-5 py-4">
-              <button
-                type="button"
-                onClick={() => setShowUnsavedConfirm(false)}
-                className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-              >
-                {i18nService.t('cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDiscard}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors"
-              >
-                {i18nService.t('agentCreateDiscardConfirm')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AgentConfirmDialog
+          variant={AgentConfirmDialogVariant.Unsaved}
+          title={i18nService.t('agentCreateDiscardTitle')}
+          message={i18nService.t('agentCreateDiscardMessage')}
+          cancelLabel={i18nService.t('cancel')}
+          confirmLabel={i18nService.t('agentCreateDiscardConfirm')}
+          onCancel={() => setShowUnsavedConfirm(false)}
+          onConfirm={handleConfirmDiscard}
+        />
       )}
     </div>
   );
