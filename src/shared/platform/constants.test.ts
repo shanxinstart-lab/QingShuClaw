@@ -20,13 +20,13 @@ describe('PlatformRegistry', () => {
     expect(PlatformRegistry.isIMChannel('unknown-channel')).toBe(false);
   });
 
-  test('keeps scheduled-task channel options on current branch primary channels', () => {
+  test('keeps scheduled-task channel options on canonical plugin channels', () => {
     const values = PlatformRegistry.channelOptions().map(option => option.value);
 
-    expect(values).toContain('dingtalk');
-    expect(values).toContain('wecom-openclaw-plugin');
-    expect(values).not.toContain('dingtalk-connector');
-    expect(values).not.toContain('wecom');
+    expect(values).toContain('dingtalk-connector');
+    expect(values).toContain('wecom');
+    expect(values).not.toContain('dingtalk');
+    expect(values).not.toContain('wecom-openclaw-plugin');
   });
 
   test('keeps china and global platform groups stable', () => {
