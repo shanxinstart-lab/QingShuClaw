@@ -5,6 +5,7 @@ import {
   AnthropicIcon,
   CustomProviderIcon,
   DeepSeekIcon,
+  DoubaoIcon,
   GeminiIcon,
   GitHubCopilotIcon,
   LmStudioIcon,
@@ -22,9 +23,15 @@ import {
   ZhipuIcon,
 } from '../components/icons/providers';
 
+export const ProviderIconId = {
+  Doubao: 'doubao',
+} as const;
+export type ProviderIconId = typeof ProviderIconId[keyof typeof ProviderIconId];
+
 const PROVIDER_ICON_MAP: Record<string, React.ReactNode> = {
   [ProviderName.OpenAI]: <OpenAIIcon />,
   [ProviderName.DeepSeek]: <DeepSeekIcon />,
+  [ProviderIconId.Doubao]: <DoubaoIcon />,
   [ProviderName.Gemini]: <GeminiIcon />,
   [ProviderName.Anthropic]: <AnthropicIcon />,
   [ProviderName.Moonshot]: <MoonshotIcon />,

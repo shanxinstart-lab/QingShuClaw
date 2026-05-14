@@ -1,6 +1,7 @@
 export { default as AnthropicIcon } from './AnthropicIcon';
 export { default as CustomProviderIcon } from './CustomProviderIcon';
 export { default as DeepSeekIcon } from './DeepSeekIcon';
+export { default as DoubaoIcon } from './DoubaoIcon';
 export { default as GeminiIcon } from './GeminiIcon';
 export { default as GitHubCopilotIcon } from './GitHubCopilotIcon';
 export { default as LmStudioIcon } from './LmStudioIcon';
