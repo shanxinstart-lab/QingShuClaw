@@ -47,7 +47,7 @@ import AgentToolBundleDebugGuide from './AgentToolBundleDebugGuide';
 import AgentToolBundleDebugSelector from './AgentToolBundleDebugSelector';
 import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import AgentToolBundleSelector from './AgentToolBundleSelector';
-import EmojiPicker from './EmojiPicker';
+import AgentAvatarPicker from './AgentAvatarPicker';
 
 type SettingsTab = 'basic' | 'skills' | 'im';
 
@@ -507,7 +507,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                   </div>
                 )}
                 <div className="flex gap-2">
-                  <EmojiPicker value={icon} onChange={setIcon} />
+                  <AgentAvatarPicker value={icon} onChange={setIcon} />
                   <input
                     type="text"
                     value={name}

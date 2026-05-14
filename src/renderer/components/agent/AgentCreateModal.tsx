@@ -32,7 +32,7 @@ import AgentToolBundleDebugGuide from './AgentToolBundleDebugGuide';
 import AgentToolBundleDebugSelector from './AgentToolBundleDebugSelector';
 import AgentToolBundleReadOnlyPanel from './AgentToolBundleReadOnlyPanel';
 import AgentToolBundleSelector from './AgentToolBundleSelector';
-import EmojiPicker from './EmojiPicker';
+import AgentAvatarPicker from './AgentAvatarPicker';
 
 type CreateTab = 'basic' | 'skills' | 'im';
 type CreateMode = 'blank' | 'preset';
@@ -438,7 +438,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
                   {i18nService.t('agentName') || 'Name'} *
                 </label>
                 <div className="flex gap-2">
-                  <EmojiPicker value={icon} onChange={setIcon} />
+                  <AgentAvatarPicker value={icon} onChange={setIcon} />
                   <input
                     type="text"
                     value={name}
