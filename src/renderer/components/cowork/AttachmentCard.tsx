@@ -5,6 +5,7 @@ import type { DraftAttachment } from '../../store/slices/coworkSlice';
 import FileTypeIcon from '../icons/fileTypes/FileTypeIcon';
 import { getFileTypeInfo, ImageFileIcon } from '../icons/fileTypes/index';
 import XMarkIcon from '../icons/XMarkIcon';
+import ImagePreviewModal, { type ImagePreviewSource } from './ImagePreviewModal';
 
 interface AttachmentCardProps {
   attachment: DraftAttachment;
@@ -22,6 +23,7 @@ const ImageCard: React.FC<AttachmentCardProps> = ({ attachment, onRemove }) => {
   const [thumbUrl, setThumbUrl] = useState<string | null>(attachment.dataUrl ?? null);
   const [imgError, setImgError] = useState(false);
   const [loading, setLoading] = useState(!attachment.dataUrl);
+  const [previewImage, setPreviewImage] = useState<ImagePreviewSource | null>(null);
 
   useEffect(() => {
     if (attachment.dataUrl) {
@@ -67,13 +69,25 @@ const ImageCard: React.FC<AttachmentCardProps> = ({ attachment, onRemove }) => {
           <ImageFileIcon className="h-6 w-6 text-blue-400" />
         </div>
       ) : (
-        <img
-          src={thumbUrl!}
-          alt={attachment.name}
-          className="h-full w-full object-cover"
-          draggable={false}
-          onError={() => setImgError(true)}
-        />
+        <button
+          type="button"
+          className="block h-full w-full cursor-zoom-in"
+          onClick={() => setPreviewImage({
+            src: thumbUrl!,
+            alt: attachment.name,
+            name: attachment.name,
+          })}
+          aria-label={i18nService.t('coworkAttachmentPreviewImage')}
+          title={i18nService.t('coworkAttachmentPreviewImage')}
+        >
+          <img
+            src={thumbUrl!}
+            alt={attachment.name}
+            className="h-full w-full object-cover"
+            draggable={false}
+            onError={() => setImgError(true)}
+          />
+        </button>
       )}
 
       <div className="absolute inset-x-0 bottom-0 bg-black/50 px-1 py-0.5">
@@ -84,13 +98,20 @@ const ImageCard: React.FC<AttachmentCardProps> = ({ attachment, onRemove }) => {
 
       <button
         type="button"
-        onClick={() => onRemove(attachment.path)}
+        onClick={(event) => {
+          event.stopPropagation();
+          onRemove(attachment.path);
+        }}
         className="absolute right-0.5 top-0.5 hidden h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 group-hover:flex"
         aria-label={i18nService.t('coworkAttachmentRemove')}
         title={i18nService.t('coworkAttachmentRemove')}
       >
         <XMarkIcon className="h-2.5 w-2.5" />
       </button>
+      <ImagePreviewModal
+        image={previewImage}
+        onClose={() => setPreviewImage(null)}
+      />
     </div>
   );
 };
