@@ -141,6 +141,10 @@ describe('OpenClawConfigSync runtime config output', () => {
         embeddingVectorWeight: 0.7,
         embeddingRemoteBaseUrl: '',
         embeddingRemoteApiKey: '',
+        dreamingEnabled: false,
+        dreamingFrequency: '0 3 * * *',
+        dreamingModel: '',
+        dreamingTimezone: '',
         openClawSessionPolicy: { keepAlive: '30d' },
       }),
       getDingTalkInstances: () => [],
@@ -199,6 +203,10 @@ describe('OpenClawConfigSync runtime config output', () => {
         embeddingVectorWeight: 1.25,
         embeddingRemoteBaseUrl: 'https://embedding.example/v1',
         embeddingRemoteApiKey: 'embedding-key',
+        dreamingEnabled: false,
+        dreamingFrequency: '0 3 * * *',
+        dreamingModel: '',
+        dreamingTimezone: '',
         openClawSessionPolicy: { keepAlive: '30d' },
       }),
     });
@@ -244,6 +252,10 @@ describe('OpenClawConfigSync runtime config output', () => {
         embeddingVectorWeight: 0.25,
         embeddingRemoteBaseUrl: '',
         embeddingRemoteApiKey: '',
+        dreamingEnabled: false,
+        dreamingFrequency: '0 3 * * *',
+        dreamingModel: '',
+        dreamingTimezone: '',
         openClawSessionPolicy: { keepAlive: '30d' },
       }),
     });
@@ -316,6 +328,46 @@ describe('OpenClawConfigSync runtime config output', () => {
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(config.skills.entries.mcporter).toEqual({ enabled: false });
+  });
+
+  test('syncs dreaming settings into memory-core plugin config', async () => {
+    const sync = await createSync({
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+        embeddingEnabled: false,
+        embeddingProvider: 'openai',
+        embeddingModel: '',
+        embeddingLocalModelPath: '',
+        embeddingVectorWeight: 0.7,
+        embeddingRemoteBaseUrl: '',
+        embeddingRemoteApiKey: '',
+        dreamingEnabled: true,
+        dreamingFrequency: '0 */6 * * *',
+        dreamingModel: 'dream-model',
+        dreamingTimezone: 'Asia/Shanghai',
+        openClawSessionPolicy: { keepAlive: '30d' },
+      }),
+    });
+
+    const result = sync.sync('dreaming-enabled');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.plugins.entries['memory-core'].config.dreaming).toEqual({
+      enabled: true,
+      frequency: '0 */6 * * *',
+      model: 'dream-model',
+      timezone: 'Asia/Shanghai',
+    });
   });
 
   test('adds missing array items in MCP bridge tool schemas for OpenAI compatibility', async () => {

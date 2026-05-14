@@ -1446,6 +1446,34 @@ export class OpenClawConfigSync {
       };
     }
 
+    // Sync Dreaming config into memory-core without disturbing other memory-core settings.
+    if (managedConfig.plugins) {
+      const plugins = managedConfig.plugins as Record<string, unknown>;
+      const entries = plugins.entries as Record<string, Record<string, unknown>>;
+      const existingMemoryCore = entries['memory-core'] ?? {};
+      const existingMemoryCoreConfig = (existingMemoryCore.config ?? {}) as Record<string, unknown>;
+      if (coworkConfig.dreamingEnabled) {
+        entries['memory-core'] = {
+          ...existingMemoryCore,
+          config: {
+            ...existingMemoryCoreConfig,
+            dreaming: {
+              enabled: true,
+              frequency: coworkConfig.dreamingFrequency || '0 3 * * *',
+              ...(coworkConfig.dreamingTimezone ? { timezone: coworkConfig.dreamingTimezone } : {}),
+              ...(coworkConfig.dreamingModel ? { model: coworkConfig.dreamingModel } : {}),
+            },
+          },
+        };
+      } else if (existingMemoryCoreConfig.dreaming) {
+        const { dreaming: _dreaming, ...restConfig } = existingMemoryCoreConfig;
+        entries['memory-core'] = {
+          ...existingMemoryCore,
+          config: Object.keys(restConfig).length > 0 ? restConfig : undefined,
+        };
+      }
+    }
+
     // Sync Telegram OpenClaw channel config
     const tgConfig = this.getTelegramOpenClawConfig?.();
     if (tgConfig?.enabled && tgConfig.botToken) {

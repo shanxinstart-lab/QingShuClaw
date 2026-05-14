@@ -45,6 +45,10 @@ const DEFAULT_EMBEDDING_LOCAL_MODEL_PATH = '';
 const DEFAULT_EMBEDDING_VECTOR_WEIGHT = 0.7;
 const DEFAULT_EMBEDDING_REMOTE_BASE_URL = '';
 const DEFAULT_EMBEDDING_REMOTE_API_KEY = '';
+const DEFAULT_DREAMING_ENABLED = false;
+const DEFAULT_DREAMING_FREQUENCY = '0 3 * * *';
+const DEFAULT_DREAMING_MODEL = '';
+const DEFAULT_DREAMING_TIMEZONE = '';
 const OPENCLAW_SESSION_KEEP_ALIVE_VALUES = ['1d', '7d', '30d', '365d'] as const;
 type OpenClawSessionKeepAlive = typeof OPENCLAW_SESSION_KEEP_ALIVE_VALUES[number];
 type OpenClawSessionPolicyConfig = {
@@ -525,6 +529,10 @@ export interface CoworkConfig {
   embeddingVectorWeight: number;
   embeddingRemoteBaseUrl: string;
   embeddingRemoteApiKey: string;
+  dreamingEnabled: boolean;
+  dreamingFrequency: string;
+  dreamingModel: string;
+  dreamingTimezone: string;
   openClawSessionPolicy: OpenClawSessionPolicyConfig;
 }
 
@@ -546,6 +554,10 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'embeddingVectorWeight'
   | 'embeddingRemoteBaseUrl'
   | 'embeddingRemoteApiKey'
+  | 'dreamingEnabled'
+  | 'dreamingFrequency'
+  | 'dreamingModel'
+  | 'dreamingTimezone'
   | 'openClawSessionPolicy'
 >>;
 
@@ -1203,6 +1215,10 @@ export class CoworkStore {
       'embeddingVectorWeight',
       'embeddingRemoteBaseUrl',
       'embeddingRemoteApiKey',
+      'dreamingEnabled',
+      'dreamingFrequency',
+      'dreamingModel',
+      'dreamingTimezone',
       'openClawSessionPolicy',
     ] as const;
     const configRows = this.getAll<ConfigRow>(
@@ -1246,6 +1262,10 @@ export class CoworkStore {
       embeddingVectorWeight: parseEmbeddingVectorWeight(configByKey.get('embeddingVectorWeight')),
       embeddingRemoteBaseUrl: configByKey.get('embeddingRemoteBaseUrl') || DEFAULT_EMBEDDING_REMOTE_BASE_URL,
       embeddingRemoteApiKey: configByKey.get('embeddingRemoteApiKey') || DEFAULT_EMBEDDING_REMOTE_API_KEY,
+      dreamingEnabled: parseBooleanConfig(configByKey.get('dreamingEnabled'), DEFAULT_DREAMING_ENABLED),
+      dreamingFrequency: configByKey.get('dreamingFrequency') || DEFAULT_DREAMING_FREQUENCY,
+      dreamingModel: configByKey.get('dreamingModel') || DEFAULT_DREAMING_MODEL,
+      dreamingTimezone: configByKey.get('dreamingTimezone') || DEFAULT_DREAMING_TIMEZONE,
       openClawSessionPolicy,
     };
   }
@@ -1415,6 +1435,46 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [String(config.embeddingRemoteApiKey), now]);
+    }
+
+    if (config.dreamingEnabled !== undefined) {
+      this.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('dreamingEnabled', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [config.dreamingEnabled ? '1' : '0', now]);
+    }
+
+    if (config.dreamingFrequency !== undefined) {
+      this.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('dreamingFrequency', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.dreamingFrequency), now]);
+    }
+
+    if (config.dreamingModel !== undefined) {
+      this.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('dreamingModel', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.dreamingModel), now]);
+    }
+
+    if (config.dreamingTimezone !== undefined) {
+      this.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('dreamingTimezone', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [String(config.dreamingTimezone), now]);
     }
 
     if (config.openClawSessionPolicy !== undefined) {

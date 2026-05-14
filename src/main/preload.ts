@@ -309,6 +309,10 @@ contextBridge.exposeInMainWorld('electron', {
       embeddingVectorWeight?: number;
       embeddingRemoteBaseUrl?: string;
       embeddingRemoteApiKey?: string;
+      dreamingEnabled?: boolean;
+      dreamingFrequency?: string;
+      dreamingModel?: string;
+      dreamingTimezone?: string;
       openClawSessionPolicy?: { keepAlive: '1d' | '7d' | '30d' | '365d' };
     }) =>
       ipcRenderer.invoke('cowork:config:set', config),
@@ -338,6 +342,10 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('cowork:memory:deleteEntry', input),
     getMemoryStats: () =>
       ipcRenderer.invoke('cowork:memory:getStats'),
+    getDreamingStatus: () =>
+      ipcRenderer.invoke('cowork:dreaming:status'),
+    getDreamDiary: () =>
+      ipcRenderer.invoke('cowork:dreaming:diary'),
     readBootstrapFile: (filename: string) =>
       ipcRenderer.invoke('cowork:bootstrap:read', filename),
     writeBootstrapFile: (filename: string, content: string) =>

@@ -57,6 +57,7 @@ import type {
   OpenClawSessionKeepAlive as OpenClawSessionKeepAliveValue,
 } from '../types/cowork';
 import { OpenClawSessionKeepAlive } from '../types/cowork';
+import DreamingSettingsSection from './cowork/DreamingSettingsSection';
 import EmbeddingSettingsSection from './cowork/EmbeddingSettingsSection';
 import ErrorMessage from './ErrorMessage';
 import BrainIcon from './icons/BrainIcon';
@@ -693,6 +694,10 @@ const Settings: React.FC<SettingsProps> = ({
   const [embeddingVectorWeight, setEmbeddingVectorWeight] = useState<number>(coworkConfig.embeddingVectorWeight ?? 0.7);
   const [embeddingRemoteBaseUrl, setEmbeddingRemoteBaseUrl] = useState<string>(coworkConfig.embeddingRemoteBaseUrl ?? '');
   const [embeddingRemoteApiKey, setEmbeddingRemoteApiKey] = useState<string>(coworkConfig.embeddingRemoteApiKey ?? '');
+  const [dreamingEnabled, setDreamingEnabled] = useState<boolean>(coworkConfig.dreamingEnabled ?? false);
+  const [dreamingFrequency, setDreamingFrequency] = useState<string>(coworkConfig.dreamingFrequency ?? '0 3 * * *');
+  const [dreamingModel, setDreamingModel] = useState<string>(coworkConfig.dreamingModel ?? '');
+  const [dreamingTimezone, setDreamingTimezone] = useState<string>(coworkConfig.dreamingTimezone ?? '');
   const [openClawSessionKeepAlive, setOpenClawSessionKeepAlive] = useState<OpenClawSessionKeepAliveValue>(
     coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays
   );
@@ -720,6 +725,10 @@ const Settings: React.FC<SettingsProps> = ({
     setEmbeddingVectorWeight(coworkConfig.embeddingVectorWeight ?? 0.7);
     setEmbeddingRemoteBaseUrl(coworkConfig.embeddingRemoteBaseUrl ?? '');
     setEmbeddingRemoteApiKey(coworkConfig.embeddingRemoteApiKey ?? '');
+    setDreamingEnabled(coworkConfig.dreamingEnabled ?? false);
+    setDreamingFrequency(coworkConfig.dreamingFrequency ?? '0 3 * * *');
+    setDreamingModel(coworkConfig.dreamingModel ?? '');
+    setDreamingTimezone(coworkConfig.dreamingTimezone ?? '');
     setOpenClawSessionKeepAlive(coworkConfig.openClawSessionPolicy?.keepAlive ?? OpenClawSessionKeepAlive.ThirtyDays);
   }, [
     coworkConfig.agentEngine,
@@ -732,6 +741,10 @@ const Settings: React.FC<SettingsProps> = ({
     coworkConfig.embeddingVectorWeight,
     coworkConfig.embeddingRemoteBaseUrl,
     coworkConfig.embeddingRemoteApiKey,
+    coworkConfig.dreamingEnabled,
+    coworkConfig.dreamingFrequency,
+    coworkConfig.dreamingModel,
+    coworkConfig.dreamingTimezone,
     coworkConfig.openClawSessionPolicy?.keepAlive,
   ]);
 
@@ -1589,7 +1602,11 @@ const Settings: React.FC<SettingsProps> = ({
     || embeddingModel !== (coworkConfig.embeddingModel ?? '')
     || embeddingVectorWeight !== (coworkConfig.embeddingVectorWeight ?? 0.7)
     || embeddingRemoteBaseUrl !== (coworkConfig.embeddingRemoteBaseUrl ?? '')
-    || embeddingRemoteApiKey !== (coworkConfig.embeddingRemoteApiKey ?? '');
+    || embeddingRemoteApiKey !== (coworkConfig.embeddingRemoteApiKey ?? '')
+    || dreamingEnabled !== (coworkConfig.dreamingEnabled ?? false)
+    || dreamingFrequency !== (coworkConfig.dreamingFrequency ?? '0 3 * * *')
+    || dreamingModel !== (coworkConfig.dreamingModel ?? '')
+    || dreamingTimezone !== (coworkConfig.dreamingTimezone ?? '');
   const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
 
   const openClawProgressPercent = useMemo(() => {
@@ -1937,6 +1954,10 @@ const Settings: React.FC<SettingsProps> = ({
           embeddingVectorWeight,
           embeddingRemoteBaseUrl,
           embeddingRemoteApiKey,
+          dreamingEnabled,
+          dreamingFrequency,
+          dreamingModel,
+          dreamingTimezone,
           openClawSessionPolicy: {
             keepAlive: openClawSessionKeepAlive,
           },
@@ -3561,6 +3582,17 @@ const Settings: React.FC<SettingsProps> = ({
               onEmbeddingVectorWeightChange={setEmbeddingVectorWeight}
               onEmbeddingRemoteBaseUrlChange={setEmbeddingRemoteBaseUrl}
               onEmbeddingRemoteApiKeyChange={setEmbeddingRemoteApiKey}
+            />
+
+            <DreamingSettingsSection
+              dreamingEnabled={dreamingEnabled}
+              dreamingFrequency={dreamingFrequency}
+              dreamingModel={dreamingModel}
+              dreamingTimezone={dreamingTimezone}
+              onDreamingEnabledChange={setDreamingEnabled}
+              onDreamingFrequencyChange={setDreamingFrequency}
+              onDreamingModelChange={setDreamingModel}
+              onDreamingTimezoneChange={setDreamingTimezone}
             />
 
           </div>

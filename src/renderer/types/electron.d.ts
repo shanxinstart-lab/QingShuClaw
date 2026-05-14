@@ -178,6 +178,10 @@ interface CoworkConfig {
   embeddingVectorWeight: number;
   embeddingRemoteBaseUrl: string;
   embeddingRemoteApiKey: string;
+  dreamingEnabled: boolean;
+  dreamingFrequency: string;
+  dreamingModel: string;
+  dreamingTimezone: string;
   openClawSessionPolicy?: OpenClawSessionPolicyConfig;
 }
 
@@ -199,6 +203,10 @@ type CoworkConfigUpdate = Partial<Pick<
   | 'embeddingVectorWeight'
   | 'embeddingRemoteBaseUrl'
   | 'embeddingRemoteApiKey'
+  | 'dreamingEnabled'
+  | 'dreamingFrequency'
+  | 'dreamingModel'
+  | 'dreamingTimezone'
   | 'openClawSessionPolicy'
 >>;
 
@@ -214,6 +222,53 @@ interface CoworkMemoryStats {
   deleted: number;
   explicit: number;
   implicit: number;
+}
+
+interface DreamingPhaseInfo {
+  enabled: boolean;
+  cron: string;
+  nextRunAtMs?: number;
+}
+
+interface DreamingEntry {
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  recallCount: number;
+  dailyCount: number;
+  groundedCount: number;
+  totalSignalCount: number;
+  lightHits: number;
+  remHits: number;
+  phaseHitCount: number;
+  promotedAt?: string;
+  lastRecalledAt?: string;
+}
+
+interface DreamingStatusData {
+  enabled: boolean;
+  timezone?: string;
+  shortTermCount: number;
+  groundedSignalCount: number;
+  totalSignalCount: number;
+  promotedToday: number;
+  promotedTotal: number;
+  shortTermEntries: DreamingEntry[];
+  promotedEntries: DreamingEntry[];
+  phases?: {
+    light: DreamingPhaseInfo;
+    deep: DreamingPhaseInfo;
+    rem: DreamingPhaseInfo;
+  };
+}
+
+interface DreamDiaryData {
+  found: boolean;
+  path: string;
+  content?: string;
+  updatedAtMs?: number;
 }
 
 interface CoworkPermissionRequest {
@@ -577,6 +632,8 @@ interface IElectronAPI {
     }) => Promise<{ success: boolean; entry?: CoworkUserMemoryEntry; error?: string }>;
     deleteMemoryEntry: (input: { id: string }) => Promise<{ success: boolean; error?: string }>;
     getMemoryStats: () => Promise<{ success: boolean; stats?: CoworkMemoryStats; error?: string }>;
+    getDreamingStatus: () => Promise<{ success: boolean; data?: DreamingStatusData | null; error?: string }>;
+    getDreamDiary: () => Promise<{ success: boolean; data?: DreamDiaryData; error?: string }>;
     readBootstrapFile: (filename: string) => Promise<{ success: boolean; content: string; error?: string }>;
     writeBootstrapFile: (filename: string, content: string) => Promise<{ success: boolean; error?: string }>;
     onStreamMessage: (callback: (data: { sessionId: string; message: CoworkMessage }) => void) => () => void;
