@@ -205,6 +205,7 @@ export interface CoworkSessionSummary {
   title: string;
   status: CoworkSessionStatus;
   pinned: boolean;
+  pinOrder?: number | null;
   agentId?: string;
   source: 'chat' | 'im';
   platform?: Platform;
@@ -244,6 +245,7 @@ export interface CoworkSessionResult {
 export interface CoworkSessionListResult {
   success: boolean;
   sessions?: CoworkSessionSummary[];
+  hasMore?: boolean;
   error?: string;
 }
 

@@ -27,6 +27,7 @@ import type {
   CoworkMemoryStats,
   CoworkPermissionResult,
   CoworkSession,
+  CoworkSessionListResult,
   CoworkStartOptions,
   CoworkUserMemoryEntry,
   OpenClawEngineStatus,
@@ -262,6 +263,27 @@ class CoworkService {
       }
       store.dispatch(setSessions(result.sessions));
     }
+  }
+
+  async listSessionsForAgentPreview(
+    agentId: string,
+    limit: number,
+    offset: number,
+  ): Promise<CoworkSessionListResult> {
+    const result = await window.electron?.cowork?.listSessions(agentId);
+    if (!result?.success || !result.sessions) {
+      return {
+        success: false,
+        error: result?.error ?? 'Cowork IPC is unavailable',
+      };
+    }
+
+    const sessions = result.sessions.slice(offset, offset + limit);
+    return {
+      success: true,
+      sessions,
+      hasMore: offset + sessions.length < result.sessions.length,
+    };
   }
 
   async loadConfig(): Promise<void> {

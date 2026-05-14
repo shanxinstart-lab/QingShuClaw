@@ -152,6 +152,7 @@ interface CoworkSessionSummary {
   title: string;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
+  pinOrder?: number | null;
   agentId?: string;
   source: 'chat' | 'im';
   platform?: Platform;
