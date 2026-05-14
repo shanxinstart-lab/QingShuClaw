@@ -158,6 +158,74 @@ export const PetSprite: React.FC<{
   );
 };
 
+type PetMenuProps = {
+  pet: PetCatalogEntry;
+  state: PetRuntimeState;
+  isFloating: boolean;
+  positionClass: string;
+  onClosePet: () => void;
+  onDismiss: () => void;
+};
+
+export const PetMenu: React.FC<PetMenuProps> = ({
+  pet,
+  state,
+  isFloating,
+  positionClass,
+  onClosePet,
+  onDismiss,
+}) => (
+  <div className={`non-draggable absolute z-[80] w-56 rounded-lg border border-border bg-surface p-2 text-sm shadow-xl ${positionClass}`}>
+    <div className="mb-2 border-b border-border/70 pb-2">
+      <div className="font-medium text-foreground">{pet.displayName}</div>
+      <div className="text-xs text-secondary">{sourceLabel(pet)} · {statusLabel(state.status)}</div>
+    </div>
+    {isFloating ? (
+      <button
+        type="button"
+        className="w-full rounded-md px-2 py-1.5 text-left text-foreground hover:bg-surface-hover"
+        onClick={onClosePet}
+      >
+        {i18nService.t('petClose')}
+      </button>
+    ) : (
+      <>
+        <button
+          type="button"
+          className="w-full rounded-md px-2 py-1.5 text-left text-foreground hover:bg-surface-hover"
+          onClick={() => {
+            onDismiss();
+            void window.electron.pet.openSettings();
+          }}
+        >
+          {i18nService.t('petOpenSettings')}
+        </button>
+        <button
+          type="button"
+          disabled={!canToggleFloatingWindow(state)}
+          className="w-full rounded-md px-2 py-1.5 text-left text-foreground hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => {
+            onDismiss();
+            void petService.setFloatingVisible(!state.config.floatingWindow.visible);
+          }}
+        >
+          {state.config.floatingWindow.visible ? i18nService.t('petHideFloatingWindow') : i18nService.t('petShowFloatingWindow')}
+        </button>
+        <button
+          type="button"
+          className="w-full rounded-md px-2 py-1.5 text-left text-secondary hover:bg-surface-hover"
+          onClick={() => {
+            onDismiss();
+            void petService.setConfig({ enabled: false });
+          }}
+        >
+          {i18nService.t('petHide')}
+        </button>
+      </>
+    )}
+  </div>
+);
+
 const PetCompanion: React.FC<PetCompanionProps> = ({
   state,
   variant = 'embedded',
@@ -199,6 +267,11 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     setMenuOpen((open) => !open);
   };
 
+  const closePet = () => {
+    setMenuOpen(false);
+    void petService.setFloatingVisible(false);
+  };
+
   if (!visible || !pet) return null;
 
   const sprite = (
@@ -223,6 +296,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   );
 
   const activateSession = (sessionId: string) => {
+    setMenuOpen(false);
     void petService.acknowledgeSession(sessionId);
     void window.electron.pet.activateSession(sessionId);
   };
@@ -241,6 +315,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   };
 
   const handleFloatingPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
@@ -291,6 +366,10 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
           onPointerUp={handleFloatingPointerUp}
           onPointerEnter={() => setPetHovered(true)}
           onPointerLeave={() => setPetHovered(false)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenuOpen(true);
+          }}
           onDragStart={(event) => event.preventDefault()}
           onPointerCancel={() => {
             setDragState(null);
@@ -415,44 +494,15 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
         </button>
       )}
 
-      {!isFloating && menuOpen && (
-        <div className={`non-draggable absolute z-[80] w-56 rounded-lg border border-border bg-surface p-2 text-sm shadow-xl ${menuPositionClass}`}>
-          <div className="mb-2 border-b border-border/70 pb-2">
-            <div className="font-medium text-foreground">{pet.displayName}</div>
-            <div className="text-xs text-secondary">{sourceLabel(pet)} · {statusLabel(state.status)}</div>
-          </div>
-          <button
-            type="button"
-            className="w-full rounded-md px-2 py-1.5 text-left text-foreground hover:bg-surface-hover"
-            onClick={() => {
-              setMenuOpen(false);
-              void window.electron.pet.openSettings();
-            }}
-          >
-            {i18nService.t('petOpenSettings')}
-          </button>
-          <button
-            type="button"
-            disabled={!canToggleFloatingWindow(state)}
-            className="w-full rounded-md px-2 py-1.5 text-left text-foreground hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={() => {
-              setMenuOpen(false);
-              void petService.setFloatingVisible(!state.config.floatingWindow.visible);
-            }}
-          >
-            {state.config.floatingWindow.visible ? i18nService.t('petHideFloatingWindow') : i18nService.t('petShowFloatingWindow')}
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-md px-2 py-1.5 text-left text-secondary hover:bg-surface-hover"
-            onClick={() => {
-              setMenuOpen(false);
-              void petService.setConfig({ enabled: false });
-            }}
-          >
-            {i18nService.t('petHide')}
-          </button>
-        </div>
+      {menuOpen && (
+        <PetMenu
+          pet={pet}
+          state={state}
+          isFloating={isFloating}
+          positionClass={menuPositionClass}
+          onClosePet={closePet}
+          onDismiss={() => setMenuOpen(false)}
+        />
       )}
     </div>
   );

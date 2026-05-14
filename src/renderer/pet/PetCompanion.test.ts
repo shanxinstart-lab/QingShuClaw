@@ -1,11 +1,19 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { DEFAULT_PET_CONFIG } from '../../shared/pet/config';
 import { PetMode, PetSource, PetStatus } from '../../shared/pet/constants';
 import type { PetCatalogEntry, PetRuntimeState } from '../../shared/pet/types';
-import PetCompanion from './PetCompanion';
+import PetCompanion, { PetMenu } from './PetCompanion';
+
+vi.mock('./petService', () => ({
+  petService: {
+    setConfig: vi.fn(),
+    setFloatingVisible: vi.fn(),
+    acknowledgeSession: vi.fn(),
+  },
+}));
 
 const pet: PetCatalogEntry = {
   id: 'codex',
@@ -92,5 +100,47 @@ describe('PetCompanion floating notifications', () => {
     }));
 
     expect(markup.match(/aria-label="收起会话"/g)).toHaveLength(2);
+  });
+
+  test('keeps the floating context menu scoped to closing the overlay', () => {
+    const state = floatingState();
+    const markup = renderToStaticMarkup(React.createElement(PetMenu, {
+      pet,
+      state,
+      isFloating: true,
+      positionClass: 'right-3 top-3',
+      onClosePet: vi.fn(),
+      onDismiss: vi.fn(),
+    }));
+
+    expect(markup).toContain('关闭宠物');
+    expect(markup).toContain('Codex');
+    expect(markup).toContain(state.config.floatingWindow.visible ? 'right-3 top-3' : '');
+    expect(markup).not.toContain('打开宠物设置');
+    expect(markup).not.toContain('隐藏宠物');
+  });
+
+  test('keeps the embedded context menu with the full pet controls', () => {
+    const baseState = floatingState();
+    const state = {
+      ...baseState,
+      config: {
+        ...baseState.config,
+        mode: PetMode.Embedded,
+      },
+      activeSessions: [],
+    };
+    const markup = renderToStaticMarkup(React.createElement(PetMenu, {
+      pet,
+      state,
+      isFloating: false,
+      positionClass: 'right-0 bottom-full mb-2',
+      onClosePet: vi.fn(),
+      onDismiss: vi.fn(),
+    }));
+
+    expect(markup).toContain('打开宠物设置');
+    expect(markup).toContain('隐藏宠物');
+    expect(markup).not.toContain('关闭宠物');
   });
 });
