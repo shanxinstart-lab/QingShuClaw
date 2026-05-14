@@ -8,11 +8,13 @@ import type {
   ScheduledTaskConversationOption,
   ScheduledTaskInput,
 } from '../../../scheduledTask/types';
+import { triggerSystemDictation } from '../../hooks/useSpeechToText';
 import { i18nService } from '../../services/i18n';
 import { scheduledTaskService } from '../../services/scheduledTask';
 import { RootState } from '../../store';
 import type { Model } from '../../store/slices/modelSlice';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
+import MicrophoneIcon from '../icons/MicrophoneIcon';
 import ModelSelector from '../ModelSelector';
 import {
   formatScheduleLabel,
@@ -330,6 +332,20 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
 
   const handleModelChange = (model: Model | null) => {
     updateForm({ modelId: model ? toOpenClawModelRef(model) : '' });
+  };
+
+  const payloadTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleVoiceInput = async () => {
+    payloadTextareaRef.current?.focus();
+    const result = await triggerSystemDictation();
+    if (result.success) return;
+
+    window.dispatchEvent(new CustomEvent('app:showToast', {
+      detail: result.error === 'permission_denied'
+        ? i18nService.t('voiceInputPermissionDenied')
+        : i18nService.t('voiceInputFailed'),
+    }));
   };
 
   const timeValue = `${String(form.hour).padStart(2, '0')}:${String(form.minute).padStart(2, '0')}`;
@@ -759,19 +775,29 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
         </label>
         <div className="rounded-lg border border-border bg-surface focus-within:ring-1 focus-within:ring-primary/40 focus-within:border-primary">
           <textarea
+            ref={payloadTextareaRef}
             value={form.payloadText}
             onChange={(event) => updateForm({ payloadText: event.target.value })}
             className={textareaInputClass}
             placeholder={i18nService.t('scheduledTasksFormPromptPlaceholder')}
             rows={4}
           />
-          <div className="flex items-center px-2 py-1">
+          <div className="flex items-center justify-between gap-2 px-2 py-1">
             <ModelSelector
               dropdownDirection="up"
               value={selectedModelValue}
               onChange={handleModelChange}
               defaultLabel={i18nService.t('scheduledTasksFormModelDefault')}
             />
+            <button
+              type="button"
+              onClick={() => { void handleVoiceInput(); }}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
+              title={i18nService.t('voiceInput')}
+              aria-label={i18nService.t('voiceInput')}
+            >
+              <MicrophoneIcon className="h-4 w-4" />
+            </button>
           </div>
         </div>
         {errors.payloadText && <p className={errorClass}>{errors.payloadText}</p>}

@@ -5,6 +5,7 @@ export const SpeechIpcChannel = {
   Start: 'speech:start',
   Stop: 'speech:stop',
   StateChanged: 'speech:stateChanged',
+  TriggerSystemDictation: 'voice:triggerDictation',
   FollowUpArm: 'speech:followUp:arm',
   FollowUpDisarm: 'speech:followUp:disarm',
   FollowUpSetActiveSession: 'speech:followUp:setActiveSession',

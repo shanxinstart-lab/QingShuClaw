@@ -415,6 +415,9 @@ contextBridge.exposeInMainWorld('electron', {
     setActiveSession: (payload: { sessionId: string | null }) =>
       ipcRenderer.invoke(SpeechIpcChannel.FollowUpSetActiveSession, payload),
   },
+  voice: {
+    triggerDictation: () => ipcRenderer.invoke(SpeechIpcChannel.TriggerSystemDictation),
+  },
   wakeInput: {
     getStatus: () => ipcRenderer.invoke(WakeInputIpcChannel.GetStatus),
     updateConfig: (config: Record<string, unknown>) => ipcRenderer.invoke(WakeInputIpcChannel.UpdateConfig, config),

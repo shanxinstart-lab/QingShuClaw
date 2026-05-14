@@ -667,6 +667,9 @@ interface IElectronAPI {
     disarm: () => Promise<{ success: boolean; error?: string }>;
     setActiveSession: (payload: SpeechFollowUpActiveSessionRequest) => Promise<{ success: boolean; error?: string }>;
   };
+  voice: {
+    triggerDictation: () => Promise<{ success: boolean; error?: string }>;
+  };
   wakeInput: {
     getStatus: () => Promise<WakeInputStatus>;
     updateConfig: (config: Partial<WakeInputConfig>) => Promise<{ success: boolean; status?: WakeInputStatus; error?: string }>;
