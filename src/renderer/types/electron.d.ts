@@ -694,6 +694,15 @@ interface IElectronAPI {
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+    openHtmlInBrowser: (htmlContent: string) => Promise<{ success: boolean; error?: string }>;
+  };
+  clipboard: {
+    writeImageFromFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+  };
+  artifact: {
+    watchFile: (filePath: string) => Promise<void>;
+    unwatchFile: (filePath: string) => Promise<void>;
+    onFileChanged: (callback: (data: { filePath: string }) => void) => () => void;
   };
   autoLaunch: {
     get: () => Promise<{ enabled: boolean }>;

@@ -1,6 +1,6 @@
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { WebContents } from 'electron';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, powerSaveBlocker, protocol, screen, session, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, powerSaveBlocker, protocol, screen, session, shell, systemPreferences } from 'electron';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -16,6 +16,7 @@ import { buildSessionTitleFromInput } from '../common/sessionTitle';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw,migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
 import { type AppUpdateInfo,AppUpdateIpc, AppUpdateSource } from '../shared/appUpdate/constants';
+import { ArtifactIpcChannel } from '../shared/artifact/constants';
 import { type Platform as SharedPlatform,PlatformRegistry } from '../shared/platform';
 import { OpenClawProviderId, ProviderName } from '../shared/providers';
 import {
@@ -6040,6 +6041,81 @@ end tell'`, { timeout: 5000 });
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
+  });
+
+  ipcMain.handle(ArtifactIpcChannel.OpenHtmlInBrowser, async (_event, htmlContent: string) => {
+    try {
+      const tmpDir = path.join(os.tmpdir(), 'lobsterai-preview');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const tmpFile = path.join(tmpDir, `preview-${Date.now()}.html`);
+      fs.writeFileSync(tmpFile, htmlContent, 'utf-8');
+      const result = await shell.openPath(tmpFile);
+      if (result) {
+        return { success: false, error: result };
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  });
+
+  ipcMain.handle(ArtifactIpcChannel.WriteImageFromFile, async (_event, filePath: string) => {
+    try {
+      const normalizedPath = normalizeWindowsShellPath(filePath);
+      const image = nativeImage.createFromPath(normalizedPath);
+      if (image.isEmpty()) {
+        return { success: false, error: 'Failed to read image file' };
+      }
+      clipboard.writeImage(image);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  });
+
+  const artifactFileWatchers = new Map<string, { watcher: fs.FSWatcher; debounceTimer: ReturnType<typeof setTimeout> | null }>();
+
+  ipcMain.handle(ArtifactIpcChannel.WatchFile, (_event, filePath: string) => {
+    const normalizedPath = normalizeWindowsShellPath(filePath);
+    if (artifactFileWatchers.has(normalizedPath)) return;
+
+    try {
+      const watcher = fs.watch(normalizedPath, (eventType) => {
+        if (eventType !== 'change') return;
+        const entry = artifactFileWatchers.get(normalizedPath);
+        if (!entry) return;
+
+        if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+        entry.debounceTimer = setTimeout(() => {
+          entry.debounceTimer = null;
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) {
+              win.webContents.send(ArtifactIpcChannel.FileChanged, { filePath: normalizedPath });
+            }
+          }
+        }, 300);
+      });
+
+      watcher.on('error', (error) => {
+        console.warn('[Artifact] stopped watching file after watcher error:', error);
+        artifactFileWatchers.delete(normalizedPath);
+        watcher.close();
+      });
+
+      artifactFileWatchers.set(normalizedPath, { watcher, debounceTimer: null });
+    } catch (error) {
+      console.warn('[Artifact] failed to watch file:', error);
+    }
+  });
+
+  ipcMain.handle(ArtifactIpcChannel.UnwatchFile, (_event, filePath: string) => {
+    const normalizedPath = normalizeWindowsShellPath(filePath);
+    const entry = artifactFileWatchers.get(normalizedPath);
+    if (!entry) return;
+
+    if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+    entry.watcher.close();
+    artifactFileWatchers.delete(normalizedPath);
   });
 
   // App update state, download & install

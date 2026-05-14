@@ -40,6 +40,7 @@ import {
   type AppUpdateRuntimeState,
   type AppUpdateSource,
 } from '../shared/appUpdate/constants';
+import { ArtifactIpcChannel } from '../shared/artifact/constants';
 import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
@@ -454,6 +455,21 @@ contextBridge.exposeInMainWorld('electron', {
     openPath: (filePath: string) => ipcRenderer.invoke('shell:openPath', filePath),
     showItemInFolder: (filePath: string) => ipcRenderer.invoke('shell:showItemInFolder', filePath),
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
+    openHtmlInBrowser: (htmlContent: string) =>
+      ipcRenderer.invoke(ArtifactIpcChannel.OpenHtmlInBrowser, htmlContent),
+  },
+  clipboard: {
+    writeImageFromFile: (filePath: string) =>
+      ipcRenderer.invoke(ArtifactIpcChannel.WriteImageFromFile, filePath),
+  },
+  artifact: {
+    watchFile: (filePath: string) => ipcRenderer.invoke(ArtifactIpcChannel.WatchFile, filePath),
+    unwatchFile: (filePath: string) => ipcRenderer.invoke(ArtifactIpcChannel.UnwatchFile, filePath),
+    onFileChanged: (callback: (data: { filePath: string }) => void) => {
+      const handler = (_event: IpcRendererEvent, data: { filePath: string }) => callback(data);
+      ipcRenderer.on(ArtifactIpcChannel.FileChanged, handler);
+      return () => ipcRenderer.removeListener(ArtifactIpcChannel.FileChanged, handler);
+    },
   },
   autoLaunch: {
     get: () => ipcRenderer.invoke('app:getAutoLaunch'),
