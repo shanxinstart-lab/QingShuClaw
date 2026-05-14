@@ -64,6 +64,8 @@ const AgentWorkingDirectoryField: React.FC<AgentWorkingDirectoryFieldProps> = ({
           onClose={() => setShowFolderMenu(false)}
           onSelectFolder={handleFolderSelect}
           anchorRef={buttonRef as React.RefObject<HTMLElement>}
+          portal
+          placement="top"
         />
       </div>
     );
