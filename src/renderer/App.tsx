@@ -6,6 +6,7 @@ import {
   AppUpdateStatus,
   type AppUpdateRuntimeState,
 } from '../shared/appUpdate/constants';
+import type { PetRuntimeState } from '../shared/pet/types';
 import { OpenClawProviderId, ProviderName, ProviderRegistry } from '../shared/providers';
 import { CoworkView } from './components/cowork';
 import ConversationHistoryDrawer from './components/cowork/ConversationHistoryDrawer';
@@ -31,6 +32,9 @@ import {
 import WindowTitleBar from './components/window/WindowTitleBar';
 import { defaultConfig, getProviderDisplayName } from './config';
 import { AppCustomEvent } from './constants/app';
+import PetCompanion from './pet/PetCompanion';
+import { petService } from './pet/petService';
+import { usePetState } from './pet/usePetState';
 import { agentService } from './services/agent';
 import type { ApiConfig } from './services/api';
 import { apiService } from './services/api';
@@ -76,6 +80,27 @@ const CoworkSearchModal = lazy(() => import('./components/cowork/CoworkSearchMod
 const ApplicationsView = lazy(() => import('./components/apps/ApplicationsView'));
 const AgentsView = lazy(() => import('./components/agent/AgentsView'));
 
+const PetFloatingApp: React.FC = () => {
+  const state = usePetState();
+
+  useEffect(() => {
+    void petService.init().catch((error) => {
+      console.error('[App] PetFloatingApp init failed:', error);
+    });
+    document.documentElement.classList.add('pet-floating-window');
+    return () => {
+      document.documentElement.classList.remove('pet-floating-window');
+    };
+  }, []);
+
+  if (!state) return null;
+  return (
+    <div className="h-screen w-screen overflow-hidden bg-transparent">
+      <PetCompanion state={state} variant="floating" />
+    </div>
+  );
+};
+
 const getOpenClawProviderIdForConfig = (
   providerName: string,
   providerConfig: { authType?: string },
@@ -96,7 +121,7 @@ const createInitialAppUpdateState = (): AppUpdateRuntimeState => ({
   errorMessage: null,
 });
 
-const App: React.FC = () => {
+const MainApp: React.FC = () => {
   const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
   const platform = electronApi?.platform ?? 'unknown';
   const [showSettings, setShowSettings] = useState(false);
@@ -286,6 +311,11 @@ const App: React.FC = () => {
         // 初始化语言
         await waitWithTimeout(i18nService.initialize(), initTimeoutMs, 'i18nService.initialize');
         mark('i18n ready');
+
+        void petService.init().catch((error) => {
+          console.error('[App] initializeApp: petService.init failed:', error);
+        });
+        mark('pet service started');
 
         // 登录态恢复内部已经把重型同步拆到后台，这里尽早并行启动，
         // 让套餐模型和用户资料更快回到工作台，但不阻塞首屏。
@@ -537,6 +567,7 @@ const App: React.FC = () => {
   const handleShowSettings = useCallback((options?: SettingsOpenOptions) => {
     setSettingsOptions({
       initialTab: options?.initialTab,
+      section: options?.section,
       notice: options?.notice,
       noticeI18nKey: options?.noticeI18nKey,
       noticeExtra: options?.noticeExtra,
@@ -1242,11 +1273,27 @@ const App: React.FC = () => {
     if (!electronApi) {
       return;
     }
-    const unsubscribe = electronApi.ipcRenderer.on('app:openSettings', () => {
-      handleShowSettings();
+    const unsubscribe = electronApi.ipcRenderer.on('app:openSettings', (options?: SettingsOpenOptions) => {
+      handleShowSettings(options);
     });
     return unsubscribe;
   }, [electronApi, handleShowSettings]);
+
+  useEffect(() => {
+    if (!electronApi) {
+      return;
+    }
+    const unsubscribe = electronApi.ipcRenderer.on('app:openPetSession', (session?: PetRuntimeState['session']) => {
+      setMainView('cowork');
+      setCoworkWorkspaceView('conversation');
+      setHistoryDrawerState(null);
+      if (session?.id) {
+        dispatch(beginLoadSession(session.id));
+        void coworkService.loadSession(session.id);
+      }
+    });
+    return unsubscribe;
+  }, [dispatch, electronApi]);
 
   // 监听托盘菜单新建任务的 IPC 事件
   useEffect(() => {
@@ -1426,7 +1473,10 @@ const App: React.FC = () => {
             <Settings
               onClose={handleCloseSettings}
               initialTab={settingsOptions.initialTab}
+              section={settingsOptions.section}
               notice={settingsOptions.notice}
+              noticeI18nKey={settingsOptions.noticeI18nKey}
+              noticeExtra={settingsOptions.noticeExtra}
               onManualCheckUpdate={handleManualCheckUpdate}
               updateCheckManaged={updateChecksManaged}
               enterpriseConfig={enterpriseConfig}
@@ -1552,7 +1602,10 @@ const App: React.FC = () => {
         <Settings
           onClose={handleCloseSettings}
           initialTab={settingsOptions.initialTab}
+          section={settingsOptions.section}
           notice={settingsOptions.notice}
+          noticeI18nKey={settingsOptions.noticeI18nKey}
+          noticeExtra={settingsOptions.noticeExtra}
           onManualCheckUpdate={handleManualCheckUpdate}
           updateCheckManaged={updateChecksManaged}
           enterpriseConfig={enterpriseConfig}
@@ -1589,5 +1642,9 @@ const App: React.FC = () => {
     </div>
   );
 };
+
+const App: React.FC = () => (
+  window.location.hash === '#pet-floating' ? <PetFloatingApp /> : <MainApp />
+);
 
 export default App; 

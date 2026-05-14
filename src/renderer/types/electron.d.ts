@@ -1,5 +1,6 @@
 import type { AppUpdateCheckResult, AppUpdateInfo as RuntimeAppUpdateInfo, AppUpdateRuntimeState, AppUpdateSource } from '../../shared/appUpdate/constants';
 import type { NimQrLoginPollResult, NimQrLoginStartResult } from '../../shared/im/nimQrLogin';
+import type { PetCatalogEntry, PetConfig, PetImportRequest, PetImportResult, PetRuntimeState } from '../../shared/pet/types';
 
 interface ApiResponse {
   ok: boolean;
@@ -588,6 +589,24 @@ interface IElectronAPI {
     isMaximized: () => Promise<boolean>;
     showSystemMenu: (position: { x: number; y: number }) => void;
     onStateChanged: (callback: (state: WindowState) => void) => () => void;
+  };
+  pet: {
+    getConfig: () => Promise<{ success: boolean; config?: PetConfig; error?: string }>;
+    setConfig: (config: Partial<PetConfig>) => Promise<{ success: boolean; config?: PetConfig; error?: string }>;
+    listPets: () => Promise<{ success: boolean; pets?: PetCatalogEntry[]; error?: string }>;
+    selectPet: (id: string) => Promise<{ success: boolean; pet?: PetCatalogEntry; state?: PetRuntimeState; error?: string }>;
+    ensurePet: (id: string) => Promise<{ success: boolean; pet?: PetCatalogEntry; error?: string }>;
+    importPet: (request?: PetImportRequest) => Promise<PetImportResult & { canceled?: boolean; state?: PetRuntimeState }>;
+    deletePet: (id: string) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
+    setStatus: (status: string) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
+    setRuntimeProjection: (projection: Pick<PetRuntimeState, 'status' | 'message' | 'session' | 'activeSessions'>) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
+    setFloatingVisible: (visible: boolean) => Promise<{ success: boolean; config?: PetConfig; state?: PetRuntimeState; error?: string }>;
+    activateMainWindow: () => Promise<{ success: boolean; error?: string }>;
+    activateSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
+    moveFloatingWindowBy: (delta: { deltaX: number; deltaY: number }) => Promise<{ success: boolean; error?: string }>;
+    persistFloatingWindowPosition: () => Promise<{ success: boolean; error?: string }>;
+    openSettings: () => Promise<{ success: boolean; error?: string }>;
+    onStateChanged: (callback: (state: PetRuntimeState) => void) => () => void;
   };
   cowork: {
     startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[]; agentId?: string; modelOverride?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;

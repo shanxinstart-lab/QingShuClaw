@@ -3,6 +3,9 @@ import React, { useEffect, useRef,useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
+import { PetAnchor } from '../../../shared/pet/constants';
+import PetCompanion from '../../pet/PetCompanion';
+import { usePetState } from '../../pet/usePetState';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
@@ -51,6 +54,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const startRequestIdRef = useRef(0);
   // Ref for CoworkPromptInput
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
+  const petState = usePetState();
 
   const {
     currentSession,
@@ -65,6 +69,13 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const selectedActionId = useSelector((state: RootState) => state.quickAction.selectedActionId);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const globalSelectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const screenBottomPet = petState?.config.anchor === PetAnchor.ScreenBottom ? (
+    <div className="pointer-events-none fixed bottom-5 right-6 z-40 hidden lg:block">
+      <div className="pointer-events-auto">
+        <PetCompanion state={petState} />
+      </div>
+    </div>
+  ) : null;
 
   const buildApiConfigNotice = (error?: string): Pick<SettingsOpenOptions, 'noticeI18nKey' | 'noticeExtra'> => {
     const noticeI18nKey = 'coworkModelSettingsRequired';
@@ -541,6 +552,14 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           onNewChat={onNewChat}
           updateBadge={updateBadge}
         />
+        {petState && petState.config.anchor === PetAnchor.AppBottom && (
+          <div className="pointer-events-none absolute bottom-4 right-5 z-30 hidden lg:block">
+            <div className="pointer-events-auto">
+              <PetCompanion state={petState} />
+            </div>
+          </div>
+        )}
+        {screenBottomPet}
       </div>
     );
   }
@@ -574,7 +593,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
           {/* Prompt Input Area - Large version with folder selector */}
           <div className="space-y-4">
-            <div className="rounded-2xl">
+            <div className="relative rounded-2xl">
               <CoworkPromptInput
                 ref={promptInputRef}
                 onSubmit={handleStartSession}
@@ -590,6 +609,13 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
                 showFolderSelector={true}
                 onManageSkills={() => onShowSkills?.()}
               />
+              {petState && petState.config.anchor === PetAnchor.Composer && (
+                <div className="pointer-events-none absolute -right-2 -top-16 hidden lg:block">
+                  <div className="pointer-events-auto">
+                    <PetCompanion state={petState} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -606,6 +632,14 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           </div>
         </div>
       </div>
+      {petState && petState.config.anchor === PetAnchor.AppBottom && (
+        <div className="pointer-events-none absolute bottom-4 right-5 z-30 hidden lg:block">
+          <div className="pointer-events-auto">
+            <PetCompanion state={petState} />
+          </div>
+        </div>
+      )}
+      {screenBottomPet}
     </div>
   );
 };

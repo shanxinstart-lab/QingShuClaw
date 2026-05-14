@@ -482,7 +482,36 @@ select::-ms-expand {
   .qs-lobster-scan-sweep,
   .qs-lobster-ripple,
   .qs-lobster-trace,
-  .qs-lobster-core {
-    animation: none;
-  }
+.qs-lobster-core {
+  animation: none;
+}
+
+.pet-floating-window,
+.pet-floating-window body,
+.pet-floating-window #root,
+.pet-floating-window main {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.pet-floating-window body {
+  overflow: hidden;
+}
+
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.non-draggable,
+button,
+input,
+select,
+textarea {
+  -webkit-app-region: no-drag;
+}
+
+.pet-companion img {
+  display: block;
+  object-fit: unset;
+}
 }

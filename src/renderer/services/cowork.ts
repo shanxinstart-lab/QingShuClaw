@@ -1,4 +1,6 @@
 import type { OpenClawSessionPatch } from '../../common/openclawSession';
+import { AppCustomEvent } from '../constants/app';
+import { petService } from '../pet/petService';
 import { store } from '../store';
 import {
   addMessage,
@@ -119,17 +121,24 @@ class CoworkService {
       // (especially important for IM-triggered turns that do not call continueSession from renderer).
       if (message.type === 'user') {
         store.dispatch(updateSessionStatus({ sessionId, status: 'running' }));
+        void petService.setStatusFromCoworkState(store.getState().cowork);
       }
 
       // Do not force status back to "running" on arbitrary messages.
       // Late stream chunks can arrive after an error/complete event.
+      if (message.type === 'user' || message.type === 'assistant' || message.type === 'system') {
+        petService.rememberSessionMessage(sessionId, message);
+      }
       store.dispatch(addMessage({ sessionId, message }));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
     });
     this.streamListenerCleanups.push(messageCleanup);
 
     // Message update listener (for streaming content updates)
     const messageUpdateCleanup = cowork.onStreamMessageUpdate(({ sessionId, messageId, content, metadata }) => {
+      petService.rememberSessionMessage(sessionId, content);
       store.dispatch(updateMessageContent({ sessionId, messageId, content, metadata }));
+      void petService.setStatusFromCoworkState(store.getState().cowork);
     });
     this.streamListenerCleanups.push(messageUpdateCleanup);
 
@@ -142,18 +151,21 @@ class CoworkService {
         requestId: request.requestId,
         toolUseId: request.toolUseId ?? null,
       }));
+      void petService.setStatusFromCoworkState(store.getState().cowork);
     });
     this.streamListenerCleanups.push(permissionCleanup);
 
     // Permission dismiss listener (timeout or server-side resolution)
     const permissionDismissCleanup = cowork.onStreamPermissionDismiss(({ requestId }) => {
       store.dispatch(dequeuePendingPermission({ requestId }));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
     });
     this.streamListenerCleanups.push(permissionDismissCleanup);
 
     // Complete listener
     const completeCleanup = cowork.onStreamComplete(({ sessionId }) => {
       store.dispatch(updateSessionStatus({ sessionId, status: 'completed' }));
+      void petService.setStatusFromCoworkState(store.getState().cowork);
       const state = store.getState().cowork;
       if (state.currentSession?.id === sessionId) {
           void this.loadSession(sessionId, { preserveSelection: true });
@@ -164,6 +176,7 @@ class CoworkService {
     // Error listener
     const errorCleanup = cowork.onStreamError(({ sessionId, error }) => {
       store.dispatch(updateSessionStatus({ sessionId, status: 'error' }));
+      void petService.setStatusFromCoworkState(store.getState().cowork);
       // Surface the error as a visible message so the user knows what happened.
       if (error) {
         store.dispatch(addMessage({
@@ -175,6 +188,7 @@ class CoworkService {
             timestamp: Date.now(),
           },
         }));
+        void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       }
     });
     this.streamListenerCleanups.push(errorCleanup);
@@ -329,6 +343,7 @@ class CoworkService {
     }
 
     store.dispatch(setStreaming(true));
+    void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
 
     const result = await cowork.startSession(options);
     if (result.success && result.session) {
@@ -336,6 +351,7 @@ class CoworkService {
       if (result.session.status !== 'running') {
         store.dispatch(setStreaming(false));
       }
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       return { session: result.session };
     }
 
@@ -346,10 +362,11 @@ class CoworkService {
     // Show a user-visible error when session start fails
     if (result.error) {
       const errorContent = getCoworkVisibleErrorMessage(result.error, result.code);
-      window.dispatchEvent(new CustomEvent('app:showToast', { detail: errorContent }));
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, { detail: errorContent }));
     }
 
     store.dispatch(setStreaming(false));
+    void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
     console.error('Failed to start session:', result.error);
     return { session: null, error: result.error };
   }
@@ -363,6 +380,7 @@ class CoworkService {
 
     store.dispatch(setStreaming(true));
     store.dispatch(updateSessionStatus({ sessionId: options.sessionId, status: 'running' }));
+    void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
 
     const result = await cowork.continueSession({
       sessionId: options.sessionId,
@@ -404,10 +422,12 @@ class CoworkService {
           },
         }));
       }
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       console.error('Failed to continue session:', result.error);
       return false;
     }
 
+    void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
     return true;
   }
 
@@ -419,6 +439,7 @@ class CoworkService {
     if (result.success) {
       store.dispatch(setStreaming(false));
       store.dispatch(updateSessionStatus({ sessionId, status: 'idle' }));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       return true;
     }
 
@@ -433,6 +454,7 @@ class CoworkService {
     const result = await cowork.deleteSession(sessionId);
     if (result.success) {
       store.dispatch(deleteSessionAction(sessionId));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       return true;
     }
 
@@ -447,6 +469,7 @@ class CoworkService {
     const result = await cowork.deleteSessions(sessionIds);
     if (result.success) {
       store.dispatch(deleteSessionsAction(sessionIds));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       return true;
     }
 
@@ -568,6 +591,7 @@ class CoworkService {
       );
       store.dispatch(setCurrentSession(sessionToApply));
       store.dispatch(setStreaming(sessionToApply.status === 'running'));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
 
       const imResult = await cowork.remoteManaged(sessionId);
       if (
@@ -632,6 +656,7 @@ class CoworkService {
       if (engineChanged) {
         store.dispatch(clearPendingPermissions());
         store.dispatch(setStreaming(false));
+        void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
       }
       return true;
     }
@@ -815,6 +840,7 @@ class CoworkService {
 
   clearSession(options: { restoreAgentSkills?: boolean } = {}): void {
     store.dispatch(clearCurrentSession());
+    void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
     if (!options.restoreAgentSkills) {
       return;
     }

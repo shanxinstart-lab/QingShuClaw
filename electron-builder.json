@@ -50,6 +50,13 @@
       "filter": [
         "**/*"
       ]
+    },
+    {
+      "from": "resources/pets",
+      "to": "pets",
+      "filter": [
+        "**/*"
+      ]
     }
   ],
   "protocols": [

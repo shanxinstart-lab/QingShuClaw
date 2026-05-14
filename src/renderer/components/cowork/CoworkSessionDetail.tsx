@@ -14,9 +14,12 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
+import { PetAnchor } from '../../../shared/pet/constants';
 import type { TtsAvailability } from '../../../shared/tts/constants';
 import { DEFAULT_TTS_CONFIG } from '../../config';
 import { AppCustomEvent } from '../../constants/app';
+import PetCompanion from '../../pet/PetCompanion';
+import { usePetState } from '../../pet/usePetState';
 import { configService } from '../../services/config';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
@@ -1615,6 +1618,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [ttsAvailability, setTtsAvailability] = useState<TtsAvailability | null>(null);
   const [ttsPlayingMessageId, setTtsPlayingMessageId] = useState<string | null>(null);
   const lastAutoPlayedMessageIdRef = useRef<string | null>(null);
+  const petState = usePetState();
 
   // Rail navigation states
   const [currentRailIndex, setCurrentRailIndex] = useState(-1);
@@ -2990,7 +2994,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         
         {/* Actual Input Area */}
         <div className="px-4 pb-6 bg-background rounded-b-xl pointer-events-auto shrink-0 shadow-[0_-1px_3px_rgba(0,0,0,0.02)]">
-          <div className="max-w-5xl mx-auto">
+          <div className="relative max-w-5xl mx-auto">
             <CoworkPromptInput
               ref={promptInputRef}
               onSubmit={onContinue}
@@ -3004,12 +3008,33 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               showModelSelector={true}
               sessionId={currentSession?.id}
             />
+            {petState && petState.config.anchor === PetAnchor.Composer && (
+              <div className="pointer-events-none absolute -right-2 -top-16 hidden lg:block">
+                <div className="pointer-events-auto">
+                  <PetCompanion state={petState} />
+                </div>
+              </div>
+            )}
           </div>
           <p className="text-center text-[11px] text-muted opacity-85 mt-2 mb-[-8px] select-none">
             {i18nService.t('aiGeneratedDisclaimer')}
           </p>
         </div>
       </div>
+      {petState && petState.config.anchor === PetAnchor.AppBottom && (
+        <div className="pointer-events-none absolute bottom-4 right-5 z-30 hidden lg:block">
+          <div className="pointer-events-auto">
+            <PetCompanion state={petState} />
+          </div>
+        </div>
+      )}
+      {petState && petState.config.anchor === PetAnchor.ScreenBottom && (
+        <div className="pointer-events-none fixed bottom-5 right-6 z-40 hidden lg:block">
+          <div className="pointer-events-auto">
+            <PetCompanion state={petState} />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -29,6 +29,7 @@ import {
   isCustomProvider,
 } from '../config';
 import { APP_ID, APP_NAME, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
+import PetSettingsSection from '../pet/PetSettingsSection';
 import { getProviderIcon } from '../providers/uiRegistry';
 import { apiService } from '../services/api';
 import { buildApiRequestHeaders } from '../services/apiRequestHeaders';
@@ -72,6 +73,7 @@ import EmailSkillConfig from './skills/EmailSkillConfig';
 import ThemedSelect from './ui/ThemedSelect';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
+type SettingsSection = 'pet';
 
 const parsePostProcessKeywordsInput = (value: string): string[] => {
   return value
@@ -82,6 +84,7 @@ const parsePostProcessKeywordsInput = (value: string): string[] => {
 
 export type SettingsOpenOptions = {
   initialTab?: TabType;
+  section?: SettingsSection;
   notice?: string;
   noticeI18nKey?: string;
   noticeExtra?: string;
@@ -430,6 +433,7 @@ const ShortcutRecorder: React.FC<{ value: string; onChange: (v: string) => void 
 const Settings: React.FC<SettingsProps> = ({
   onClose,
   initialTab,
+  section,
   notice,
   noticeI18nKey,
   noticeExtra,
@@ -1243,6 +1247,16 @@ const Settings: React.FC<SettingsProps> = ({
       setActiveTab(initialTab);
     }
   }, [initialTab]);
+
+  useEffect(() => {
+    if (section !== 'pet' || activeTab !== 'general') return;
+    window.requestAnimationFrame(() => {
+      document.getElementById('pet-settings-section')?.scrollIntoView({
+        block: 'center',
+        behavior: 'smooth',
+      });
+    });
+  }, [activeTab, section]);
 
   // Subscribe to language changes
   useEffect(() => {
@@ -2891,6 +2905,8 @@ const Settings: React.FC<SettingsProps> = ({
                 </button>
               </label>
             </div>
+
+            <PetSettingsSection />
 
             {isMac && (
               <div className="space-y-4">

@@ -78,6 +78,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
     authPlanFree: '免费',
     authPlanStandard: '标准',
 
+    // Pet companion
+    petImportDialogTitle: '导入宠物',
+    petImportDialogFilter: '宠物包',
+
     // ── IM connectivity test messages ───────────────────────────────────
     // Common
     imMissingCredentials: '缺少必要配置项: {fields}',
@@ -248,6 +252,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Auth quota
     authPlanFree: 'Free',
     authPlanStandard: 'Standard',
+
+    // Pet companion
+    petImportDialogTitle: 'Import Pet',
+    petImportDialogFilter: 'Pet Package',
 
     // ── IM connectivity test messages ───────────────────────────────────
     // Common

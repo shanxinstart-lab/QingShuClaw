@@ -1,5 +1,6 @@
 import type { AuthConfig } from '../common/auth';
 import { DEFAULT_AUTH_CONFIG } from '../common/auth';
+import type { PetConfig } from '../shared/pet/types';
 import type { ProviderConfig } from '../shared/providers';
 import { ProviderRegistry } from '../shared/providers';
 import { TtsEngine } from '../shared/tts/constants';
@@ -43,6 +44,8 @@ export interface AppConfig {
   language: 'zh' | 'en';
   // 是否使用系统代理
   useSystemProxy: boolean;
+  // 客户端宠物伙伴配置，由 pet IPC 作为写入真源。
+  pet?: PetConfig;
   // 语言初始化标记 (用于判断是否是首次启动)
   language_initialized?: boolean;
   // 应用配置

@@ -42,6 +42,8 @@ import {
   type AppUpdateSource,
 } from '../shared/appUpdate/constants';
 import { ArtifactIpcChannel } from '../shared/artifact/constants';
+import { PetIpcChannel } from '../shared/pet/constants';
+import type { PetConfig, PetImportRequest, PetRuntimeState } from '../shared/pet/types';
 import type { Platform } from '../shared/platform';
 import { SpeechIpcChannel } from '../shared/speech/constants';
 import { TtsIpcChannel } from '../shared/tts/constants';
@@ -479,6 +481,28 @@ contextBridge.exposeInMainWorld('electron', {
   preventSleep: {
     get: () => ipcRenderer.invoke('app:getPreventSleep'),
     set: (enabled: boolean) => ipcRenderer.invoke('app:setPreventSleep', enabled),
+  },
+  pet: {
+    getConfig: () => ipcRenderer.invoke(PetIpcChannel.GetConfig),
+    setConfig: (config: Partial<PetConfig>) => ipcRenderer.invoke(PetIpcChannel.SetConfig, config),
+    listPets: () => ipcRenderer.invoke(PetIpcChannel.ListPets),
+    selectPet: (id: string) => ipcRenderer.invoke(PetIpcChannel.SelectPet, id),
+    ensurePet: (id: string) => ipcRenderer.invoke(PetIpcChannel.EnsurePet, id),
+    importPet: (request?: PetImportRequest) => ipcRenderer.invoke(PetIpcChannel.ImportPet, request),
+    deletePet: (id: string) => ipcRenderer.invoke(PetIpcChannel.DeletePet, id),
+    setStatus: (status: string) => ipcRenderer.invoke(PetIpcChannel.SetStatus, status),
+    setRuntimeProjection: (projection: Pick<PetRuntimeState, 'status' | 'message' | 'session' | 'activeSessions'>) => ipcRenderer.invoke(PetIpcChannel.SetRuntimeProjection, projection),
+    setFloatingVisible: (visible: boolean) => ipcRenderer.invoke(PetIpcChannel.SetFloatingVisible, visible),
+    activateMainWindow: () => ipcRenderer.invoke(PetIpcChannel.ActivateMainWindow),
+    activateSession: (sessionId: string) => ipcRenderer.invoke(PetIpcChannel.ActivateSession, sessionId),
+    moveFloatingWindowBy: (delta: { deltaX: number; deltaY: number }) => ipcRenderer.invoke(PetIpcChannel.MoveFloatingWindowBy, delta),
+    persistFloatingWindowPosition: () => ipcRenderer.invoke(PetIpcChannel.PersistFloatingWindowPosition),
+    openSettings: () => ipcRenderer.invoke(PetIpcChannel.OpenSettings),
+    onStateChanged: (callback: (state: PetRuntimeState) => void) => {
+      const handler = (_event: IpcRendererEvent, state: PetRuntimeState) => callback(state);
+      ipcRenderer.on(PetIpcChannel.StateChanged, handler);
+      return () => ipcRenderer.removeListener(PetIpcChannel.StateChanged, handler);
+    },
   },
   appInfo: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),

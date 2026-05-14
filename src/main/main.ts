@@ -17,6 +17,7 @@ import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw,migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
 import { type AppUpdateInfo,AppUpdateIpc, AppUpdateSource } from '../shared/appUpdate/constants';
 import { ArtifactIpcChannel } from '../shared/artifact/constants';
+import { PetStatus } from '../shared/pet/constants';
 import { type Platform as SharedPlatform,PlatformRegistry } from '../shared/platform';
 import { OpenClawProviderId, ProviderName } from '../shared/providers';
 import {
@@ -150,6 +151,10 @@ import { getLogFilePath, getRecentMainLogEntries,initLogger } from './logger';
 import { type McpServerFormData,McpStore } from './mcpStore';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import { loadOpenClawSessionPolicyConfig, saveOpenClawSessionPolicyConfig } from './openclawSessionPolicy/store';
+import { PetConfigStore } from './pet/petConfigStore';
+import { registerPetIpc } from './pet/petIpc';
+import { PetStore } from './pet/petStore';
+import { PetWindowController } from './pet/petWindowController';
 import { QingShuManagedCatalogService } from './qingshuManaged/catalogService';
 import {
   createQingShuAuthFetchProvider,
@@ -888,6 +893,31 @@ const getAppUpdateCoordinator = (): AppUpdateCoordinator => {
   return appUpdateCoordinator;
 };
 
+const getPetConfigStore = (): PetConfigStore => {
+  if (!petConfigStore) {
+    petConfigStore = new PetConfigStore(getStore());
+  }
+  return petConfigStore;
+};
+
+const getPetStore = (): PetStore => {
+  if (!petStore) {
+    petStore = new PetStore();
+  }
+  return petStore;
+};
+
+const getPetWindowController = (): PetWindowController => {
+  if (!petWindowController) {
+    petWindowController = new PetWindowController(getPetConfigStore(), {
+      preloadPath: PRELOAD_PATH,
+      devServerUrl: DEV_SERVER_URL,
+      isDev,
+    });
+  }
+  return petWindowController;
+};
+
 const forwardOpenClawStatus = (status: OpenClawEngineStatus): void => {
   const windows = BrowserWindow.getAllWindows();
   windows.forEach((win) => {
@@ -1570,6 +1600,9 @@ const bindCoworkRuntimeForwarder = (): void => {
     const safeMessage = sanitizeCoworkMessageForIpc(message);
     const windows = BrowserWindow.getAllWindows();
     console.log('[CoworkForwarder] forwarding message: sessionId=', sessionId, 'type=', message?.type, 'windowCount=', windows.length);
+    if (message?.type === 'assistant') {
+      emitPetRuntimeState?.(PetStatus.Running);
+    }
     windows.forEach((win) => {
       if (win.isDestroyed()) return;
       try {
@@ -1617,6 +1650,7 @@ const bindCoworkRuntimeForwarder = (): void => {
     if (runtime.getSessionConfirmationMode(sessionId) === 'text') {
       return;
     }
+    emitPetRuntimeState?.(PetStatus.Waiting);
     const safeRequest = sanitizePermissionRequestForIpc(request);
     const windows = BrowserWindow.getAllWindows();
     windows.forEach((win) => {
@@ -1630,6 +1664,7 @@ const bindCoworkRuntimeForwarder = (): void => {
   });
 
   runtime.on('complete', (sessionId: string, claudeSessionId: string | null) => {
+    emitPetRuntimeState?.(PetStatus.Review);
     const windows = BrowserWindow.getAllWindows();
     windows.forEach((win) => {
       if (win.isDestroyed()) return;
@@ -1661,6 +1696,7 @@ const bindCoworkRuntimeForwarder = (): void => {
   });
 
   runtime.on('error', (sessionId: string, error: string) => {
+    emitPetRuntimeState?.(PetStatus.Failed);
     // Mark session as error in store so the .catch() fallback can detect duplicates.
     try { getCoworkStore().updateSession(sessionId, { status: 'error' }); } catch { /* ignore */ }
     const windows = BrowserWindow.getAllWindows();
@@ -2102,6 +2138,10 @@ const getAppIconPath = (): string | undefined => {
 let mainWindow: BrowserWindow | null = null;
 let authWindow: BrowserWindow | null = null;
 const macSpeechService = new MacSpeechService();
+let petConfigStore: PetConfigStore | null = null;
+let petStore: PetStore | null = null;
+let petWindowController: PetWindowController | null = null;
+let emitPetRuntimeState: ((status?: PetStatus) => unknown) | null = null;
 
 let isQuitting = false;
 
@@ -2118,6 +2158,7 @@ type AppConfigSettings = {
   useSystemProxy?: boolean;
   auth?: Partial<AuthConfig>;
   qingshuModules?: Record<string, QingShuModuleFlagConfig | undefined>;
+  pet?: unknown;
   speechInput?: {
     stopCommand?: string;
     submitCommand?: string;
@@ -6767,6 +6808,7 @@ end tell'`, { timeout: 5000 });
 
   const runAppCleanup = async (): Promise<void> => {
     console.log('[Main] App is quitting, starting cleanup...');
+    petWindowController?.close();
     destroyTray();
     skillManager?.stopWatching();
 
@@ -6879,6 +6921,16 @@ end tell'`, { timeout: 5000 });
     console.log('[Main] initApp: starting initStore()');
     store = await initStore();
     console.log('[Main] initApp: store initialized');
+    if (!emitPetRuntimeState) {
+      const petIpc = registerPetIpc({
+        configStore: getPetConfigStore(),
+        petStore: getPetStore(),
+        windowController: getPetWindowController(),
+        getMainWindow: () => mainWindow,
+        showMainWindow,
+      });
+      emitPetRuntimeState = petIpc.emitState;
+    }
     refreshEndpointsTestMode(store);
 
     // Defensive recovery: app may be force-closed during execution and leave
