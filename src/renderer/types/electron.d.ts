@@ -601,11 +601,13 @@ interface IElectronAPI {
     deletePet: (id: string) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
     setStatus: (status: string) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
     setRuntimeProjection: (projection: Pick<PetRuntimeState, 'status' | 'message' | 'session' | 'activeSessions'>) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
+    acknowledgeSession: (sessionId: string) => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
     setFloatingVisible: (visible: boolean) => Promise<{ success: boolean; config?: PetConfig; state?: PetRuntimeState; error?: string }>;
     activateMainWindow: () => Promise<{ success: boolean; error?: string }>;
     activateSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     moveFloatingWindowBy: (delta: { deltaX: number; deltaY: number }) => Promise<{ success: boolean; error?: string }>;
     persistFloatingWindowPosition: () => Promise<{ success: boolean; error?: string }>;
+    setFloatingActivityOpen: (open: boolean) => Promise<{ success: boolean; error?: string }>;
     openSettings: () => Promise<{ success: boolean; error?: string }>;
     onStateChanged: (callback: (state: PetRuntimeState) => void) => () => void;
   };

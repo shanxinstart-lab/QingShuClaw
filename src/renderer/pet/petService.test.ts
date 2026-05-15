@@ -204,6 +204,76 @@ describe('mergePetSessionNotifications', () => {
     ]);
   });
 
+  test('shows newly completed and failed sessions even when they were not previously tracked', () => {
+    const merged = mergePetSessionNotifications(
+      [],
+      [
+        session('done', PetStatus.Review, now - 2),
+        session('failed', PetStatus.Failed, now - 1),
+      ],
+      {},
+      now,
+      { terminalSnapshotCutoffMs: now - 10 },
+    );
+
+    expect(merged).toEqual([
+      expect.objectContaining({ id: 'done', status: PetStatus.Review }),
+      expect.objectContaining({ id: 'failed', status: PetStatus.Failed }),
+    ]);
+  });
+
+  test('skips historical completed and failed snapshots from before notification startup', () => {
+    const merged = mergePetSessionNotifications(
+      [],
+      [
+        session('old-done', PetStatus.Review, now - 200),
+        session('old-failed', PetStatus.Failed, now - 100),
+      ],
+      {},
+      now,
+      { terminalSnapshotCutoffMs: now - 50 },
+    );
+
+    expect(merged).toEqual([]);
+  });
+
+  test('keeps terminal snapshots that were already visible before startup cutoff filtering', () => {
+    const merged = mergePetSessionNotifications(
+      [session('task-1', PetStatus.Running, now - 200)],
+      [session('task-1', PetStatus.Review, now - 100)],
+      {},
+      now,
+      { terminalSnapshotCutoffMs: now - 50 },
+    );
+
+    expect(merged).toEqual([
+      expect.objectContaining({ id: 'task-1', status: PetStatus.Review }),
+    ]);
+  });
+
+  test('sorts visible notifications by Codex status priority then recency', () => {
+    const merged = mergePetSessionNotifications(
+      [],
+      [
+        session('review-newer', PetStatus.Review, now - 1),
+        session('running-old', PetStatus.Running, now - 30),
+        session('waiting-old', PetStatus.Waiting, now - 40),
+        session('failed-newest', PetStatus.Failed, now),
+        session('running-newer', PetStatus.Running, now - 10),
+      ],
+      {},
+      now,
+    );
+
+    expect(merged.map((item) => item.id)).toEqual([
+      'waiting-old',
+      'running-newer',
+      'running-old',
+      'review-newer',
+      'failed-newest',
+    ]);
+  });
+
   test('removes acknowledged completed notifications', () => {
     const merged = mergePetSessionNotifications(
       [session('task-1', PetStatus.Review, 20)],
@@ -315,6 +385,13 @@ describe('petService session acknowledgement', () => {
         activeSessions: projection.activeSessions,
       },
     }));
+    const acknowledgeSession = vi.fn(async (sessionId: string) => ({
+      success: true,
+      state: {
+        ...runtimeState,
+        activeSessions: runtimeState.activeSessions.filter((session) => session.id !== sessionId),
+      },
+    }));
     vi.stubGlobal('window', {
       electron: {
         pet: {
@@ -325,6 +402,7 @@ describe('petService session acknowledgement', () => {
             stateChangedCallbacks.push(callback);
             return vi.fn();
           }),
+          acknowledgeSession,
           setRuntimeProjection,
         },
       },
@@ -334,11 +412,11 @@ describe('petService session acknowledgement', () => {
     stateChangedCallbacks[0]?.(runtimeState);
     await petService.acknowledgeSession('task-1');
 
-    expect(setRuntimeProjection).toHaveBeenCalledWith(expect.objectContaining({
-      activeSessions: [
-        expect.objectContaining({ id: 'task-2' }),
-      ],
-    }));
+    expect(acknowledgeSession).toHaveBeenCalledWith('task-1');
+    expect(setRuntimeProjection).not.toHaveBeenCalled();
+    expect(petService.getState()?.activeSessions).toEqual([
+      expect.objectContaining({ id: 'task-2' }),
+    ]);
   });
 
   test('loads full runtime state on init so floating windows survive reloads', async () => {

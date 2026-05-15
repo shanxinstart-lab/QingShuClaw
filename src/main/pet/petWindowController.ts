@@ -14,6 +14,7 @@ type CreateWindowOptions = {
 export class PetWindowController {
   private window: BrowserWindow | null = null;
   private latestState: PetRuntimeState | null = null;
+  private activityOpen = true;
 
   constructor(
     private readonly configStore: PetConfigStore,
@@ -45,9 +46,18 @@ export class PetWindowController {
       && nextBounds
       && (previousBounds.width !== nextBounds.width || previousBounds.height !== nextBounds.height)
     ) {
-      this.window.setBounds(nextBounds);
+      this.window.setBounds(this.anchorNextBoundsToPreviousRight(previousBounds, nextBounds));
     }
     this.sendState();
+  }
+
+  setActivityOpen(open: boolean): void {
+    this.activityOpen = open;
+    if (!this.window || this.window.isDestroyed() || !this.latestState) return;
+    const previousBounds = this.window.getBounds();
+    const nextBounds = this.resolveBounds(this.latestState.config);
+    if (previousBounds.width === nextBounds.width && previousBounds.height === nextBounds.height) return;
+    this.window.setBounds(this.anchorNextBoundsToPreviousRight(previousBounds, nextBounds));
   }
 
   setVisible(visible: boolean): PetConfig {
@@ -143,7 +153,7 @@ export class PetWindowController {
       ? displays.find((display) => String(display.id) === config.floatingWindow.displayId)
       : undefined;
     const workArea = configuredDisplay?.workArea ?? screen.getPrimaryDisplay().workArea;
-    const activeSessionCount = this.latestState?.activeSessions.length ?? 0;
+    const activeSessionCount = this.activityOpen ? this.latestState?.activeSessions.length ?? 0 : 0;
     const width = activeSessionCount > 0
       ? Math.max(config.floatingWindow.width, 430)
       : config.floatingWindow.width;
@@ -166,6 +176,17 @@ export class PetWindowController {
     const x = Math.min(Math.max(bounds.x, workArea.x), workArea.x + workArea.width - bounds.width);
     const y = Math.min(Math.max(bounds.y, workArea.y), workArea.y + workArea.height - bounds.height);
     return { ...bounds, x, y };
+  }
+
+  private anchorNextBoundsToPreviousRight(
+    previousBounds: Electron.Rectangle,
+    nextBounds: Electron.Rectangle,
+  ): Electron.Rectangle {
+    return this.clampBounds({
+      ...nextBounds,
+      x: previousBounds.x + previousBounds.width - nextBounds.width,
+      y: previousBounds.y,
+    });
   }
 
   private shouldShowFloatingWindow(config: PetConfig): boolean {

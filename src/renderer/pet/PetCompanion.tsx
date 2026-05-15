@@ -4,7 +4,6 @@ import {
   ChevronRightIcon,
   ClockIcon,
   ExclamationTriangleIcon,
-  MinusIcon,
   PaperAirplaneIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
@@ -82,6 +81,22 @@ const sessionStatusIcon = (status: PetStatus): React.ReactNode => {
     case PetStatus.Idle:
     default:
       return null;
+  }
+};
+
+const activityBadgeClass = (status: PetStatus): string => {
+  switch (status) {
+    case PetStatus.Waiting:
+      return 'bg-orange-500 text-white ring-orange-200';
+    case PetStatus.Review:
+      return 'bg-green-500 text-white ring-green-200';
+    case PetStatus.Failed:
+      return 'bg-red-500 text-white ring-red-200';
+    case PetStatus.Running:
+      return 'bg-blue-500 text-white ring-blue-200';
+    case PetStatus.Idle:
+    default:
+      return 'bg-neutral-800 text-white ring-white';
   }
 };
 
@@ -228,6 +243,58 @@ type PetSessionNotificationProps = {
   onToggleExpanded: (event: React.MouseEvent<HTMLButtonElement>, sessionId: string) => void;
 };
 
+type PetActivityToggleProps = {
+  open: boolean;
+  count: number;
+  status: PetStatus;
+  onOpen: () => void;
+  onCollapse: () => void;
+};
+
+export const PetActivityToggle: React.FC<PetActivityToggleProps> = ({
+  open,
+  count,
+  status,
+  onOpen,
+  onCollapse,
+}) => {
+  if (open) {
+    return (
+      <button
+        type="button"
+        className="non-draggable absolute -right-1 -top-1 z-20 inline-flex h-6 w-6 items-center justify-center rounded-full border border-neutral-200 bg-white p-0 text-neutral-600 opacity-95 shadow-sm ring-2 ring-white transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onCollapse();
+        }}
+        title={i18nService.t('petCollapseActivity')}
+        aria-label={i18nService.t('petCollapseActivity')}
+        aria-expanded="true"
+      >
+        <ChevronRightIcon className="h-3.5 w-3.5 rotate-90" />
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={`non-draggable absolute -right-1 -top-1 z-20 inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold leading-none shadow-[0_6px_14px_-8px_rgba(0,0,0,0.5)] ring-2 transition hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${activityBadgeClass(status)}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+      title={i18nService.t('petOpenActivity')}
+      aria-label={i18nService.t('petOpenActivity')}
+      aria-expanded="false"
+    >
+      {count}
+    </button>
+  );
+};
+
 export const PetSessionNotification: React.FC<PetSessionNotificationProps> = ({
   session,
   collapsed,
@@ -235,45 +302,43 @@ export const PetSessionNotification: React.FC<PetSessionNotificationProps> = ({
   onClose,
   onToggleExpanded,
 }) => {
-  const canExpand = !!session.message && session.message.length > 96;
+  const sessionBody = session.message ?? session.progressLabel ?? statusLabel(session.status);
 
   return (
     <div
       className="group relative w-full snap-start scroll-mt-2 text-left"
       role="listitem"
     >
-      <div className="relative z-[1] overflow-hidden rounded-[18px] border border-neutral-200 bg-white text-black shadow-[inset_0_1px_0_rgba(255,255,255,0.42),inset_0_-1px_0_rgba(0,0,0,0.08),0_14px_30px_-20px_rgba(0,0,0,0.4)] transition-[background-color,border-color,box-shadow] duration-200 ease-out hover:border-neutral-300 hover:bg-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.52),inset_0_-1px_0_rgba(0,0,0,0.1),0_18px_38px_-22px_rgba(0,0,0,0.48)]">
+      <div className="relative z-[1] overflow-hidden rounded-[8px] border border-neutral-200 bg-white text-black shadow-[0_14px_30px_-20px_rgba(0,0,0,0.4)] transition-[background-color,border-color,box-shadow] duration-200 ease-out hover:border-neutral-300 hover:bg-white hover:shadow-[0_18px_38px_-22px_rgba(0,0,0,0.48)]">
         <button
           type="button"
-          className="block w-full min-w-0 cursor-pointer px-3 py-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          className="block w-full min-w-0 cursor-pointer px-3 py-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           onClick={() => onActivate(session.id)}
           title={session.message ?? session.title}
           aria-label={`${session.title}. ${session.message ?? statusLabel(session.status)}`}
         >
-          <span className="flex min-w-0 items-center pr-7">
+          <span className="flex min-w-0 items-center pr-14">
             <span className="min-w-0 truncate text-[13px] font-semibold leading-[17px] text-black">
               {session.title}
             </span>
           </span>
-          <span className={`${collapsed ? 'line-clamp-2' : 'line-clamp-3'} mt-0.5 block overflow-hidden text-[12px] leading-4 text-neutral-800`}>
-            {session.message ?? session.progressLabel ?? statusLabel(session.status)}
+          <span className={`${collapsed ? 'line-clamp-1' : 'line-clamp-4'} mt-0.5 block overflow-hidden pr-2 text-[12px] leading-4 text-neutral-800`}>
+            {sessionBody}
           </span>
         </button>
-        <span className={`pointer-events-none absolute right-1 top-1 z-0 flex h-6 w-6 items-center justify-center rounded-full ${sessionStatusDotClass(session.status)}`}>
+        <span className={`pointer-events-none absolute right-8 top-1.5 z-0 flex h-6 w-6 items-center justify-center rounded-full ${sessionStatusDotClass(session.status)}`}>
           {sessionStatusIcon(session.status)}
         </span>
-        {canExpand && (
-          <button
-            type="button"
-            className="absolute right-1 top-1 z-10 flex h-6 w-6 translate-x-1 items-center justify-center rounded-full bg-white text-neutral-600 opacity-0 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:translate-x-0 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:opacity-100"
-            onClick={(event) => onToggleExpanded(event, session.id)}
-            title={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
-            aria-expanded={!collapsed}
-            aria-label={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
-          >
-            <ChevronRightIcon className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
-          </button>
-        )}
+        <button
+          type="button"
+          className="absolute right-1.5 top-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-white text-neutral-600 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          onClick={(event) => onToggleExpanded(event, session.id)}
+          title={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? i18nService.t('petExpandSession') : i18nService.t('petCollapseSession')}
+        >
+          <ChevronRightIcon className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+        </button>
         <button
           type="button"
           className="absolute left-1 top-1 z-20 flex h-6 w-6 -translate-x-1 items-center justify-center rounded-full bg-white text-neutral-500 opacity-0 shadow-sm ring-1 ring-neutral-200 transition hover:bg-neutral-100 hover:text-black focus:translate-x-0 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:opacity-100"
@@ -325,6 +390,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   const spriteSize = variant === 'floating' ? 104 : 72;
   const menuPositionClass = variant === 'floating' ? 'right-3 top-3' : 'right-0 bottom-full mb-2';
   const isFloating = variant === 'floating';
+  const isDragging = !!dragState;
   const activeSessions = state.activeSessions;
   const hasActiveSessions = activeSessions.length > 0;
   const activeSessionCount = activeSessions.length;
@@ -348,6 +414,11 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     setMenuOpen((open) => !open);
   };
 
+  useEffect(() => {
+    if (!isFloating) return;
+    void window.electron.pet.setFloatingActivityOpen(hasActiveSessions && activityTrayOpen);
+  }, [activityTrayOpen, hasActiveSessions, isFloating]);
+
   const closePet = () => {
     setMenuOpen(false);
     void petService.setFloatingVisible(false);
@@ -366,7 +437,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
           ? PetInteractionState.DraggingLeft
           : dragState?.direction === 'right'
             ? PetInteractionState.DraggingRight
-            : dragState
+            : isDragging
               ? PetInteractionState.Dragging
               : petHovered
                 ? PetInteractionState.Hover
@@ -398,13 +469,14 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   const handleFloatingPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
+    event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       pointerId: event.pointerId,
       lastX: event.screenX,
       lastY: event.screenY,
       moved: false,
-      direction: null,
+      direction: 'right',
     });
   };
 
@@ -413,6 +485,8 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     const deltaX = event.screenX - dragState.lastX;
     const deltaY = event.screenY - dragState.lastY;
     if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+    event.preventDefault();
+    event.stopPropagation();
     setDragState({
       pointerId: event.pointerId,
       lastX: event.screenX,
@@ -427,6 +501,8 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
 
   const handleFloatingPointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (!dragState || dragState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
     event.currentTarget.releasePointerCapture(event.pointerId);
     const moved = dragState.moved;
     setDragState(null);
@@ -439,47 +515,41 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   return (
     <div className={`pet-companion relative ${variant === 'floating' ? 'h-screen w-screen' : ''} ${className}`}>
       {isFloating ? (
-        <button
-          type="button"
-          className="pet-companion-trigger non-draggable absolute right-3 top-3 inline-flex cursor-grab touch-none select-none items-end border-0 bg-transparent p-0 text-left shadow-none transition active:cursor-grabbing focus:outline-none"
-          onPointerDown={handleFloatingPointerDown}
-          onPointerMove={handleFloatingPointerMove}
-          onPointerUp={handleFloatingPointerUp}
-          onPointerEnter={() => setPetHovered(true)}
-          onPointerLeave={() => setPetHovered(false)}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            setMenuOpen(true);
-          }}
-          onDragStart={(event) => event.preventDefault()}
-          onPointerCancel={() => {
-            setDragState(null);
-            void window.electron.pet.persistFloatingWindowPosition();
-          }}
-          title={`${pet.displayName} - ${statusLabel(state.status)}`}
-          aria-label={hasActiveSessions
-            ? i18nService.t(activityTrayOpen ? 'petCollapseActivity' : 'petOpenActivity')
-            : `${pet.displayName} - ${statusLabel(state.status)}`}
-        >
-          {sprite}
+        <div className="absolute right-3 top-3">
+          <button
+            type="button"
+            className={`pet-companion-trigger non-draggable inline-flex touch-none select-none items-end border-0 bg-transparent p-0 text-left shadow-none transition focus:outline-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            onPointerDown={handleFloatingPointerDown}
+            onPointerMove={handleFloatingPointerMove}
+            onPointerUp={handleFloatingPointerUp}
+            onPointerEnter={() => setPetHovered(true)}
+            onPointerLeave={() => {
+              if (!isDragging) setPetHovered(false);
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenuOpen(true);
+            }}
+            onDragStart={(event) => event.preventDefault()}
+            onPointerCancel={() => {
+              setDragState(null);
+              void window.electron.pet.persistFloatingWindowPosition();
+            }}
+            title={`${pet.displayName} - ${statusLabel(state.status)}`}
+            aria-label={`${pet.displayName} - ${statusLabel(state.status)}`}
+          >
+            {sprite}
+          </button>
           {hasActiveSessions && (
-            activityTrayOpen ? (
-              <span
-                className="pointer-events-none absolute right-0 top-0 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border border-neutral-200 bg-white p-0 text-neutral-600 shadow-sm ring-2 ring-white"
-                aria-hidden="true"
-              >
-                <MinusIcon className="h-3.5 w-3.5" />
-              </span>
-            ) : (
-              <span
-                className={`pointer-events-none absolute right-0 top-0 z-10 inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-white/70 px-2 text-xs font-semibold leading-none shadow-sm ring-2 ring-white ${sessionStatusDotClass(primarySessionStatus)}`}
-                aria-hidden="true"
-              >
-                {activeSessionCount}
-              </span>
-            )
+            <PetActivityToggle
+              open={activityTrayOpen}
+              count={activeSessionCount}
+              status={primarySessionStatus}
+              onOpen={() => setActivityTrayOpen(true)}
+              onCollapse={() => setActivityTrayOpen(false)}
+            />
           )}
-        </button>
+        </div>
       ) : (
         <button
           type="button"

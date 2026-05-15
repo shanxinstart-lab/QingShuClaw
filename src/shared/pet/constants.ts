@@ -9,11 +9,13 @@ export const PetIpcChannel = {
   DeletePet: 'pet:deletePet',
   SetStatus: 'pet:setStatus',
   SetRuntimeProjection: 'pet:setRuntimeProjection',
+  AcknowledgeSession: 'pet:acknowledgeSession',
   SetFloatingVisible: 'pet:setFloatingVisible',
   ActivateMainWindow: 'pet:activateMainWindow',
   ActivateSession: 'pet:activateSession',
   MoveFloatingWindowBy: 'pet:moveFloatingWindowBy',
   PersistFloatingWindowPosition: 'pet:persistFloatingWindowPosition',
+  SetFloatingActivityOpen: 'pet:setFloatingActivityOpen',
   OpenSettings: 'pet:openSettings',
   StateChanged: 'pet:stateChanged',
 } as const;

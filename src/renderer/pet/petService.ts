@@ -206,6 +206,7 @@ export const mergePetSessionNotifications = (
   snapshots: PetRuntimeSession[],
   acknowledgedAt: Record<string, number>,
   now = Date.now(),
+  options: { terminalSnapshotCutoffMs?: number } = {},
 ): PetRuntimeSession[] => {
   const merged = new Map(previous.map((session) => [session.id, session]));
   const currentIds = new Set(snapshots.map((session) => session.id));
@@ -222,10 +223,11 @@ export const mergePetSessionNotifications = (
       continue;
     }
 
-    if (
-      (session.status === PetStatus.Review || session.status === PetStatus.Failed)
-      && merged.has(session.id)
-    ) {
+    if (session.status === PetStatus.Review || session.status === PetStatus.Failed) {
+      const terminalSnapshotCutoffMs = options.terminalSnapshotCutoffMs ?? 0;
+      const isExistingNotification = merged.has(session.id);
+      const isNewTerminalAfterCutoff = terminalSnapshotCutoffMs <= 0 || session.updatedAt >= terminalSnapshotCutoffMs;
+      if (!isExistingNotification && !isNewTerminalAfterCutoff) continue;
       merged.set(session.id, session);
     }
   }
@@ -252,6 +254,7 @@ class PetService {
   private sessionMessages = new Map<string, string>();
   private trackedSessions = new Map<string, PetRuntimeSession>();
   private acknowledgedSessionAt = new Map<string, number>();
+  private readonly notificationStartedAt = Date.now();
 
   async init(): Promise<PetRuntimeState | null> {
     if (this.cleanup) return this.state;
@@ -400,6 +403,17 @@ class PetService {
   async acknowledgeSession(sessionId: string): Promise<void> {
     if (!sessionId) return;
     this.acknowledgedSessionAt.set(sessionId, Date.now());
+    const result = await window.electron.pet.acknowledgeSession(sessionId);
+    if (result.success && result.state) {
+      this.state = result.state;
+      this.lastSentStatus = result.state.status;
+      this.syncTrackedSessionsFromState(result.state);
+      this.notify();
+      return;
+    }
+    if (!result.success && result.error) {
+      throw new Error(result.error);
+    }
     if (!this.state) return;
     const nextTrackedSessions = new Map(
       (this.trackedSessions.size > 0
@@ -434,6 +448,8 @@ class PetService {
       [...this.trackedSessions.values()],
       snapshots,
       Object.fromEntries(this.acknowledgedSessionAt.entries()),
+      Date.now(),
+      { terminalSnapshotCutoffMs: this.notificationStartedAt },
     );
     this.trackedSessions = new Map(activeSessions.map((activeSession) => [activeSession.id, activeSession]));
 

@@ -497,13 +497,23 @@ select::-ms-expand {
 
 .pet-floating-window body {
   overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .pet-floating-window * {
   -webkit-app-region: no-drag !important;
   app-region: no-drag !important;
   -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
   user-select: none;
+}
+
+.pet-floating-window button,
+.pet-floating-window img {
+  -webkit-user-drag: none;
+  touch-action: none;
 }
 
 .pet-companion img {

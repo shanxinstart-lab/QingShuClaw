@@ -493,11 +493,13 @@ contextBridge.exposeInMainWorld('electron', {
     deletePet: (id: string) => ipcRenderer.invoke(PetIpcChannel.DeletePet, id),
     setStatus: (status: string) => ipcRenderer.invoke(PetIpcChannel.SetStatus, status),
     setRuntimeProjection: (projection: Pick<PetRuntimeState, 'status' | 'message' | 'session' | 'activeSessions'>) => ipcRenderer.invoke(PetIpcChannel.SetRuntimeProjection, projection),
+    acknowledgeSession: (sessionId: string) => ipcRenderer.invoke(PetIpcChannel.AcknowledgeSession, sessionId),
     setFloatingVisible: (visible: boolean) => ipcRenderer.invoke(PetIpcChannel.SetFloatingVisible, visible),
     activateMainWindow: () => ipcRenderer.invoke(PetIpcChannel.ActivateMainWindow),
     activateSession: (sessionId: string) => ipcRenderer.invoke(PetIpcChannel.ActivateSession, sessionId),
     moveFloatingWindowBy: (delta: { deltaX: number; deltaY: number }) => ipcRenderer.invoke(PetIpcChannel.MoveFloatingWindowBy, delta),
     persistFloatingWindowPosition: () => ipcRenderer.invoke(PetIpcChannel.PersistFloatingWindowPosition),
+    setFloatingActivityOpen: (open: boolean) => ipcRenderer.invoke(PetIpcChannel.SetFloatingActivityOpen, open),
     openSettings: () => ipcRenderer.invoke(PetIpcChannel.OpenSettings),
     onStateChanged: (callback: (state: PetRuntimeState) => void) => {
       const handler = (_event: IpcRendererEvent, state: PetRuntimeState) => callback(state);

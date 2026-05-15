@@ -117,6 +117,7 @@ const normalizeActiveSessions = (value: unknown): PetRuntimeSession[] => {
 export function registerPetIpc(options: RegisterPetIpcOptions): {
   emitState: (status?: PetStatus) => PetRuntimeState;
 } {
+  const acknowledgedSessionAt = new Map<string, number>();
   let currentProjection: PetRuntimeProjection = {
     status: PetStatus.Idle,
     message: null,
@@ -134,6 +135,13 @@ export function registerPetIpc(options: RegisterPetIpcOptions): {
     options.windowController.setRuntimeState(state);
     return state;
   };
+
+  const removeAcknowledgedSessions = (sessions: PetRuntimeSession[]): PetRuntimeSession[] => (
+    sessions.filter((session) => {
+      const ackedAt = acknowledgedSessionAt.get(session.id) ?? 0;
+      return ackedAt <= 0 || session.updatedAt > ackedAt;
+    })
+  );
 
   ipcMain.handle(PetIpcChannel.GetState, () => {
     return { success: true, state: buildPetRuntimeState(options.configStore, options.petStore, currentProjection) };
@@ -310,9 +318,20 @@ export function registerPetIpc(options: RegisterPetIpcOptions): {
             : rawSession.id.trim(),
         }
         : null,
-      activeSessions: normalizeActiveSessions(data.activeSessions),
+      activeSessions: removeAcknowledgedSessions(normalizeActiveSessions(data.activeSessions)),
     };
     return { success: true, state: emitState(currentProjection.status) };
+  });
+
+  ipcMain.handle(PetIpcChannel.AcknowledgeSession, (_event, sessionId: unknown) => {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!id) return { success: false, error: 'Pet session id is required.' };
+    acknowledgedSessionAt.set(id, Date.now());
+    currentProjection = {
+      ...currentProjection,
+      activeSessions: currentProjection.activeSessions.filter((session) => session.id !== id),
+    };
+    return { success: true, state: emitState() };
   });
 
   ipcMain.handle(PetIpcChannel.SetFloatingVisible, (_event, visible: unknown) => {
@@ -352,6 +371,11 @@ export function registerPetIpc(options: RegisterPetIpcOptions): {
 
   ipcMain.handle(PetIpcChannel.PersistFloatingWindowPosition, () => {
     options.windowController.persistPosition();
+    return { success: true };
+  });
+
+  ipcMain.handle(PetIpcChannel.SetFloatingActivityOpen, (_event, open: unknown) => {
+    options.windowController.setActivityOpen(open === true);
     return { success: true };
   });
 
