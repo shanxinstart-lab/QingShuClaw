@@ -594,6 +594,7 @@ interface IElectronAPI {
     getState: () => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
     getConfig: () => Promise<{ success: boolean; config?: PetConfig; error?: string }>;
     setConfig: (config: Partial<PetConfig>) => Promise<{ success: boolean; config?: PetConfig; error?: string }>;
+    refresh: () => Promise<{ success: boolean; state?: PetRuntimeState; error?: string }>;
     listPets: () => Promise<{ success: boolean; pets?: PetCatalogEntry[]; error?: string }>;
     selectPet: (id: string) => Promise<{ success: boolean; pet?: PetCatalogEntry; state?: PetRuntimeState; error?: string }>;
     ensurePet: (id: string) => Promise<{ success: boolean; pet?: PetCatalogEntry; error?: string }>;

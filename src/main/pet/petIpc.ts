@@ -179,6 +179,14 @@ export function registerPetIpc(options: RegisterPetIpcOptions): {
     }
   });
 
+  ipcMain.handle(PetIpcChannel.Refresh, () => {
+    try {
+      return { success: true, state: emitState() };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to refresh pets.' };
+    }
+  });
+
   ipcMain.handle(PetIpcChannel.ListPets, () => {
     return {
       success: true,

@@ -2,6 +2,7 @@ export const PetIpcChannel = {
   GetState: 'pet:getState',
   GetConfig: 'pet:getConfig',
   SetConfig: 'pet:setConfig',
+  Refresh: 'pet:refresh',
   ListPets: 'pet:listPets',
   SelectPet: 'pet:selectPet',
   EnsurePet: 'pet:ensurePet',

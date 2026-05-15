@@ -66,6 +66,48 @@ const invoke = async <T,>(channel: string, ...args: unknown[]): Promise<T> => {
 };
 
 describe('registerPetIpc session acknowledgement', () => {
+  test('refresh emits a runtime state from the main pet catalog source', async () => {
+    mockElectron.handlers.clear();
+    mockElectron.windows = [];
+    const config = {
+      ...DEFAULT_PET_CONFIG,
+      enabled: true,
+      mode: PetMode.Floating,
+    };
+    const windowController = {
+      setRuntimeState: vi.fn(),
+      syncConfig: vi.fn(),
+      setVisible: vi.fn(() => config),
+      setActivityOpen: vi.fn(),
+      moveBy: vi.fn(),
+      persistPosition: vi.fn(),
+    };
+    const petStore = {
+      listPets: vi.fn(() => [pet]),
+      ensurePet: vi.fn(async () => pet),
+      importPet: vi.fn(),
+      deletePet: vi.fn(),
+    };
+    registerPetIpc({
+      configStore: createConfigStore(config),
+      petStore: petStore as never,
+      windowController: windowController as never,
+      getMainWindow: () => null,
+      showMainWindow: vi.fn(),
+    });
+
+    const refreshed = await invoke<{ success: boolean; state?: { pets: PetCatalogEntry[] } }>(
+      PetIpcChannel.Refresh,
+    );
+
+    expect(refreshed.success).toBe(true);
+    expect(refreshed.state?.pets.map((item) => item.id)).toEqual(['codex']);
+    expect(petStore.listPets).toHaveBeenCalled();
+    expect(windowController.setRuntimeState).toHaveBeenCalledWith(expect.objectContaining({
+      pets: expect.arrayContaining([expect.objectContaining({ id: 'codex' })]),
+    }));
+  });
+
   test('keeps acknowledged completed sessions from reappearing after another renderer projects cowork state', async () => {
     mockElectron.handlers.clear();
     mockElectron.windows = [];

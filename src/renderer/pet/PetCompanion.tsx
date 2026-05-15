@@ -188,12 +188,15 @@ export const PetMenu: React.FC<PetMenuProps> = ({
     return (
       <button
         type="button"
-        className={`non-draggable absolute z-[80] inline-flex h-7 w-7 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-600 shadow-[0_8px_20px_-14px_rgba(0,0,0,0.5)] ring-1 ring-white transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${positionClass}`}
-        onClick={onClosePet}
+        className={`non-draggable absolute z-[80] inline-flex h-6 items-center justify-center whitespace-nowrap rounded-full border border-neutral-200 bg-white px-2.5 text-[11px] font-medium leading-none text-neutral-700 shadow-[0_6px_14px_-10px_rgba(0,0,0,0.45)] ring-1 ring-white transition hover:bg-neutral-100 hover:text-black focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${positionClass}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClosePet();
+        }}
         title={i18nService.t('petClose')}
         aria-label={i18nService.t('petClose')}
       >
-        <XMarkIcon className="h-4 w-4" />
+        {i18nService.t('petClose')}
       </button>
     );
   }
@@ -392,7 +395,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     : canRenderEmbedded(state);
 
   const spriteSize = variant === 'floating' ? 104 : 72;
-  const menuPositionClass = variant === 'floating' ? 'right-[118px] top-10' : 'right-0 bottom-full mb-2';
+  const menuPositionClass = variant === 'floating' ? 'right-6 top-5' : 'right-0 bottom-full mb-2';
   const isFloating = variant === 'floating';
   const isDragging = !!dragState;
   const activeSessions = state.activeSessions;

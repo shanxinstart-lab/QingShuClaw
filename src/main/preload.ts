@@ -486,6 +486,7 @@ contextBridge.exposeInMainWorld('electron', {
     getState: () => ipcRenderer.invoke(PetIpcChannel.GetState),
     getConfig: () => ipcRenderer.invoke(PetIpcChannel.GetConfig),
     setConfig: (config: Partial<PetConfig>) => ipcRenderer.invoke(PetIpcChannel.SetConfig, config),
+    refresh: () => ipcRenderer.invoke(PetIpcChannel.Refresh),
     listPets: () => ipcRenderer.invoke(PetIpcChannel.ListPets),
     selectPet: (id: string) => ipcRenderer.invoke(PetIpcChannel.SelectPet, id),
     ensurePet: (id: string) => ipcRenderer.invoke(PetIpcChannel.EnsurePet, id),

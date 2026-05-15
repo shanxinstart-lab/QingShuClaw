@@ -481,6 +481,18 @@ class PetService {
   }
 
   async refresh(): Promise<void> {
+    const refreshResult = await window.electron.pet.refresh?.();
+    if (refreshResult?.success && refreshResult.state) {
+      this.state = refreshResult.state;
+      this.lastSentStatus = this.state.status;
+      this.syncTrackedSessionsFromState(this.state);
+      this.notify();
+      return;
+    }
+    if (refreshResult && !refreshResult.success && refreshResult.error) {
+      throw new Error(refreshResult.error);
+    }
+
     const stateResult = await window.electron.pet.getState();
     if (stateResult.success && stateResult.state) {
       this.state = stateResult.state;
