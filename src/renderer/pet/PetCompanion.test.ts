@@ -177,14 +177,16 @@ describe('PetCompanion floating notifications', () => {
       pet,
       state,
       isFloating: true,
-      positionClass: 'right-3 top-3',
+      positionClass: 'right-[118px] top-10',
       onClosePet: vi.fn(),
       onDismiss: vi.fn(),
     }));
 
-    expect(markup).toContain('关闭宠物');
-    expect(markup).toContain('Codex');
-    expect(markup).toContain(state.config.floatingWindow.visible ? 'right-3 top-3' : '');
+    expect(markup).toContain('aria-label="关闭宠物"');
+    expect(markup).toContain('right-[118px] top-10');
+    expect(markup).toContain('h-7 w-7');
+    expect(markup).not.toContain('w-56');
+    expect(markup).not.toContain('Codex');
     expect(markup).not.toContain('打开宠物设置');
     expect(markup).not.toContain('隐藏宠物');
   });
