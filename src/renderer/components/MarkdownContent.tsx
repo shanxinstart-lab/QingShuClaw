@@ -23,7 +23,7 @@ const SYNTAX_HIGHLIGHTER_STYLE = {
   margin: 0,
   borderRadius: 0,
 };
-const SAFE_URL_PROTOCOLS = new Set(['http', 'https', 'mailto', 'tel', 'file']);
+const SAFE_URL_PROTOCOLS = new Set(['http', 'https', 'mailto', 'tel', 'file', 'localfile']);
 const LINK_CLASS_NAME = 'text-primary hover:text-primary-hover underline decoration-primary/50 hover:decoration-primary transition-colors break-words [overflow-wrap:anywhere]';
 
 const encodeFileUrl = (url: string): string => {
@@ -148,7 +148,7 @@ const getHrefProtocol = (href: string): string | null => {
 const isExternalHref = (href: string): boolean => {
   const protocol = getHrefProtocol(href);
   if (!protocol) return false;
-  return protocol !== 'file';
+  return protocol !== 'file' && protocol !== 'localfile';
 };
 
 const openExternalViaDefaultBrowser = async (url: string): Promise<boolean> => {
@@ -331,7 +331,7 @@ const safeDecodeURIComponent = (value: string): string => {
 const stripHashAndQuery = (value: string): string => value.split('#')[0].split('?')[0];
 
 const stripFileProtocol = (value: string): string => {
-  let cleaned = value.replace(/^file:\/\//i, '');
+  let cleaned = value.replace(/^(?:file|localfile):\/\//i, '');
   if (/^\/[A-Za-z]:/.test(cleaned)) {
     cleaned = cleaned.slice(1);
   }
@@ -348,7 +348,7 @@ const looksLikeDirectory = (value: string): boolean => {
 
 const isLikelyLocalFilePath = (href: string): boolean => {
   if (!href) return false;
-  if (/^file:\/\//i.test(href)) return true;
+  if (/^(?:file|localfile):\/\//i.test(href)) return true;
   if (/^[A-Za-z]:[\\/]/.test(href)) return true;
   if (href.startsWith('/') || href.startsWith('./') || href.startsWith('../')) return true;
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return false;
@@ -507,19 +507,53 @@ const createMarkdownComponents = (
   ),
   img: ({ node, className, src, alt, ...props }: any) => {
     let resolvedSrc = src;
+    let localImagePath: string | null = null;
     if (typeof src === 'string') {
-      if (src.startsWith('file://')) {
+      if (/^localfile:\/\//i.test(src)) {
+        resolvedSrc = src;
+        const rawPath = stripFileProtocol(stripHashAndQuery(src));
+        localImagePath = safeDecodeURIComponent(rawPath) || rawPath;
+      } else if (src.startsWith('file://')) {
         resolvedSrc = src.replace(/^file:\/\//, 'localfile://');
+        const rawPath = stripFileProtocol(stripHashAndQuery(src));
+        localImagePath = safeDecodeURIComponent(rawPath) || rawPath;
       } else if (src.startsWith('/') && !src.startsWith('//')) {
         resolvedSrc = `localfile://${src}`;
+        localImagePath = src;
+      } else if (resolveLocalFilePath) {
+        localImagePath = resolveLocalFilePath(src, typeof alt === 'string' ? alt : '');
+        if (localImagePath) {
+          resolvedSrc = `localfile://${localImagePath}`;
+        }
       }
     }
+
+    const handleImageClick = async () => {
+      if (localImagePath) {
+        try {
+          const result = await window.electron.shell.openPath(localImagePath);
+          if (!result?.success) {
+            console.error('Failed to open local image:', localImagePath, result?.error);
+            dispatchAppToast(i18nService.t('openFileFailed'));
+          }
+        } catch (error) {
+          console.error('Failed to open local image:', localImagePath, error);
+          dispatchAppToast(i18nService.t('openFileFailed'));
+        }
+        return;
+      }
+
+      if (onImageClick && resolvedSrc) {
+        onImageClick(resolvedSrc);
+      }
+    };
+
     return (
       <img
-        className={`max-w-full max-h-96 object-contain rounded-xl my-4${onImageClick ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+        className={`max-w-full max-h-96 object-contain rounded-xl my-4${(onImageClick || localImagePath) ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
         src={resolvedSrc}
         alt={alt}
-        onClick={onImageClick && resolvedSrc ? () => onImageClick(resolvedSrc) : undefined}
+        onClick={(onImageClick || localImagePath) ? handleImageClick : undefined}
         {...props}
       />
     );
@@ -566,12 +600,15 @@ const createMarkdownComponents = (
             const fallbackResult = await window.electron.shell.openPath(fallbackPath);
             if (!fallbackResult?.success) {
               console.error('Failed to open file (fallback):', fallbackPath, fallbackResult?.error);
+              dispatchAppToast(i18nService.t('openFileFailed'));
             }
           } else {
             console.error('Failed to open file:', filePath, result?.error);
+            dispatchAppToast(i18nService.t('openFileFailed'));
           }
         } catch (error) {
           console.error('Failed to open file:', filePath, error);
+          dispatchAppToast(i18nService.t('openFileFailed'));
         }
       };
 

@@ -578,7 +578,7 @@ const safeDecodeURIComponent = (value: string): string => {
 const stripHashAndQuery = (value: string): string => value.split('#')[0].split('?')[0];
 
 const stripFileProtocol = (value: string): string => {
-  let cleaned = value.replace(/^file:\/\//i, '');
+  let cleaned = value.replace(/^(?:file|localfile):\/\//i, '');
   if (/^\/[A-Za-z]:/.test(cleaned)) {
     cleaned = cleaned.slice(1);
   }
@@ -595,7 +595,7 @@ const isRelativePath = (value: string): boolean => !isAbsolutePath(value) && !ha
 
 const parseRootRelativePath = (value: string): string | null => {
   const trimmed = value.trim();
-  if (!/^file:\/\//i.test(trimmed)) return null;
+  if (!/^(?:file|localfile):\/\//i.test(trimmed)) return null;
   const separatorIndex = trimmed.indexOf('::');
   if (separatorIndex < 0) return null;
 
@@ -620,7 +620,7 @@ const normalizeLocalPath = (
   const trimmed = value.trim();
   if (!trimmed) return null;
 
-  const fileScheme = /^file:\/\//i.test(trimmed);
+  const fileScheme = /^(?:file|localfile):\/\//i.test(trimmed);
   const schemePresent = hasScheme(trimmed);
   if (schemePresent && !fileScheme && !isAbsolutePath(trimmed)) return null;
 
@@ -958,11 +958,15 @@ const CopyButton: React.FC<{
 
 const ArtifactBadge: React.FC<{
   artifact: Artifact;
-}> = ({ artifact }) => {
+  resolveLocalFilePath?: (href: string, text: string) => string | null;
+}> = ({ artifact, resolveLocalFilePath }) => {
   const handleClick = async () => {
     if (artifact.filePath) {
       try {
-        const result = await window.electron.shell.openPath(artifact.filePath);
+        const filePath = resolveLocalFilePath
+          ? resolveLocalFilePath(artifact.filePath, artifact.fileName || artifact.title)
+          : null;
+        const result = await window.electron.shell.openPath(filePath || artifact.filePath);
         if (!result?.success) {
           window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
             detail: result?.error || i18nService.t('artifactOpenFailed'),
@@ -1041,7 +1045,8 @@ export const UserMessageItem: React.FC<{
   message: CoworkMessage;
   skills: Skill[];
   onReEdit?: (message: CoworkMessage) => void;
-}> = React.memo(({ message, skills, onReEdit }) => {
+  resolveLocalFilePath?: (href: string, text: string) => string | null;
+}> = React.memo(({ message, skills, onReEdit, resolveLocalFilePath }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
@@ -1084,6 +1089,8 @@ export const UserMessageItem: React.FC<{
               <MarkdownContent
                 content={displayContent}
                 className="max-w-none whitespace-pre-wrap break-words"
+                resolveLocalFilePath={resolveLocalFilePath}
+                showRevealInFolderAction
                 onImageClick={setExpandedImage}
               />
             )}
@@ -1578,7 +1585,11 @@ export const AssistantTurnBlock: React.FC<{
           {artifacts.length > 0 && (
             <div className="flex flex-wrap gap-2 pt-1">
               {artifacts.map((artifact) => (
-                <ArtifactBadge key={artifact.id} artifact={artifact} />
+                <ArtifactBadge
+                  key={artifact.id}
+                  artifact={artifact}
+                  resolveLocalFilePath={resolveLocalFilePath}
+                />
               ))}
             </div>
           )}
@@ -2513,7 +2524,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         <div key={turn.id} data-turn-index={index}>
           {turn.userMessage && (
             <div data-export-role="user-message" {...(userRailIdx >= 0 ? { 'data-rail-index': userRailIdx } : undefined)}>
-              <UserMessageItem message={turn.userMessage} skills={skills} onReEdit={remoteManaged ? undefined : handleReEdit} />
+              <UserMessageItem
+                message={turn.userMessage}
+                skills={skills}
+                resolveLocalFilePath={resolveLocalFilePath}
+                onReEdit={remoteManaged ? undefined : handleReEdit}
+              />
             </div>
           )}
           {showAssistantBlock && (

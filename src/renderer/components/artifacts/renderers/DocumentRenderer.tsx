@@ -11,6 +11,15 @@ function getExtension(name: string): string {
   return lastDot === -1 ? '' : name.slice(lastDot).toLowerCase();
 }
 
+function stripLocalFileProtocol(value: string): string {
+  const withoutProtocol = value.replace(/^(?:file|localfile):\/\//i, '');
+  try {
+    return decodeURIComponent(withoutProtocol);
+  } catch {
+    return withoutProtocol;
+  }
+}
+
 function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
   const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
   const binary = atob(base64);
@@ -41,20 +50,8 @@ function useFileContent(artifact: Artifact): { data: ArrayBuffer | null; loading
       }
 
       if (artifact.filePath && window.electron?.dialog?.readFileAsDataUrl) {
-        let filePath = artifact.filePath;
-        if (filePath.startsWith('file:///')) {
-          filePath = filePath.slice(7);
-        } else if (filePath.startsWith('file://')) {
-          filePath = filePath.slice(7);
-        } else if (filePath.startsWith('file:/')) {
-          filePath = filePath.slice(5);
-        }
-        // Strip leading / before Windows drive letter
-        if (/^\/[A-Za-z]:/.test(filePath)) {
-          filePath = filePath.slice(1);
-        }
         try {
-          const result = await window.electron.dialog.readFileAsDataUrl(filePath);
+          const result = await window.electron.dialog.readFileAsDataUrl(artifact.filePath);
           if (cancelled) return;
           if (result?.success && result.dataUrl) {
             const buf = dataUrlToArrayBuffer(result.dataUrl);
@@ -785,14 +782,9 @@ const PptxHtmlFallback: React.FC<{ artifact: Artifact; data: ArrayBuffer }> = ({
     let cancelled = false;
 
     const loadSlideHtmls = async () => {
-      let filePath = artifact.filePath!;
-      if (filePath.startsWith('file:///')) filePath = filePath.slice(7);
-      else if (filePath.startsWith('file://')) filePath = filePath.slice(7);
-      else if (filePath.startsWith('file:/')) filePath = filePath.slice(5);
-      // Strip leading / before Windows drive letter
-      if (/^\/[A-Za-z]:/.test(filePath)) filePath = filePath.slice(1);
-
-      const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+      const filePath = artifact.filePath!;
+      const normalizedFilePath = stripLocalFileProtocol(filePath);
+      const dir = normalizedFilePath.substring(0, normalizedFilePath.lastIndexOf('/'));
       const slidesDir = `${dir}/slides`;
       const htmls: string[] = [];
 
@@ -934,7 +926,7 @@ const FileInfoFallback: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
 
   const handleOpenWithApp = useCallback(() => {
     if (artifact.filePath) {
-      window.electron?.shell?.openPath(artifact.filePath);
+      void window.electron?.shell?.openPath(artifact.filePath);
     }
   }, [artifact.filePath]);
 

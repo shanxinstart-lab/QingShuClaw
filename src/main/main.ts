@@ -4,6 +4,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nati
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import {
   AuthBackend,
@@ -610,15 +611,22 @@ const safeDecodeURIComponent = (value: string): string => {
 };
 
 const normalizeWindowsShellPath = (inputPath: string): string => {
-  if (!isWindows) return inputPath;
-
   const trimmed = inputPath.trim();
   if (!trimmed) return inputPath;
 
   let normalized = trimmed;
-  if (/^file:\/\//i.test(normalized)) {
-    normalized = safeDecodeURIComponent(normalized.replace(/^file:\/\//i, ''));
+  if (/^(?:file|localfile):\/\//i.test(normalized)) {
+    try {
+      const url = new URL(normalized);
+      normalized = url.protocol === 'file:'
+        ? fileURLToPath(url)
+        : safeDecodeURIComponent(url.pathname);
+    } catch {
+      normalized = safeDecodeURIComponent(normalized.replace(/^(?:file|localfile):\/\//i, ''));
+    }
   }
+
+  if (!isWindows) return normalized;
 
   if (/^\/[A-Za-z]:/.test(normalized)) {
     normalized = normalized.slice(1);
@@ -638,6 +646,14 @@ const normalizeWindowsShellPath = (inputPath: string): string => {
   }
 
   return normalized;
+};
+
+const resolveShellFilePath = (inputPath: string): string => {
+  const normalizedPath = normalizeWindowsShellPath(inputPath);
+  if (!normalizedPath.trim()) {
+    return normalizedPath;
+  }
+  return path.resolve(normalizedPath);
 };
 
 // ==================== macOS Permissions ====================
@@ -5931,7 +5947,7 @@ if (!gotTheLock) {
         if (typeof filePath !== 'string' || !filePath.trim()) {
           return { success: false, error: 'Missing file path' };
         }
-        const resolvedPath = path.resolve(filePath.trim());
+        const resolvedPath = resolveShellFilePath(filePath);
         const stat = await fs.promises.stat(resolvedPath);
         if (!stat.isFile()) {
           return { success: false, error: 'Not a file' };
@@ -6151,11 +6167,19 @@ end tell'`, { timeout: 5000 });
   // Shell handlers - 打开文件/文件夹
   ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
     try {
-      const normalizedPath = normalizeWindowsShellPath(filePath);
+      if (typeof filePath !== 'string' || !filePath.trim()) {
+        return { success: false, error: 'Missing file path' };
+      }
+      const normalizedPath = resolveShellFilePath(filePath);
+      if (!fs.existsSync(normalizedPath)) {
+        console.warn('[Shell] open path target does not exist:', normalizedPath);
+        return { success: false, error: `Path does not exist: ${normalizedPath}` };
+      }
       const result = await shell.openPath(normalizedPath);
       if (result) {
+        console.warn('[Shell] open path failed:', normalizedPath, result);
         // 如果返回非空字符串，表示打开失败
-        return { success: false, error: result };
+        return { success: false, error: `${result}: ${normalizedPath}` };
       }
       return { success: true };
     } catch (error) {
@@ -6165,7 +6189,14 @@ end tell'`, { timeout: 5000 });
 
   ipcMain.handle('shell:showItemInFolder', async (_event, filePath: string) => {
     try {
-      const normalizedPath = normalizeWindowsShellPath(filePath);
+      if (typeof filePath !== 'string' || !filePath.trim()) {
+        return { success: false, error: 'Missing file path' };
+      }
+      const normalizedPath = resolveShellFilePath(filePath);
+      if (!fs.existsSync(normalizedPath)) {
+        console.warn('[Shell] show item target does not exist:', normalizedPath);
+        return { success: false, error: `Path does not exist: ${normalizedPath}` };
+      }
       shell.showItemInFolder(normalizedPath);
       return { success: true };
     } catch (error) {
@@ -6200,7 +6231,7 @@ end tell'`, { timeout: 5000 });
 
   ipcMain.handle(ArtifactIpcChannel.WriteImageFromFile, async (_event, filePath: string) => {
     try {
-      const normalizedPath = normalizeWindowsShellPath(filePath);
+      const normalizedPath = resolveShellFilePath(filePath);
       const image = nativeImage.createFromPath(normalizedPath);
       if (image.isEmpty()) {
         return { success: false, error: 'Failed to read image file' };
@@ -6215,7 +6246,7 @@ end tell'`, { timeout: 5000 });
   const artifactFileWatchers = new Map<string, { watcher: fs.FSWatcher; debounceTimer: ReturnType<typeof setTimeout> | null }>();
 
   ipcMain.handle(ArtifactIpcChannel.WatchFile, (_event, filePath: string) => {
-    const normalizedPath = normalizeWindowsShellPath(filePath);
+    const normalizedPath = resolveShellFilePath(filePath);
     if (artifactFileWatchers.has(normalizedPath)) return;
 
     try {
@@ -6248,7 +6279,7 @@ end tell'`, { timeout: 5000 });
   });
 
   ipcMain.handle(ArtifactIpcChannel.UnwatchFile, (_event, filePath: string) => {
-    const normalizedPath = normalizeWindowsShellPath(filePath);
+    const normalizedPath = resolveShellFilePath(filePath);
     const entry = artifactFileWatchers.get(normalizedPath);
     if (!entry) return;
 

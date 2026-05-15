@@ -81,6 +81,10 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+const showArtifactToast = (message: string): void => {
+  window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+};
+
 interface ArtifactPanelProps {
   artifacts: Artifact[];
   minPanelWidth?: number;
@@ -215,7 +219,13 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
 
   const handleRevealInFolder = useCallback(() => {
     if (!selectedArtifact?.filePath) return;
-    window.electron?.shell?.showItemInFolder(selectedArtifact.filePath);
+    void window.electron?.shell?.showItemInFolder(selectedArtifact.filePath).then((result) => {
+      if (!result?.success) {
+        showArtifactToast(result?.error || t('showInFolderFailed'));
+      }
+    }).catch(() => {
+      showArtifactToast(t('showInFolderFailed'));
+    });
   }, [selectedArtifact]);
 
   const handleOpenInBrowser = useCallback(() => {
@@ -236,7 +246,13 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     // non-ASCII characters (e.g. Chinese) — ERROR_FILE_NOT_FOUND (0x2).
     // Use shell.openPath which handles native Unicode paths correctly.
     if (selectedArtifact.filePath) {
-      window.electron?.shell?.openPath(selectedArtifact.filePath);
+      void window.electron?.shell?.openPath(selectedArtifact.filePath).then((result) => {
+        if (!result?.success) {
+          showArtifactToast(result?.error || t('artifactOpenFailed'));
+        }
+      }).catch(() => {
+        showArtifactToast(t('artifactOpenFailed'));
+      });
       return;
     }
 
@@ -250,19 +266,13 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
 
   const handleOpenWithApp = useCallback(() => {
     if (selectedArtifact?.filePath) {
-      let filePath = selectedArtifact.filePath;
-      if (filePath.startsWith('file:///')) {
-        filePath = filePath.slice(7);
-      } else if (filePath.startsWith('file://')) {
-        filePath = filePath.slice(7);
-      } else if (filePath.startsWith('file:/')) {
-        filePath = filePath.slice(5);
-      }
-      // Strip leading / before Windows drive letter
-      if (/^\/[A-Za-z]:/.test(filePath)) {
-        filePath = filePath.slice(1);
-      }
-      window.electron?.shell?.openPath(filePath);
+      void window.electron?.shell?.openPath(selectedArtifact.filePath).then((result) => {
+        if (!result?.success) {
+          showArtifactToast(result?.error || t('artifactOpenFailed'));
+        }
+      }).catch(() => {
+        showArtifactToast(t('artifactOpenFailed'));
+      });
     }
   }, [selectedArtifact]);
 
