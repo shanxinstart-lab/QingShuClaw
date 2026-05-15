@@ -10,6 +10,7 @@ import { agentService } from '../../services/agent';
 import { configService } from '../../services/config';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
+import { mcpService } from '../../services/mcp';
 import { skillService } from '../../services/skill';
 import { voiceTextPostProcessService } from '../../services/voiceTextPostProcess';
 import { RootState } from '../../store';
@@ -17,10 +18,14 @@ import {
   addDraftAttachment,
   clearDraftAttachments,
   type DraftAttachment,
+  enqueueCoworkInput,
+  type QueuedCoworkInput,
+  removeCoworkInputFromQueue,
   setDraftAttachments,
   setDraftPrompt,
   updateCurrentSessionModelOverride,
 } from '../../store/slices/coworkSlice';
+import { setMcpServers } from '../../store/slices/mcpSlice';
 import type { Model } from '../../store/slices/modelSlice';
 import { setActiveSkillIds, setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
@@ -29,6 +34,8 @@ import { Skill } from '../../types/skill';
 import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { getCompactFolderName } from '../../utils/path';
 import PaperClipIcon from '../icons/PaperClipIcon';
+import PencilIcon from '../icons/PencilIcon';
+import TrashIcon from '../icons/TrashIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import ModelSelector from '../ModelSelector';
 import { ActiveSkillBadge,SkillsButton } from '../skills';
@@ -43,8 +50,16 @@ import FolderSelectorPopover from './FolderSelectorPopover';
 import {
   addPromptInputHistoryEntry,
   canNavigatePromptInputHistory,
+  mergePromptInputHistoryEntries,
 } from './promptInputHistory';
-import { applyPromptSlashCommand, filterPromptSlashCommands, type PromptSlashCommandMatch } from './promptSlashCommands';
+import {
+  applyPromptSlashCommand,
+  filterPromptSlashCommands,
+  getBuiltinPromptSlashCommands,
+  PromptBuiltinSlashCommandId,
+  PromptSlashCommandKind,
+  type PromptSlashCommandMatch,
+} from './promptSlashCommands';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -74,12 +89,12 @@ const SlashCommandMenu: React.FC<{
 }> = ({ matches, onSelect }) => (
   <div className="absolute bottom-full left-3 right-3 z-30 mb-2 overflow-hidden rounded-xl border border-border bg-surface shadow-popover">
     <div className="border-b border-border px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-secondary">
-      Slash commands
+      {i18nService.t('coworkSlashCommandsTitle')}
     </div>
     <div className="max-h-64 overflow-y-auto py-1">
       {matches.map((match) => (
         <button
-          key={match.action.id}
+          key={getSlashCommandMatchKey(match)}
           type="button"
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => onSelect(match)}
@@ -90,11 +105,10 @@ const SlashCommandMenu: React.FC<{
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium text-foreground">
-              {match.action.label}
+              {getSlashCommandMatchLabel(match)}
             </span>
             <span className="mt-0.5 block truncate text-xs text-secondary">
-              {match.prompt.label}
-              {match.prompt.description ? ` · ${match.prompt.description}` : ''}
+              {getSlashCommandMatchDescription(match)}
             </span>
           </span>
         </button>
@@ -102,6 +116,45 @@ const SlashCommandMenu: React.FC<{
     </div>
   </div>
 );
+
+function getSlashCommandMatchKey(match: PromptSlashCommandMatch): string {
+  switch (match.kind) {
+    case PromptSlashCommandKind.Builtin:
+      return `builtin:${match.id}`;
+    case PromptSlashCommandKind.Skill:
+      return `skill:${match.skill.id}`;
+    case PromptSlashCommandKind.McpServer:
+      return `mcp:${match.server.id}`;
+    case PromptSlashCommandKind.QuickActionPrompt:
+      return `quick-action:${match.action.id}:${match.prompt.id}`;
+  }
+}
+
+function getSlashCommandMatchLabel(match: PromptSlashCommandMatch): string {
+  switch (match.kind) {
+    case PromptSlashCommandKind.Builtin:
+      return match.label;
+    case PromptSlashCommandKind.Skill:
+      return match.skill.name;
+    case PromptSlashCommandKind.McpServer:
+      return match.server.name;
+    case PromptSlashCommandKind.QuickActionPrompt:
+      return match.action.label;
+  }
+}
+
+function getSlashCommandMatchDescription(match: PromptSlashCommandMatch): string | undefined {
+  switch (match.kind) {
+    case PromptSlashCommandKind.Builtin:
+      return match.description;
+    case PromptSlashCommandKind.Skill:
+      return `${i18nService.t('coworkSlashSkillPrefix')} · ${match.skill.description || match.skill.id}`;
+    case PromptSlashCommandKind.McpServer:
+      return `${i18nService.t('coworkSlashMcpPrefix')} · ${match.server.description || match.server.id}`;
+    case PromptSlashCommandKind.QuickActionPrompt:
+      return `${match.prompt.label}${match.prompt.description ? ` · ${match.prompt.description}` : ''}`;
+  }
+}
 
 const extractBase64FromDataUrl = (dataUrl: string): { mimeType: string; base64Data: string } | null => {
   const match = /^data:(.+);base64,(.*)$/.exec(dataUrl);
@@ -136,6 +189,16 @@ const buildInlinedSkillPrompt = (skill: Skill): string => {
   ].join('\n');
 };
 
+const buildMcpSlashPrompt = (name: string, description?: string): string => {
+  const normalizedName = name.trim();
+  const normalizedDescription = description?.trim();
+  return normalizedDescription
+    ? i18nService.t('coworkSlashMcpPromptWithDescription')
+      .replace('{name}', normalizedName)
+      .replace('{description}', normalizedDescription)
+    : i18nService.t('coworkSlashMcpPrompt').replace('{name}', normalizedName);
+};
+
 export interface CoworkPromptInputRef {
   /** 设置输入框值 */
   setValue: (value: string) => void;
@@ -149,6 +212,8 @@ interface CoworkPromptInputProps {
   onSubmit: (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => boolean | void | Promise<boolean | void>;
   onStop?: () => void;
   isStreaming?: boolean;
+  queuedCount?: number;
+  queuedInputs?: QueuedCoworkInput[];
   placeholder?: string;
   disabled?: boolean;
   size?: 'normal' | 'large';
@@ -178,6 +243,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       onSubmit,
       onStop,
       isStreaming = false,
+      queuedCount = 0,
+      queuedInputs = [],
       placeholder = 'Enter your task...',
       disabled = false,
       size = 'normal',
@@ -258,6 +325,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const mcpServers = useSelector((state: RootState) => state.mcp.servers);
   const quickActions = useSelector((state: RootState) => state.quickAction.actions) as LocalizedQuickAction[];
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
   const agents = useSelector((state: RootState) => state.agent.agents);
@@ -465,6 +533,20 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     };
   }, [dispatch]);
 
+  useEffect(() => {
+    if (mcpServers.length > 0) return;
+    let isActive = true;
+    const loadMcpServers = async () => {
+      const loadedServers = await mcpService.loadServers();
+      if (!isActive) return;
+      dispatch(setMcpServers(loadedServers));
+    };
+    loadMcpServers();
+    return () => {
+      isActive = false;
+    };
+  }, [dispatch, mcpServers.length]);
+
   // Auto-resize textarea
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -486,6 +568,20 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     modelPatchRequestIdRef.current += 1;
     setIsPatchingModel(false);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || currentSession?.id !== sessionId) {
+      return;
+    }
+    const sessionUserPrompts = currentSession.messages
+      .filter((message) => message.type === 'user')
+      .map((message) => message.content);
+    const queuedPrompts = queuedInputs.map((input) => input.prompt);
+    setPromptHistory((history) => mergePromptInputHistoryEntries(history, [
+      ...sessionUserPrompts,
+      ...queuedPrompts,
+    ]));
+  }, [currentSession?.id, currentSession?.messages, queuedInputs, sessionId]);
 
   useEffect(() => {
     const handleFocusInput = (event: Event) => {
@@ -697,7 +793,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
 
     const trimmedValue = value.trim();
-    if ((!trimmedValue && attachments.length === 0) || isStreaming || disabled || isSpeechActive || isPatchingModel) return;
+    if ((!trimmedValue && attachments.length === 0) || disabled || isSpeechActive || isPatchingModel) return;
     setShowFolderRequiredWarning(false);
 
     // Get active skills prompts and combine them
@@ -732,6 +828,31 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const finalPrompt = trimmedValue
       ? (attachmentLines ? `${trimmedValue}\n\n${attachmentLines}` : trimmedValue)
       : attachmentLines;
+
+    if (isStreaming && sessionId) {
+      dispatch(enqueueCoworkInput({
+        id: `${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        sessionId,
+        prompt: finalPrompt,
+        skillPrompt,
+        activeSkillIds,
+        imageAttachments: imageAtts.length > 0 ? imageAtts : undefined,
+        createdAt: Date.now(),
+      }));
+      if (trimmedValue) {
+        setPromptHistory((history) => addPromptInputHistoryEntry(history, trimmedValue));
+      }
+      setPromptHistoryIndex(-1);
+      promptHistoryDraftRef.current = '';
+      setValue('');
+      speechBaseValueRef.current = '';
+      dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+      dispatch(clearDraftAttachments(draftKey));
+      setImageVisionHint(false);
+      return true;
+    }
+
+    if (isStreaming) return;
 
     if (imageAtts.length > 0) {
       console.log('[CoworkPromptInput] handleSubmit: passing imageAtts to onSubmit', {
@@ -780,6 +901,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     isSpeechActive,
     isPatchingModel,
     onSubmit,
+    sessionId,
     activeSkillIds,
     skills,
     attachments,
@@ -875,7 +997,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       && !event.metaKey
       && !event.altKey
       && promptHistory.length > 0
-      && canNavigatePromptInputHistory(event.currentTarget, value)
+      && canNavigatePromptInputHistory(
+        event.currentTarget,
+        value,
+        event.key === 'ArrowUp' ? 'previous' : 'next',
+        promptHistoryIndex === -1 ? null : promptHistory[promptHistoryIndex] ?? null,
+      )
     ) {
       const currentIndex = promptHistoryIndex;
       const nextIndex = event.key === 'ArrowUp'
@@ -898,7 +1025,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
     if (event.key === 'Enter' && !isComposing) {
       const hasModifier = event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
-      if (!hasModifier && !isStreaming && !disabled && !isSpeechActive && !isPatchingModel) {
+      if (!hasModifier && !disabled && !isSpeechActive && !isPatchingModel) {
         event.preventDefault();
         handleSubmit();
       } else if (hasModifier && !event.shiftKey) {
@@ -936,14 +1063,124 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   };
 
   const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
+  const builtinSlashCommands = getBuiltinPromptSlashCommands({
+    newSession: i18nService.t('coworkSlashNewSession'),
+    newSessionDescription: i18nService.t('coworkSlashNewSessionDesc'),
+    clearInput: i18nService.t('coworkSlashClearInput'),
+    clearInputDescription: i18nService.t('coworkSlashClearInputDesc'),
+    manageSkills: i18nService.t('coworkSlashManageSkills'),
+    manageSkillsDescription: i18nService.t('coworkSlashManageSkillsDesc'),
+    helpPrompt: i18nService.t('coworkSlashHelpPrompt'),
+    helpPromptDescription: i18nService.t('coworkSlashHelpPromptDesc'),
+  });
   const slashCommandMatches = !remoteManaged && !isSpeechActive
-    ? filterPromptSlashCommands(quickActions, value)
+    ? filterPromptSlashCommands(quickActions, value, {
+      builtinCommands: builtinSlashCommands,
+      skills,
+      mcpServers,
+    })
     : EMPTY_SLASH_COMMAND_MATCHES;
   const showSlashCommands = slashCommandMatches.length > 0 && !disabled && !isStreaming;
+  const submitTitle = isStreaming
+    ? i18nService.t('coworkQueueInput')
+    : i18nService.t('sendMessage');
+  const queueHintText = queuedCount > 0
+    ? i18nService.t('coworkQueuePendingCount').replace('{count}', String(queuedCount))
+    : null;
+  const queuedPreviewItems = queuedInputs.slice(0, 3);
+
+  const handleRemoveQueuedInput = useCallback((item: QueuedCoworkInput) => {
+    dispatch(removeCoworkInputFromQueue({
+      sessionId: item.sessionId,
+      inputId: item.id,
+    }));
+  }, [dispatch]);
+
+  const handleEditQueuedInput = useCallback((item: QueuedCoworkInput) => {
+    if (value.trim() || attachments.length > 0) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('coworkQueueEditBlockedByDraft'),
+      }));
+      return;
+    }
+    dispatch(removeCoworkInputFromQueue({
+      sessionId: item.sessionId,
+      inputId: item.id,
+    }));
+    setValue(item.prompt);
+    dispatch(setDraftPrompt({ sessionId: draftKey, draft: item.prompt }));
+    dispatch(setActiveSkillIds(item.activeSkillIds ?? []));
+    setPromptHistoryIndex(-1);
+    promptHistoryDraftRef.current = '';
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }, [attachments.length, dispatch, draftKey, value]);
 
   const applySlashCommand = useCallback((match: PromptSlashCommandMatch) => {
+    if (match.kind === PromptSlashCommandKind.Builtin) {
+      switch (match.id) {
+        case PromptBuiltinSlashCommandId.NewSession:
+          window.dispatchEvent(new CustomEvent(AppCustomEvent.ShortcutNewCoworkSession));
+          setValue('');
+          dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+          break;
+        case PromptBuiltinSlashCommandId.ClearInput:
+          setValue('');
+          dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+          dispatch(clearDraftAttachments(draftKey));
+          setImageVisionHint(false);
+          break;
+        case PromptBuiltinSlashCommandId.ManageSkills:
+          onManageSkills?.();
+          break;
+        case PromptBuiltinSlashCommandId.HelpPrompt:
+          setValue(i18nService.t('coworkSlashHelpPromptText'));
+          dispatch(setDraftPrompt({ sessionId: draftKey, draft: i18nService.t('coworkSlashHelpPromptText') }));
+          break;
+      }
+      setPromptHistoryIndex(-1);
+      promptHistoryDraftRef.current = '';
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+      return;
+    }
+
+    if (match.kind === PromptSlashCommandKind.Skill) {
+      const nextValue = applyPromptSlashCommand(
+        value,
+        i18nService.t('coworkSlashSkillPrompt').replace('{name}', match.skill.name),
+      );
+      setValue(nextValue);
+      dispatch(setDraftPrompt({ sessionId: draftKey, draft: nextValue }));
+      dispatch(setActiveSkillIds([match.skill.id]));
+      setPromptHistoryIndex(-1);
+      promptHistoryDraftRef.current = '';
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+      return;
+    }
+
+    if (match.kind === PromptSlashCommandKind.McpServer) {
+      const nextValue = applyPromptSlashCommand(
+        value,
+        buildMcpSlashPrompt(match.server.name, match.server.description),
+      );
+      setValue(nextValue);
+      dispatch(setDraftPrompt({ sessionId: draftKey, draft: nextValue }));
+      setPromptHistoryIndex(-1);
+      promptHistoryDraftRef.current = '';
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+      return;
+    }
+
     const nextValue = applyPromptSlashCommand(value, match.prompt.prompt);
     setValue(nextValue);
+    dispatch(setDraftPrompt({ sessionId: draftKey, draft: nextValue }));
     setPromptHistoryIndex(-1);
     promptHistoryDraftRef.current = '';
     if (match.action.skillMapping) {
@@ -952,7 +1189,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
-  }, [dispatch, value]);
+  }, [dispatch, draftKey, onManageSkills, value]);
 
   function extractSpeechErrorReason(message?: string): string | null {
     const normalized = message?.trim();
@@ -1348,6 +1585,48 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           </button>
         </div>
       )}
+      {queueHintText && (
+        <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs text-primary">
+          <div className="font-medium">{queueHintText}</div>
+          {queuedPreviewItems.length > 0 && (
+            <div className="mt-1 space-y-1 text-primary/80">
+              {queuedPreviewItems.map((item, index) => (
+                <div key={item.id} className="flex items-center gap-1.5 rounded bg-primary/5 px-1.5 py-1">
+                  <div className="min-w-0 flex-1 truncate">
+                    {i18nService.t('coworkQueuePreviewItem')
+                      .replace('{index}', String(index + 1))
+                      .replace('{text}', item.prompt)}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleEditQueuedInput(item)}
+                    className="flex-shrink-0 rounded p-1 text-primary/70 hover:bg-primary/10 hover:text-primary"
+                    title={i18nService.t('coworkQueueEdit')}
+                    aria-label={i18nService.t('coworkQueueEdit')}
+                  >
+                    <PencilIcon className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveQueuedInput(item)}
+                    className="flex-shrink-0 rounded p-1 text-primary/70 hover:bg-red-500/10 hover:text-red-500"
+                    title={i18nService.t('coworkQueueDelete')}
+                    aria-label={i18nService.t('coworkQueueDelete')}
+                  >
+                    <TrashIcon className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+              {queuedInputs.length > queuedPreviewItems.length && (
+                <div className="text-primary/60">
+                  {i18nService.t('coworkQueuePreviewMore')
+                    .replace('{count}', String(queuedInputs.length - queuedPreviewItems.length))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {isMac && speechVisible && speechStatus !== 'idle' && (
         <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-1.5 text-xs text-primary">
           {speechStatus === 'requesting_permission'
@@ -1520,12 +1799,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {isStreaming ? (
+                {isStreaming && !canSubmit ? (
                   <button
                     type="button"
                     onClick={handleStopClick}
                     className="p-2 rounded-xl bg-red-500 hover:bg-red-600 text-white transition-all shadow-subtle hover:shadow-card active:scale-95"
-                    aria-label="Stop"
+                    aria-label={i18nService.t('stop')}
                   >
                     <StopIcon className="h-5 w-5" />
                   </button>
@@ -1536,8 +1815,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                       void handleSubmit();
                     }}
                     disabled={!canSubmit}
+                    title={submitTitle}
                     className="p-2 rounded-xl bg-primary hover:bg-primary-hover text-white transition-all shadow-subtle hover:shadow-card active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                    aria-label="Send"
+                    aria-label={submitTitle}
                   >
                     <PaperAirplaneIcon className="h-5 w-5" />
                   </button>
@@ -1593,12 +1873,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               </div>
             )}
 
-            {isStreaming ? (
+            {isStreaming && !canSubmit ? (
               <button
                 type="button"
                 onClick={handleStopClick}
                 className="flex-shrink-0 p-2 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all shadow-subtle hover:shadow-card active:scale-95"
-                aria-label="Stop"
+                aria-label={i18nService.t('stop')}
               >
                 <StopIcon className="h-4 w-4" />
               </button>
@@ -1609,8 +1889,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   void handleSubmit();
                 }}
                 disabled={!canSubmit}
+                title={submitTitle}
                 className="flex-shrink-0 p-2 rounded-lg bg-primary hover:bg-primary-hover text-white transition-all shadow-subtle hover:shadow-card active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                aria-label="Send"
+                aria-label={submitTitle}
               >
                 <PaperAirplaneIcon className="h-4 w-4" />
               </button>

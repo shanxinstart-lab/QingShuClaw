@@ -1,9 +1,10 @@
 import { ShieldCheckIcon } from '@heroicons/react/24/outline';
-import React, { useEffect, useRef,useState } from 'react';
+import React, { useCallback, useEffect, useRef,useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
 import { PetAnchor } from '../../../shared/pet/constants';
+import { AppCustomEvent } from '../../constants/app';
 import PetCompanion from '../../pet/PetCompanion';
 import { usePetState } from '../../pet/usePetState';
 import { coworkService } from '../../services/cowork';
@@ -11,7 +12,7 @@ import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
-import { addMessage, clearCurrentSession, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
+import { addMessage, clearCurrentSession, dequeueCoworkInput, requeueCoworkInputToFront, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
 import { setSelectedModel } from '../../store/slices/modelSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
@@ -60,6 +61,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     currentSession,
     isStreaming,
     config,
+    queuedInputsBySessionId,
   } = useSelector((state: RootState) => state.cowork);
   const isOpenClawEngine = config.agentEngine !== 'yd_cowork';
 
@@ -315,11 +317,17 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     }
   };
 
-  const handleContinueSession = async (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => {
-    if (!currentSession) return;
+  const continueSessionById = useCallback(async (
+    session: CoworkSession,
+    prompt: string,
+    skillPrompt?: string,
+    imageAttachments?: CoworkImageAttachment[],
+    queuedSkillIds?: string[],
+  ): Promise<boolean | void> => {
+    if (!session) return;
     if (isContinuingRef.current) return;
     if (isOpenClawEngine && openClawStatus && !isOpenClawReadyForSession(openClawStatus)) {
-      window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkErrorEngineNotReady') }));
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, { detail: i18nService.t('coworkErrorEngineNotReady') }));
       return false;
     }
 
@@ -333,7 +341,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       });
 
       // Capture active skill IDs before clearing
-      const sessionSkillIds = [...activeSkillIds];
+      const sessionSkillIds = queuedSkillIds ? [...queuedSkillIds] : [...activeSkillIds];
 
       // Clear active skills after capturing so they don't persist to next message
       if (sessionSkillIds.length > 0) {
@@ -348,8 +356,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       }
       const combinedSystemPrompt = buildCoworkContinuationSystemPrompt(effectiveSkillPrompt, config.systemPrompt);
 
-      await coworkService.continueSession({
-        sessionId: currentSession.id,
+      return await coworkService.continueSession({
+        sessionId: session.id,
         prompt,
         systemPrompt: combinedSystemPrompt,
         activeSkillIds: sessionSkillIds.length > 0 ? sessionSkillIds : undefined,
@@ -358,7 +366,37 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     } finally {
       isContinuingRef.current = false;
     }
+  }, [activeSkillIds, config.systemPrompt, dispatch, isOpenClawEngine, openClawStatus]);
+
+  const handleContinueSession = async (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => {
+    if (!currentSession) return;
+    return continueSessionById(currentSession, prompt, skillPrompt, imageAttachments);
   };
+
+  useEffect(() => {
+    if (!currentSession || isStreaming || isContinuingRef.current) return;
+    const nextQueuedInput = queuedInputsBySessionId[currentSession.id]?.[0];
+    if (!nextQueuedInput) return;
+
+    dispatch(dequeueCoworkInput({ sessionId: currentSession.id }));
+    const drainQueue = async () => {
+      try {
+        const success = await continueSessionById(
+          currentSession,
+          nextQueuedInput.prompt,
+          nextQueuedInput.skillPrompt,
+          nextQueuedInput.imageAttachments,
+          nextQueuedInput.activeSkillIds,
+        );
+        if (success) return;
+        dispatch(requeueCoworkInputToFront(nextQueuedInput));
+      } catch (error) {
+        console.error('[CoworkView] queued continuation failed:', error);
+        dispatch(requeueCoworkInputToFront(nextQueuedInput));
+      }
+    };
+    void drainQueue();
+  }, [continueSessionById, currentSession, dispatch, isStreaming, queuedInputsBySessionId]);
 
   const handleStopSession = async () => {
     if (!currentSession) return;
@@ -423,9 +461,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         detail: { clear: shouldClear },
       }));
     };
-    window.addEventListener('cowork:shortcut:new-session', handleNewSession);
+    window.addEventListener(AppCustomEvent.ShortcutNewCoworkSession, handleNewSession);
     return () => {
-      window.removeEventListener('cowork:shortcut:new-session', handleNewSession);
+      window.removeEventListener(AppCustomEvent.ShortcutNewCoworkSession, handleNewSession);
     };
   }, [dispatch, currentSession]);
 
@@ -551,6 +589,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
           onToggleSidebar={onToggleSidebar}
           onNewChat={onNewChat}
           updateBadge={updateBadge}
+          queuedCount={currentSession ? queuedInputsBySessionId[currentSession.id]?.length ?? 0 : 0}
+          queuedInputs={currentSession ? queuedInputsBySessionId[currentSession.id] ?? [] : []}
         />
         {petState && petState.config.anchor === PetAnchor.AppBottom && (
           <div className="pointer-events-none absolute bottom-4 right-5 z-30 hidden lg:block">

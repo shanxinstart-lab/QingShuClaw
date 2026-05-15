@@ -440,6 +440,9 @@ export interface CoworkSession {
   claudeSessionId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
+  parentSessionId?: string | null;
+  forkedFromMessageId?: string | null;
+  forkedAt?: number | null;
   cwd: string;
   systemPrompt: string;
   modelOverride: string;
@@ -701,6 +704,9 @@ export class CoworkStore {
       claude_session_id: string | null;
       status: string;
       pinned?: number | null;
+      parent_session_id?: string | null;
+      forked_from_message_id?: string | null;
+      forked_at?: number | null;
       cwd: string;
       system_prompt: string;
       model_override?: string | null;
@@ -712,7 +718,7 @@ export class CoworkStore {
     }
 
     const row = this.getOne<SessionRow>(`
-      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT id, title, claude_session_id, status, pinned, parent_session_id, forked_from_message_id, forked_at, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `, [id]);
@@ -737,6 +743,9 @@ export class CoworkStore {
       claudeSessionId: row.claude_session_id,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
+      parentSessionId: row.parent_session_id ?? null,
+      forkedFromMessageId: row.forked_from_message_id ?? null,
+      forkedAt: row.forked_at ?? null,
       cwd: row.cwd,
       systemPrompt: row.system_prompt,
       modelOverride: row.model_override || '',
@@ -747,6 +756,101 @@ export class CoworkStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  forkSession(sourceSessionId: string, fromMessageId: string): CoworkSession | null {
+    interface SourceSessionRow {
+      id: string;
+      title: string;
+      cwd: string;
+      system_prompt: string;
+      model_override?: string | null;
+      execution_mode?: string | null;
+      active_skill_ids?: string | null;
+      agent_id?: string | null;
+    }
+
+    interface SourceMessageRow {
+      id: string;
+      type: string;
+      content: string;
+      metadata: string | null;
+      created_at: number;
+      sequence: number | null;
+    }
+
+    const fork = this.db.transaction(() => {
+      const source = this.getOne<SourceSessionRow>(`
+        SELECT id, title, cwd, system_prompt, model_override, execution_mode, active_skill_ids, agent_id
+        FROM cowork_sessions
+        WHERE id = ?
+      `, [sourceSessionId]);
+      if (!source) return null;
+
+      const anchor = this.getOne<{ sequence: number | null }>(
+        'SELECT COALESCE(sequence, created_at) as sequence FROM cowork_messages WHERE id = ? AND session_id = ?',
+        [fromMessageId, sourceSessionId],
+      );
+      if (!anchor) return null;
+
+      const activeSkillIds = parseJsonStringArray(source.active_skill_ids);
+      const now = Date.now();
+      const forkedSessionId = uuidv4();
+      const title = `${source.title} (fork)`;
+
+      this.run(`
+        INSERT INTO cowork_sessions (
+          id, title, claude_session_id, status, cwd, system_prompt, model_override,
+          execution_mode, active_skill_ids, agent_id, pinned, parent_session_id,
+          forked_from_message_id, forked_at, created_at, updated_at
+        )
+        VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+      `, [
+        forkedSessionId,
+        title,
+        source.cwd,
+        source.system_prompt,
+        source.model_override || '',
+        (source.execution_mode as CoworkExecutionMode) || 'local',
+        JSON.stringify(activeSkillIds),
+        source.agent_id || 'main',
+        sourceSessionId,
+        fromMessageId,
+        now,
+        now,
+        now,
+      ]);
+
+      const sourceRows = this.getAll<SourceMessageRow>(`
+        SELECT id, type, content, metadata, created_at, sequence
+        FROM cowork_messages
+        WHERE session_id = ?
+          AND COALESCE(sequence, created_at) <= ?
+        ORDER BY COALESCE(sequence, created_at) ASC, created_at ASC, ROWID ASC
+      `, [sourceSessionId, anchor.sequence]);
+
+      sourceRows.forEach((message, index) => {
+        this.run(`
+          INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+          uuidv4(),
+          forkedSessionId,
+          message.type,
+          message.content,
+          message.metadata,
+          message.created_at,
+          index + 1,
+        ]);
+      });
+
+      return forkedSessionId;
+    });
+
+    const forkedSessionId = fork();
+    if (!forkedSessionId) return null;
+    this.saveDb();
+    return this.getSession(forkedSessionId);
   }
 
   updateSession(

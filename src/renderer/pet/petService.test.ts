@@ -93,6 +93,25 @@ describe('resolvePetStatusFromCoworkState', () => {
 
     expect(resolvePetMessageFromCoworkState(coworkState, PetStatus.Review)).toBe('测试已经修复，并补充了覆盖。');
   });
+
+  test('only inspects a bounded prefix when projecting very long messages', () => {
+    const coworkState = {
+      isStreaming: false,
+      pendingPermissions: [],
+      currentSession: {
+        status: 'completed' as const,
+        messages: [
+          { id: 'assistant-1', type: 'assistant' as const, content: `${'a '.repeat(2000)}tail`, timestamp: 1 },
+        ],
+      },
+    };
+
+    const message = resolvePetMessageFromCoworkState(coworkState, PetStatus.Review);
+
+    expect(message).toHaveLength(200);
+    expect(message?.endsWith('…')).toBe(true);
+    expect(message?.includes('tail')).toBe(false);
+  });
 });
 
 describe('resolvePetActiveSessionsFromCoworkState', () => {

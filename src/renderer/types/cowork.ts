@@ -71,6 +71,9 @@ export interface CoworkSession {
   claudeSessionId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
+  parentSessionId?: string | null;
+  forkedFromMessageId?: string | null;
+  forkedAt?: number | null;
   cwd: string;
   systemPrompt: string;
   modelOverride?: string;

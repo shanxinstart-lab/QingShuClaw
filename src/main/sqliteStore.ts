@@ -87,6 +87,9 @@ export class SqliteStore {
         system_prompt TEXT NOT NULL DEFAULT '',
         model_override TEXT NOT NULL DEFAULT '',
         execution_mode TEXT,
+        parent_session_id TEXT,
+        forked_from_message_id TEXT,
+        forked_at INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -225,6 +228,21 @@ export class SqliteStore {
 
       if (!colNames.includes('model_override')) {
         this.db.exec("ALTER TABLE cowork_sessions ADD COLUMN model_override TEXT NOT NULL DEFAULT '';");
+        this.didRunMigration = true;
+      }
+
+      if (!colNames.includes('parent_session_id')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN parent_session_id TEXT;');
+        this.didRunMigration = true;
+      }
+
+      if (!colNames.includes('forked_from_message_id')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN forked_from_message_id TEXT;');
+        this.didRunMigration = true;
+      }
+
+      if (!colNames.includes('forked_at')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN forked_at INTEGER;');
         this.didRunMigration = true;
       }
 

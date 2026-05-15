@@ -969,10 +969,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private gatewayReconnectAttempt = 0;
   /** Set to true before intentionally stopping the client (e.g. version upgrade) to suppress auto-reconnect. */
   private gatewayStoppingIntentionally = false;
+  private readonly intentionallyStoppedGatewayClients = new WeakSet<GatewayClientLike>();
   private static readonly GATEWAY_RECONNECT_MAX_ATTEMPTS = 10;
   private static readonly GATEWAY_RECONNECT_DELAYS = [2_000, 5_000, 10_000, 15_000, 30_000]; // ms
   private static readonly RECENTLY_CLOSED_RUN_ID_TTL_MS = 120_000;
   private static readonly RECENTLY_CLOSED_RUN_ID_LIMIT = 1000;
+  private static readonly RECENT_RUN_ID_LIMIT = 1000;
+  private static readonly SESSION_CONTEXT_CACHE_LIMIT = 500;
+  private static readonly SESSION_KEY_CACHE_LIMIT = 1000;
+  private static readonly DELETED_CHANNEL_KEY_LIMIT = 500;
 
   /** Gateway tick heartbeat watchdog state */
   private lastTickTimestamp = 0;
@@ -1023,6 +1028,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
     this.sessionContextTokensCache.set(key, contextTokens);
+    this.pruneMapToLimit(
+      this.sessionContextTokensCache,
+      OpenClawRuntimeAdapter.SESSION_CONTEXT_CACHE_LIMIT,
+    );
   }
 
   private async refreshSessionContextTokens(sessionKey: string): Promise<number | undefined> {
@@ -2081,7 +2090,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
         // If stopGatewayClient() triggered this onClose, don't do anything —
         // the caller is already handling cleanup and may be creating a new client.
-        if (this.gatewayStoppingIntentionally) {
+        if (this.gatewayStoppingIntentionally || this.intentionallyStoppedGatewayClients.has(client)) {
           return;
         }
 
@@ -2123,6 +2132,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Stop whichever client exists — the promoted one or the pending one.
     const clientToStop = this.gatewayClient ?? this.pendingGatewayClient;
     try {
+      if (clientToStop) {
+        this.intentionallyStoppedGatewayClients.add(clientToStop);
+      }
       clientToStop?.stop();
     } catch (error) {
       console.warn('[OpenClawRuntime] Failed to stop gateway client:', error);
@@ -2138,13 +2150,34 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.recentlyClosedRunIds.clear();
     this.browserPrewarmAttempted = false;
     this.lastTickTimestamp = 0;
-    // Clear messageUpdate throttle state
+    // Clear throttled streaming timers.
     for (const timer of this.pendingMessageUpdateTimer.values()) {
       clearTimeout(timer);
     }
     this.pendingMessageUpdateTimer.clear();
     this.lastMessageUpdateEmitTime.clear();
+    for (const timer of this.pendingStoreUpdateTimer.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingStoreUpdateTimer.clear();
+    this.lastStoreUpdateTime.clear();
     this.gatewayStoppingIntentionally = false;
+  }
+
+  private pruneMapToLimit<K, V>(map: Map<K, V>, limit: number): void {
+    while (map.size > limit) {
+      const oldestKey = map.keys().next().value as K | undefined;
+      if (oldestKey === undefined) return;
+      map.delete(oldestKey);
+    }
+  }
+
+  private pruneSetToLimit<T>(set: Set<T>, limit: number): void {
+    while (set.size > limit) {
+      const oldestValue = set.values().next().value as T | undefined;
+      if (oldestValue === undefined) return;
+      set.delete(oldestValue);
+    }
   }
 
   private pruneRecentlyClosedRunIds(now = Date.now()): void {
@@ -2574,6 +2607,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     if (runId && lifecyclePhase === AgentLifecyclePhase.Error) {
       this.terminatedRunIds.add(runId);
+      this.pruneSetToLimit(
+        this.terminatedRunIds,
+        OpenClawRuntimeAdapter.RECENT_RUN_ID_LIMIT,
+      );
     }
 
     if (runId && this.isRecentlyClosedRunId(runId)) {
@@ -2705,6 +2742,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         && getAgentLifecyclePhase(lifecycleData) === AgentLifecyclePhase.Error
       ) {
         this.terminatedRunIds.add(lifecycleRunId);
+        this.pruneSetToLimit(
+          this.terminatedRunIds,
+          OpenClawRuntimeAdapter.RECENT_RUN_ID_LIMIT,
+        );
       }
       this.handleAgentLifecycleEvent(sessionId, agentPayload.data);
     }
@@ -2767,6 +2808,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const normalizedSessionKey = sessionKey.trim();
     if (!normalizedSessionKey) return;
     this.sessionIdBySessionKey.set(normalizedSessionKey, sessionId);
+    this.pruneMapToLimit(
+      this.sessionIdBySessionKey,
+      OpenClawRuntimeAdapter.SESSION_KEY_CACHE_LIMIT,
+    );
   }
 
   private resolveSessionIdBySessionKey(sessionKey: string): string | null {
@@ -4704,6 +4749,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     for (const key of removedKeys) {
       this.deletedChannelKeys.add(key);
     }
+    this.pruneSetToLimit(
+      this.deletedChannelKeys,
+      OpenClawRuntimeAdapter.DELETED_CHANNEL_KEY_LIMIT,
+    );
 
     // Allow polling to rediscover channel sessions
     this.knownChannelSessionIds.delete(sessionId);

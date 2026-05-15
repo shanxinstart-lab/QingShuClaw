@@ -411,10 +411,6 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
   const bubbleMessage = state.message ?? statusLabel(state.status);
   const handlePetActivate = () => {
     if (isFloating) {
-      if (hasActiveSessions) {
-        setActivityTrayOpen((open) => !open);
-        return;
-      }
       void window.electron.pet.activateMainWindow();
       return;
     }
@@ -477,6 +473,10 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    if (menuOpen) {
+      setMenuOpen(false);
+      return;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragState({
       pointerId: event.pointerId,
@@ -514,7 +514,7 @@ const PetCompanion: React.FC<PetCompanionProps> = ({
     const moved = dragState.moved;
     setDragState(null);
     void window.electron.pet.persistFloatingWindowPosition();
-    if (!moved && !hasActiveSessions) {
+    if (!moved) {
       void window.electron.pet.activateMainWindow();
     }
   };

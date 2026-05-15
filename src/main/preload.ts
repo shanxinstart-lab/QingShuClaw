@@ -41,6 +41,7 @@ import {
   type AppUpdateSource,
 } from '../shared/appUpdate/constants';
 import { ArtifactIpcChannel } from '../shared/artifact/constants';
+import { CoworkIpcChannel } from '../shared/cowork/constants';
 import { PetIpcChannel } from '../shared/pet/constants';
 import type { PetConfig, PetImportRequest, PetRuntimeState } from '../shared/pet/types';
 import type { Platform } from '../shared/platform';
@@ -274,6 +275,8 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('cowork:session:pin', options),
     renameSession: (options: { sessionId: string; title: string }) =>
       ipcRenderer.invoke('cowork:session:rename', options),
+    forkSession: (options: { sessionId: string; messageId: string }) =>
+      ipcRenderer.invoke(CoworkIpcChannel.ForkSession, options),
     getSession: (sessionId: string) =>
       ipcRenderer.invoke('cowork:session:get', sessionId),
     remoteManaged: (sessionId: string) =>

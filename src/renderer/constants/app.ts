@@ -8,6 +8,7 @@ export const AppCustomEvent = {
   ShowLoginWelcome: 'app:showLoginWelcome',
   AgentCatalogRefreshed: 'app:agentCatalogRefreshed',
   FocusCoworkInput: 'app:focusCoworkInput',
+  ShortcutNewCoworkSession: 'cowork:shortcut:new-session',
   StartWakeDictation: 'app:startWakeDictation',
   UpdateWakeActivationOverlay: 'app:updateWakeActivationOverlay',
 } as const;

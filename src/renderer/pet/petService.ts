@@ -45,7 +45,8 @@ export const resolvePetStatusFromCoworkState = (cowork: CoworkPetProjectionState
 };
 
 const truncateText = (value: string, maxLength: number): string => {
-  const normalized = value.split(/\s+/).filter(Boolean).join(' ').trim();
+  const preview = value.length > maxLength * 8 ? value.slice(0, maxLength * 8) : value;
+  const normalized = preview.split(/\s+/).filter(Boolean).join(' ').trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 };
@@ -247,6 +248,9 @@ export const mergePetSessionNotifications = (
 };
 
 class PetService {
+  private static readonly MaxRememberedSessionMessages = 100;
+  private static readonly MaxAcknowledgedSessions = 100;
+
   private state: PetRuntimeState | null = null;
   private listeners = new Set<Listener>();
   private cleanup: (() => void) | null = null;
@@ -398,11 +402,13 @@ class PetService {
     const content = truncateText(rawContent, 160);
     if (!sessionId || !content) return;
     this.sessionMessages.set(sessionId, content);
+    this.pruneMapToLimit(this.sessionMessages, PetService.MaxRememberedSessionMessages);
   }
 
   async acknowledgeSession(sessionId: string): Promise<void> {
     if (!sessionId) return;
     this.acknowledgedSessionAt.set(sessionId, Date.now());
+    this.pruneMapToLimit(this.acknowledgedSessionAt, PetService.MaxAcknowledgedSessions);
     const result = await window.electron.pet.acknowledgeSession(sessionId);
     if (result.success && result.state) {
       this.state = result.state;
@@ -463,12 +469,15 @@ class PetService {
   }
 
   private async sendRuntimeProjection(projection: PetRuntimeProjection): Promise<void> {
+    const petApi = window.electron?.pet;
+    if (!petApi?.setRuntimeProjection) return;
+
     const statusUnchanged = this.lastSentStatus === projection.status;
     const messageUnchanged = this.state?.message === projection.message;
     const sessionUnchanged = this.state?.session?.id === projection.session?.id && this.state?.session?.title === projection.session?.title;
     const activeSessionsUnchanged = JSON.stringify(this.state?.activeSessions ?? []) === JSON.stringify(projection.activeSessions);
     if (statusUnchanged && messageUnchanged && sessionUnchanged && activeSessionsUnchanged) return;
-    const result = await window.electron.pet.setRuntimeProjection(projection);
+    const result = await petApi.setRuntimeProjection(projection);
     if (result.success && result.state) {
       this.state = result.state;
       this.lastSentStatus = result.state.status;
@@ -536,6 +545,14 @@ class PetService {
 
   private syncTrackedSessionsFromState(state: PetRuntimeState): void {
     this.trackedSessions = new Map(state.activeSessions.map((activeSession) => [activeSession.id, activeSession]));
+  }
+
+  private pruneMapToLimit<K, V>(map: Map<K, V>, limit: number): void {
+    while (map.size > limit) {
+      const oldestKey = map.keys().next().value as K | undefined;
+      if (oldestKey === undefined) return;
+      map.delete(oldestKey);
+    }
   }
 }
 

@@ -71,6 +71,8 @@ export function mergeLoadedSessionWithCurrentSession(
 }
 
 class CoworkService {
+  private static readonly MaxLoadSessionRequestKeys = 100;
+
   private streamListenerCleanups: Array<() => void> = [];
   private initialized = false;
   private openClawStatus: OpenClawEngineStatus | null = null;
@@ -255,6 +257,7 @@ class CoworkService {
 
     const requestId = (this.latestLoadSessionsRequestIds.get(requestKey) ?? 0) + 1;
     this.latestLoadSessionsRequestIds.set(requestKey, requestId);
+    this.pruneLoadSessionRequestIds();
 
     const requestPromise = this.loadSessionsForKey(agentId, requestKey, requestId);
     this.pendingLoadSessionsByKey.set(requestKey, requestPromise);
@@ -264,6 +267,15 @@ class CoworkService {
       if (this.pendingLoadSessionsByKey.get(requestKey) === requestPromise) {
         this.pendingLoadSessionsByKey.delete(requestKey);
       }
+    }
+  }
+
+  private pruneLoadSessionRequestIds(): void {
+    while (this.latestLoadSessionsRequestIds.size > CoworkService.MaxLoadSessionRequestKeys) {
+      const oldestKey = this.latestLoadSessionsRequestIds.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      if (this.pendingLoadSessionsByKey.has(oldestKey)) return;
+      this.latestLoadSessionsRequestIds.delete(oldestKey);
     }
   }
 
@@ -506,6 +518,21 @@ class CoworkService {
 
     console.error('Failed to rename session:', result.error);
     return false;
+  }
+
+  async forkSession(sessionId: string, messageId: string): Promise<CoworkSession | null> {
+    const cowork = window.electron?.cowork;
+    if (!cowork?.forkSession) return null;
+
+    const result = await cowork.forkSession({ sessionId, messageId });
+    if (result.success && result.session) {
+      store.dispatch(addSession(result.session));
+      void petService.setRuntimeProjectionFromCoworkState(store.getState().cowork);
+      return result.session;
+    }
+
+    console.error('Failed to fork session:', result.error);
+    return null;
   }
 
   async exportSessionResultImage(options: {
@@ -858,6 +885,8 @@ class CoworkService {
   destroy(): void {
     this.cleanupListeners();
     this.openClawStatusListeners.clear();
+    this.latestLoadSessionsRequestIds.clear();
+    this.pendingLoadSessionsByKey.clear();
     this.initialized = false;
   }
 }

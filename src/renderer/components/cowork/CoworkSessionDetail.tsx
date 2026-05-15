@@ -36,6 +36,7 @@ import {
   addArtifact,
   selectSessionArtifacts,
 } from '../../store/slices/artifactSlice';
+import type { QueuedCoworkInput } from '../../store/slices/coworkSlice';
 import { setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { Artifact } from '../../types/artifact';
 import { PREVIEWABLE_ARTIFACT_TYPES } from '../../types/artifact';
@@ -60,10 +61,11 @@ import {
   buildConversationTurns,
   buildDisplayItems,
   type ConversationTurn,
-  getToolResultDisplay,
+  getToolResultDisplayPreview,
   getVisibleAssistantItems,
   hasRenderableAssistantContent,
   hasText,
+  isLargeToolResultMessage,
   type ToolGroupItem,
 } from './coworkConversationTurns';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
@@ -80,12 +82,20 @@ interface CoworkSessionDetailProps {
   onToggleSidebar?: () => void;
   onNewChat?: () => void;
   updateBadge?: React.ReactNode;
+  queuedCount?: number;
+  queuedInputs?: QueuedCoworkInput[];
 }
 
 const AUTO_SCROLL_THRESHOLD = 120;
 const NAV_SCROLL_LOCK_DURATION = 800;
 const NAV_BOTTOM_SNAP_THRESHOLD = 20;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
+const RAIL_LABEL_MAX_SOURCE_CHARS = 2_000;
+
+const formatToolOutputLineSummary = (lineCount: number, isLargePreview = false): string => {
+  const prefix = isLargePreview ? `${i18nService.t('coworkToolLargeOutputPreview')} ` : '';
+  return `${prefix}${lineCount} ${i18nService.t('coworkToolOutputLines')}`;
+};
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -710,10 +720,11 @@ const ToolCallGroup: React.FC<{
   const toolInputDisplay = toolInputDisplayRaw ? mapText(toolInputDisplayRaw) : null;
   const toolInputSummaryRaw = getToolInputSummary(rawToolName, toolInput) ?? toolInputDisplayRaw;
   const toolInputSummary = toolInputSummaryRaw ? mapText(toolInputSummaryRaw) : null;
-  const toolResultDisplayRaw = toolResult ? getToolResultDisplay(toolResult) : '';
+  const toolResultDisplayRaw = toolResult ? getToolResultDisplayPreview(toolResult) : '';
   const toolResultDisplay = mapText(toolResultDisplayRaw);
   const hasToolResultText = hasText(toolResultDisplay);
   const isToolError = Boolean(toolResult?.metadata?.isError || toolResult?.metadata?.error);
+  const isLargeToolResult = Boolean(toolResult && isLargeToolResultMessage(toolResult));
   const showNoDetailError = isToolError && !hasToolResultText;
   const toolResultFallback = showNoDetailError ? i18nService.t('coworkToolNoErrorDetail') : '';
   const displayToolResult = hasToolResultText ? toolResultDisplay : toolResultFallback;
@@ -770,7 +781,9 @@ const ToolCallGroup: React.FC<{
                   : 'text-muted'
             }`}>
               {hasToolResultText
-                ? (toolResultSummary ?? `${resultLineCount} ${resultLineCount === 1 ? 'line' : 'lines'} of output`)
+                ? (isLargeToolResult
+                  ? formatToolOutputLineSummary(resultLineCount, true)
+                  : (toolResultSummary ?? formatToolOutputLineSummary(resultLineCount)))
                 : toolResultFallback}
             </div>
           )}
@@ -1045,8 +1058,9 @@ export const UserMessageItem: React.FC<{
   message: CoworkMessage;
   skills: Skill[];
   onReEdit?: (message: CoworkMessage) => void;
+  onFork?: (message: CoworkMessage) => void;
   resolveLocalFilePath?: (href: string, text: string) => string | null;
-}> = React.memo(({ message, skills, onReEdit, resolveLocalFilePath }) => {
+}> = React.memo(({ message, skills, onReEdit, onFork, resolveLocalFilePath }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
@@ -1127,6 +1141,21 @@ export const UserMessageItem: React.FC<{
               content={message.content}
               visible={isHovered}
             />
+            {onFork && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFork(message);
+                }}
+                className={`p-1.5 rounded-md dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-all duration-200 ${
+                  isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                }`}
+                title={i18nService.t('coworkContinueFromHere')}
+              >
+                <ComposeIcon className="w-4 h-4 text-[var(--icon-secondary)]" />
+              </button>
+            )}
             {messageSkills.length > 0 && (
               <div className="flex items-center gap-1.5 mr-1.5">
                 {messageSkills.map((skill) => (
@@ -1457,9 +1486,10 @@ export const AssistantTurnBlock: React.FC<{
   };
 
   const renderOrphanToolResult = (message: CoworkMessage) => {
-    const toolResultDisplayRaw = getToolResultDisplay(message);
+    const toolResultDisplayRaw = getToolResultDisplayPreview(message);
     const toolResultDisplay = mapDisplayText ? mapDisplayText(toolResultDisplayRaw) : toolResultDisplayRaw;
     const isToolError = Boolean(message.metadata?.isError || message.metadata?.error);
+    const isLargeToolResult = isLargeToolResultMessage(message);
     const hasToolResultText = hasText(toolResultDisplay);
     const resultLineCount = hasToolResultText ? getToolResultLineCount(toolResultDisplay) : 0;
     const showNoDetailError = isToolError && !hasToolResultText;
@@ -1477,7 +1507,7 @@ export const AssistantTurnBlock: React.FC<{
             </div>
             {resultLineCount > 0 && (
               <div className="text-xs text-muted mt-0.5">
-                {resultLineCount} {resultLineCount === 1 ? 'line' : 'lines'} of output
+                {formatToolOutputLineSummary(resultLineCount, isLargeToolResult)}
               </div>
             )}
             {resultLineCount === 0 && showNoDetailError && (
@@ -1609,6 +1639,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   onToggleSidebar,
   onNewChat,
   updateBadge,
+  queuedCount = 0,
+  queuedInputs = [],
 }) => {
   const dispatch = useDispatch();
   const isMac = window.electron.platform === 'darwin';
@@ -2379,6 +2411,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     ref.focus();
   }, [dispatch]);
 
+  const handleForkFromMessage = useCallback(async (message: CoworkMessage) => {
+    if (!currentSession || isStreaming) return;
+    const forkedSession = await coworkService.forkSession(currentSession.id, message.id);
+    if (!forkedSession) {
+      window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+        detail: i18nService.t('coworkForkFailed'),
+      }));
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(AppCustomEvent.ShowToast, {
+      detail: i18nService.t('coworkContinueFromHereCreated'),
+    }));
+  }, [currentSession, isStreaming]);
+
   const messages = currentSession?.messages;
   const displayItems = useMemo(() => messages ? buildDisplayItems(messages) : [], [messages]);
   const turns = useMemo(() => buildConversationTurns(displayItems), [displayItems]);
@@ -2496,7 +2542,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       let asstContent = '';
       for (const item of turn.assistantItems) {
         if (item.type === 'assistant' && item.message?.content) {
-          asstContent += item.message.content;
+          asstContent += item.message.content.slice(0, RAIL_LABEL_MAX_SOURCE_CHARS);
         }
       }
       const userRailIdx = turn.userMessage ? railCounter++ : -1;
@@ -2529,6 +2575,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 skills={skills}
                 resolveLocalFilePath={resolveLocalFilePath}
                 onReEdit={remoteManaged ? undefined : handleReEdit}
+                onFork={remoteManaged || isStreaming ? undefined : handleForkFromMessage}
               />
             </div>
           )}
@@ -3023,6 +3070,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               onManageSkills={remoteManaged ? undefined : onManageSkills}
               showModelSelector={true}
               sessionId={currentSession?.id}
+              queuedCount={queuedCount}
+              queuedInputs={queuedInputs}
             />
             {petState && petState.config.anchor === PetAnchor.Composer && (
               <div className="pointer-events-none absolute -right-2 -top-16 hidden lg:block">

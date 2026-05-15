@@ -5,7 +5,10 @@ import {
   buildConversationTurns,
   buildDisplayItems,
   getToolResultDisplay,
+  getToolResultDisplayPreview,
   hasRenderableAssistantContent,
+  isLargeToolResultMessage,
+  TOOL_RESULT_DISPLAY_MAX_CHARS,
 } from './coworkConversationTurns';
 
 const createMessage = (message: Partial<CoworkMessage> & Pick<CoworkMessage, 'id' | 'type'>): CoworkMessage => ({
@@ -139,5 +142,18 @@ describe('coworkConversationTurns', () => {
     });
 
     expect(getToolResultDisplay(message)).toBe('permission denied');
+  });
+
+  test('truncates only the UI preview for very large tool results', () => {
+    const content = `${'a'.repeat(TOOL_RESULT_DISPLAY_MAX_CHARS)}tail`;
+    const message = createMessage({
+      id: 'tool-result-large',
+      type: 'tool_result',
+      content,
+    });
+
+    expect(isLargeToolResultMessage(message)).toBe(true);
+    expect(getToolResultDisplay(message)).toBe(content);
+    expect(getToolResultDisplayPreview(message)).toHaveLength(TOOL_RESULT_DISPLAY_MAX_CHARS);
   });
 });

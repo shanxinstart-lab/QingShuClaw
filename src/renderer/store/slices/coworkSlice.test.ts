@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest';
 
-import reducer, { addSession, updateMessageContent } from './coworkSlice';
+import reducer, {
+  addSession,
+  enqueueCoworkInput,
+  removeCoworkInputFromQueue,
+  updateMessageContent,
+} from './coworkSlice';
 
 describe('coworkSlice', () => {
   test('uses the latest streaming snapshot without local append merge', () => {
@@ -127,5 +132,52 @@ describe('coworkSlice', () => {
         isStreaming: true,
       },
     });
+  });
+
+  test('removes a specific queued input without disturbing the rest of the queue', () => {
+    const sessionId = 'session-1';
+    const queuedInputs = [
+      {
+        id: 'queued-1',
+        sessionId,
+        prompt: 'first queued prompt',
+        createdAt: 1,
+      },
+      {
+        id: 'queued-2',
+        sessionId,
+        prompt: 'second queued prompt',
+        activeSkillIds: ['docx'],
+        createdAt: 2,
+      },
+    ];
+    const initialState = queuedInputs.reduce(
+      (state, input) => reducer(state, enqueueCoworkInput(input)),
+      reducer(undefined, { type: '@@init' }),
+    );
+
+    const nextState = reducer(initialState, removeCoworkInputFromQueue({
+      sessionId,
+      inputId: 'queued-1',
+    }));
+
+    expect(nextState.queuedInputsBySessionId[sessionId]).toEqual([queuedInputs[1]]);
+  });
+
+  test('clears the session queue when the last queued input is removed', () => {
+    const sessionId = 'session-1';
+    const initialState = reducer(undefined, enqueueCoworkInput({
+      id: 'queued-1',
+      sessionId,
+      prompt: 'only queued prompt',
+      createdAt: 1,
+    }));
+
+    const nextState = reducer(initialState, removeCoworkInputFromQueue({
+      sessionId,
+      inputId: 'queued-1',
+    }));
+
+    expect(nextState.queuedInputsBySessionId[sessionId]).toBeUndefined();
   });
 });

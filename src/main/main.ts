@@ -18,6 +18,7 @@ import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
 import { migrateScheduledTaskRunsToOpenclaw,migrateScheduledTasksToOpenclaw } from '../scheduledTask/migrate';
 import { type AppUpdateInfo,AppUpdateIpc, AppUpdateSource } from '../shared/appUpdate/constants';
 import { ArtifactIpcChannel } from '../shared/artifact/constants';
+import { CoworkIpcChannel } from '../shared/cowork/constants';
 import { PetStatus } from '../shared/pet/constants';
 import { type Platform as SharedPlatform,PlatformRegistry } from '../shared/platform';
 import { OpenClawProviderId, ProviderName } from '../shared/providers';
@@ -61,7 +62,7 @@ import {
 } from './auth/adapter';
 import { resolveAuthBackendConfig } from './auth/config';
 import { getAutoLaunchEnabled, isAutoLaunched, setAutoLaunchEnabled } from './autoLaunchManager';
-import { type CoworkMessage, CoworkStore } from './coworkStore';
+import { type CoworkMessage, type CoworkSession, CoworkStore } from './coworkStore';
 import { setLanguage, t } from './i18n';
 import { IMGatewayConfig,IMGatewayManager, type IMLLMConfig } from './im';
 import {
@@ -71,14 +72,15 @@ import {
   rejectPairingRequest,
 } from './im/imPairingStore';
 import { resolveIMScheduledTaskAgentId } from './im/imScheduledTaskAgent';
+import { pollNimQrLogin, startNimQrLogin } from './im/nimQrLoginService';
 import type { Platform } from './im/types';
+import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
 import {
   getCronJobService,
   initCronJobServiceManager,
   initScheduledTaskHelpers,
   registerScheduledTaskHandlers,
 } from './ipcHandlers/scheduledTask';
-import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
 import {
   ClaudeRuntimeAdapter,
   type CoworkAgentEngine,
@@ -109,7 +111,6 @@ import { broadcastSpeechState,MacSpeechService } from './libs/macSpeechService';
 import { broadcastTtsState,MacTtsService } from './libs/macTtsService';
 import { McpBridgeServer } from './libs/mcpBridgeServer';
 import { McpServerManager } from './libs/mcpServerManager';
-import { pollNimQrLogin, startNimQrLogin } from './im/nimQrLoginService';
 import { parsePrimaryModelRef } from './libs/openclawAgentModels';
 import {
   buildManagedSessionKey,
@@ -491,6 +492,16 @@ const sanitizeCoworkMessageForIpc = (message: CoworkMessage): CoworkMessage => {
       ? truncateIpcString(message.content, IPC_MESSAGE_CONTENT_MAX_CHARS)
       : '',
     metadata: sanitizedMetadata as CoworkMessage['metadata'],
+  };
+};
+
+const sanitizeCoworkSessionForIpc = (session: CoworkSession | null): CoworkSession | null => {
+  if (!session) {
+    return session;
+  }
+  return {
+    ...session,
+    messages: session.messages.map((message) => sanitizeCoworkMessageForIpc(message)),
   };
 };
 
@@ -4021,7 +4032,7 @@ if (!gotTheLock) {
       };
       setSpeechFollowUpActiveSession({ sessionId: session.id });
       armSpeechFollowUpFromAppConfig(session.id, 'session start');
-      return { success: true, session: sessionWithMessages };
+      return { success: true, session: sanitizeCoworkSessionForIpc(sessionWithMessages) };
     } catch (error) {
       return {
         success: false,
@@ -4085,7 +4096,7 @@ if (!gotTheLock) {
       const session = getCoworkStore().getSession(options.sessionId);
       setSpeechFollowUpActiveSession({ sessionId: options.sessionId });
       armSpeechFollowUpFromAppConfig(options.sessionId, 'session continue');
-      return { success: true, session };
+      return { success: true, session: sanitizeCoworkSessionForIpc(session) };
     } catch (error) {
       return {
         success: false,
@@ -4199,10 +4210,27 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle(CoworkIpcChannel.ForkSession, async (_event, options: { sessionId: string; messageId: string }) => {
+    try {
+      const coworkStoreInstance = getCoworkStore();
+      const session = coworkStoreInstance.forkSession(options.sessionId, options.messageId);
+      if (!session) {
+        return { success: false, error: 'Failed to fork session' };
+      }
+      broadcastCoworkSessionsChanged();
+      return { success: true, session: sanitizeCoworkSessionForIpc(session) };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to fork session',
+      };
+    }
+  });
+
   ipcMain.handle('cowork:session:get', async (_event, sessionId: string) => {
     try {
       const session = getCoworkStore().getSession(sessionId);
-      return { success: true, session };
+      return { success: true, session: sanitizeCoworkSessionForIpc(session) };
     } catch (error) {
       return {
         success: false,
@@ -4641,7 +4669,7 @@ if (!gotTheLock) {
         throw new Error(`Session ${sessionId} not found`);
       }
 
-      return { success: true, session };
+      return { success: true, session: sanitizeCoworkSessionForIpc(session) };
     } catch (error) {
       return {
         success: false,
@@ -6839,6 +6867,14 @@ end tell'`, { timeout: 5000 });
 
   const runAppCleanup = async (): Promise<void> => {
     console.log('[Main] App is quitting, starting cleanup...');
+    clearDeferredHardRestart();
+    clearForegroundSpeechRecoveryTimer();
+    if (windowStateSaveTimer) {
+      clearTimeout(windowStateSaveTimer);
+      windowStateSaveTimer = null;
+    }
+    assistantSpeechGuard?.dispose();
+    wakeInputService.dispose();
     petWindowController?.close();
     destroyTray();
     skillManager?.stopWatching();
@@ -6869,9 +6905,18 @@ end tell'`, { timeout: 5000 });
     }
 
     if (openClawEngineManager) {
+      openClawRuntimeAdapter?.disconnectGatewayClient();
       await openClawEngineManager.stopGateway().catch((error) => {
         console.error('[OpenClaw] Failed to stop gateway on quit:', error);
       });
+    }
+
+    if (mcpBridgeServer) {
+      await mcpBridgeServer.stop().catch((error) => {
+        console.error('[McpBridge] Failed to stop bridge server on quit:', error);
+      });
+      mcpBridgeServer = null;
+      mcpBridgeStartPromise = null;
     }
 
     // Stop the cron job polling
@@ -6880,6 +6925,8 @@ end tell'`, { timeout: 5000 });
     } catch {
       // CronJobService may not have been initialized — safe to ignore.
     }
+
+    store?.close();
   };
 
   app.on('before-quit', (e) => {

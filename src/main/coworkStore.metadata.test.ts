@@ -1,7 +1,7 @@
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import Database from 'better-sqlite3';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -46,6 +46,9 @@ const createCoworkTables = (db: Database.Database): void => {
       active_skill_ids TEXT,
       agent_id TEXT NOT NULL DEFAULT 'main',
       model_override TEXT NOT NULL DEFAULT '',
+      parent_session_id TEXT,
+      forked_from_message_id TEXT,
+      forked_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -177,5 +180,34 @@ describe('CoworkStore message metadata resilience', () => {
       { type: 'assistant', content: 'assistant reply', timestamp: 2_000 },
       { type: 'user', content: 'next channel user', timestamp: 3_000 },
     ]);
+  });
+});
+
+describe('CoworkStore session forks', () => {
+  test('copies messages through the selected message without changing the source session', () => {
+    const db = createDb();
+    createCoworkTables(db);
+    insertSession(db, 'session-1');
+    insertMessage(db, 'message-1', 'session-1', 'user', 'first', '{"skillIds":["demo"]}', 1, 1_000);
+    insertMessage(db, 'message-2', 'session-1', 'assistant', 'reply', '{}', 2, 2_000);
+    insertMessage(db, 'message-3', 'session-1', 'user', 'later', '{}', 3, 3_000);
+
+    const store = new CoworkStore(db, () => {});
+    const forked = store.forkSession('session-1', 'message-2');
+    const source = store.getSession('session-1');
+
+    expect(forked).not.toBeNull();
+    expect(forked?.parentSessionId).toBe('session-1');
+    expect(forked?.forkedFromMessageId).toBe('message-2');
+    expect(forked?.messages.map((message) => ({
+      type: message.type,
+      content: message.content,
+      metadata: message.metadata,
+    }))).toEqual([
+      { type: 'user', content: 'first', metadata: { skillIds: ['demo'] } },
+      { type: 'assistant', content: 'reply', metadata: {} },
+    ]);
+    expect(forked?.messages.map((message) => message.id)).not.toContain('message-1');
+    expect(source?.messages.map((message) => message.content)).toEqual(['first', 'reply', 'later']);
   });
 });

@@ -139,6 +139,15 @@ export class McpBridgeServer {
   async stop(): Promise<void> {
     if (!this.server) return;
 
+    for (const pending of this.pendingAskUser.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve({ behavior: 'deny' });
+      this.onAskUserDismissCallback?.(pending.requestId);
+    }
+    this.pendingAskUser.clear();
+    this.onAskUserCallback = null;
+    this.onAskUserDismissCallback = null;
+
     return new Promise((resolve) => {
       this.server!.close(() => {
         log('INFO', 'McpBridgeServer stopped');

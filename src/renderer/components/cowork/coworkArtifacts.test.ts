@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import type { CoworkMessage } from '../../types/cowork';
 import { collectCoworkSessionArtifacts } from './coworkArtifacts';
+import { TOOL_RESULT_DISPLAY_MAX_CHARS } from './coworkConversationTurns';
 
 const makeMessage = (overrides: Partial<CoworkMessage>): CoworkMessage => ({
   id: 'msg-1',
@@ -112,5 +113,19 @@ describe('collectCoworkSessionArtifacts', () => {
       filePath: '/tmp/output.pdf',
       type: 'document',
     });
+  });
+
+  test('skips direct path scanning for very large tool results', () => {
+    const messages: CoworkMessage[] = [
+      makeMessage({
+        id: 'result-1',
+        type: 'tool_result',
+        content: `${'x'.repeat(TOOL_RESULT_DISPLAY_MAX_CHARS + 1)} /tmp/huge-output.pdf`,
+      }),
+    ];
+
+    const artifacts = collectCoworkSessionArtifacts(messages, 'session-1');
+
+    expect(artifacts).toHaveLength(0);
   });
 });

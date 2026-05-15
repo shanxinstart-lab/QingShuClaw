@@ -2,6 +2,7 @@ import type { CoworkMessage } from '../../types/cowork';
 
 const TOOL_USE_ERROR_TAG_PATTERN = /^<tool_use_error>([\s\S]*?)<\/tool_use_error>$/i;
 const ANSI_ESCAPE_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
+export const TOOL_RESULT_DISPLAY_MAX_CHARS = 40_000;
 
 export type ToolGroupItem = {
   type: 'tool_group';
@@ -36,6 +37,9 @@ const normalizeToolResultText = (value: string): string => {
 
 const formatStructuredText = (value: string): string => {
   const trimmed = value.trim();
+  if (trimmed.length > TOOL_RESULT_DISPLAY_MAX_CHARS) {
+    return value;
+  }
   if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
     return value;
   }
@@ -45,6 +49,23 @@ const formatStructuredText = (value: string): string => {
   } catch {
     return value;
   }
+};
+
+export const isLargeToolResultMessage = (message: CoworkMessage): boolean => {
+  const contentLength = typeof message.content === 'string' ? message.content.length : 0;
+  const metadataToolResult = message.metadata?.toolResult;
+  const metadataToolResultLength = typeof metadataToolResult === 'string' ? metadataToolResult.length : 0;
+  const metadataError = message.metadata?.error;
+  const metadataErrorLength = typeof metadataError === 'string' ? metadataError.length : 0;
+  return Math.max(contentLength, metadataToolResultLength, metadataErrorLength) > TOOL_RESULT_DISPLAY_MAX_CHARS;
+};
+
+export const getToolResultDisplayPreview = (message: CoworkMessage): string => {
+  const displayText = getToolResultDisplay(message);
+  if (displayText.length <= TOOL_RESULT_DISPLAY_MAX_CHARS) {
+    return displayText;
+  }
+  return displayText.slice(0, TOOL_RESULT_DISPLAY_MAX_CHARS);
 };
 
 export const getToolResultDisplay = (message: CoworkMessage): string => {

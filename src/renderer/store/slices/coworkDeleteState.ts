@@ -8,6 +8,7 @@ type CoworkDeleteStateShape = {
   currentSessionId: string | null;
   currentSession: SessionLike | null;
   isStreaming: boolean;
+  queuedInputsBySessionId?: Record<string, unknown[]>;
 };
 
 export const removeSessionFromState = (
@@ -16,6 +17,9 @@ export const removeSessionFromState = (
 ): void => {
   state.sessions = state.sessions.filter((session) => session.id !== sessionId);
   state.unreadSessionIds = state.unreadSessionIds.filter((id) => id !== sessionId);
+  if (state.queuedInputsBySessionId) {
+    delete state.queuedInputsBySessionId[sessionId];
+  }
 
   if (state.currentSessionId === sessionId) {
     state.currentSessionId = null;
@@ -31,6 +35,11 @@ export const removeSessionsFromState = (
   const sessionIdSet = new Set(sessionIds);
   state.sessions = state.sessions.filter((session) => !sessionIdSet.has(session.id));
   state.unreadSessionIds = state.unreadSessionIds.filter((id) => !sessionIdSet.has(id));
+  if (state.queuedInputsBySessionId) {
+    for (const sessionId of sessionIdSet) {
+      delete state.queuedInputsBySessionId[sessionId];
+    }
+  }
 
   if (state.currentSessionId && sessionIdSet.has(state.currentSessionId)) {
     state.currentSessionId = null;

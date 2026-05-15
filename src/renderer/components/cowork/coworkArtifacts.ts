@@ -8,7 +8,13 @@ import {
 } from '../../services/artifactParser';
 import type { Artifact } from '../../types/artifact';
 import type { CoworkMessage } from '../../types/cowork';
-import { getToolResultDisplay } from './coworkConversationTurns';
+import {
+  getToolResultDisplay,
+  isLargeToolResultMessage,
+  TOOL_RESULT_DISPLAY_MAX_CHARS,
+} from './coworkConversationTurns';
+
+const ARTIFACT_SCAN_MAX_MESSAGE_CHARS = 80_000;
 
 export const collectCoworkSessionArtifacts = (
   messages: CoworkMessage[],
@@ -16,6 +22,15 @@ export const collectCoworkSessionArtifacts = (
 ): Artifact[] => {
   const artifacts: Artifact[] = [];
   const seenFilePaths = new Set<string>();
+  const toolResultsByUseId = new Map<string, CoworkMessage>();
+
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue;
+    const toolUseId = message.metadata?.toolUseId;
+    if (typeof toolUseId === 'string' && toolUseId.trim()) {
+      toolResultsByUseId.set(toolUseId, message);
+    }
+  }
 
   const pushArtifact = (artifact: Artifact): void => {
     if (artifact.filePath) {
@@ -29,7 +44,12 @@ export const collectCoworkSessionArtifacts = (
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
 
-    if (message.type === 'assistant' && !message.metadata?.isThinking && message.content) {
+    if (
+      message.type === 'assistant'
+      && !message.metadata?.isThinking
+      && message.content
+      && message.content.length <= ARTIFACT_SCAN_MAX_MESSAGE_CHARS
+    ) {
       for (const artifact of parseCodeBlockArtifacts(message.content, message.id, sessionId)) {
         pushArtifact(artifact);
       }
@@ -45,6 +65,9 @@ export const collectCoworkSessionArtifacts = (
     }
 
     if (message.type === 'tool_result') {
+      if (isLargeToolResultMessage(message)) {
+        continue;
+      }
       const displayText = getToolResultDisplay(message);
       for (const artifact of parseFilePathsFromText(displayText, message.id, sessionId, 'artifact-toolresult')) {
         pushArtifact(artifact);
@@ -54,10 +77,27 @@ export const collectCoworkSessionArtifacts = (
     if (message.type === 'tool_use') {
       const toolUseId = message.metadata?.toolUseId;
       const toolResult = typeof toolUseId === 'string' && toolUseId.trim()
-        ? messages.find((candidate) => candidate.type === 'tool_result' && candidate.metadata?.toolUseId === toolUseId)
+        ? toolResultsByUseId.get(toolUseId)
         : messages[index + 1]?.type === 'tool_result'
           ? messages[index + 1]
           : undefined;
+      if (toolResult && isLargeToolResultMessage(toolResult)) {
+        const safeResult = {
+          ...toolResult,
+          content: toolResult.content.slice(0, TOOL_RESULT_DISPLAY_MAX_CHARS),
+          metadata: {
+            ...(toolResult.metadata ?? {}),
+            toolResult: typeof toolResult.metadata?.toolResult === 'string'
+              ? toolResult.metadata.toolResult.slice(0, TOOL_RESULT_DISPLAY_MAX_CHARS)
+              : toolResult.metadata?.toolResult,
+          },
+        };
+        const artifact = parseToolArtifact(message, safeResult, sessionId);
+        if (artifact) {
+          pushArtifact(artifact);
+        }
+        continue;
+      }
       const artifact = parseToolArtifact(message, toolResult, sessionId);
       if (artifact) {
         pushArtifact(artifact);
@@ -67,4 +107,3 @@ export const collectCoworkSessionArtifacts = (
 
   return artifacts;
 };
-

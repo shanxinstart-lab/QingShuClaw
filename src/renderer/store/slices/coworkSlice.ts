@@ -2,6 +2,7 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 import type {
   CoworkConfig,
+  CoworkImageAttachment,
   CoworkMessage,
   CoworkPermissionRequest,
   CoworkSession,
@@ -17,6 +18,16 @@ export interface DraftAttachment {
   dataUrl?: string;
 }
 
+export interface QueuedCoworkInput {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  skillPrompt?: string;
+  activeSkillIds?: string[];
+  imageAttachments?: CoworkImageAttachment[];
+  createdAt: number;
+}
+
 interface CoworkState {
   sessions: CoworkSessionSummary[];
   currentSessionId: string | null;
@@ -29,6 +40,7 @@ interface CoworkState {
   isStreaming: boolean;
   remoteManaged: boolean;
   pendingPermissions: CoworkPermissionRequest[];
+  queuedInputsBySessionId: Record<string, QueuedCoworkInput[]>;
   config: CoworkConfig;
 }
 
@@ -72,6 +84,7 @@ const initialState: CoworkState = {
   isStreaming: false,
   remoteManaged: false,
   pendingPermissions: [],
+  queuedInputsBySessionId: {},
   config: defaultCoworkConfig,
 };
 
@@ -317,6 +330,40 @@ const coworkSlice = createSlice({
       state.pendingPermissions = [];
     },
 
+    enqueueCoworkInput(state, action: PayloadAction<QueuedCoworkInput>) {
+      const queue = state.queuedInputsBySessionId[action.payload.sessionId] ?? [];
+      state.queuedInputsBySessionId[action.payload.sessionId] = [...queue, action.payload];
+    },
+
+    dequeueCoworkInput(state, action: PayloadAction<{ sessionId: string }>) {
+      const queue = state.queuedInputsBySessionId[action.payload.sessionId] ?? [];
+      const nextQueue = queue.slice(1);
+      if (nextQueue.length === 0) {
+        delete state.queuedInputsBySessionId[action.payload.sessionId];
+      } else {
+        state.queuedInputsBySessionId[action.payload.sessionId] = nextQueue;
+      }
+    },
+
+    removeCoworkInputFromQueue(state, action: PayloadAction<{ sessionId: string; inputId: string }>) {
+      const queue = state.queuedInputsBySessionId[action.payload.sessionId] ?? [];
+      const nextQueue = queue.filter((input) => input.id !== action.payload.inputId);
+      if (nextQueue.length === 0) {
+        delete state.queuedInputsBySessionId[action.payload.sessionId];
+      } else {
+        state.queuedInputsBySessionId[action.payload.sessionId] = nextQueue;
+      }
+    },
+
+    requeueCoworkInputToFront(state, action: PayloadAction<QueuedCoworkInput>) {
+      const queue = state.queuedInputsBySessionId[action.payload.sessionId] ?? [];
+      state.queuedInputsBySessionId[action.payload.sessionId] = [action.payload, ...queue];
+    },
+
+    clearCoworkInputQueue(state, action: PayloadAction<string>) {
+      delete state.queuedInputsBySessionId[action.payload];
+    },
+
     setConfig(state, action: PayloadAction<CoworkConfig>) {
       state.config = {
         ...defaultCoworkConfig,
@@ -399,6 +446,11 @@ export const {
   enqueuePendingPermission,
   dequeuePendingPermission,
   clearPendingPermissions,
+  enqueueCoworkInput,
+  dequeueCoworkInput,
+  removeCoworkInputFromQueue,
+  requeueCoworkInputToFront,
+  clearCoworkInputQueue,
   setConfig,
   updateConfig,
   clearCurrentSession,

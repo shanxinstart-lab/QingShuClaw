@@ -23,6 +23,15 @@ interface LazyRenderTurnProps extends React.HTMLAttributes<HTMLDivElement> {
 
 // Global height cache survives re-renders — keyed by turnId
 const heightCache = new Map<string, number>();
+const MAX_HEIGHT_CACHE_ENTRIES = 500;
+
+const pruneHeightCache = (): void => {
+  while (heightCache.size > MAX_HEIGHT_CACHE_ENTRIES) {
+    const oldestKey = heightCache.keys().next().value as string | undefined;
+    if (!oldestKey) return;
+    heightCache.delete(oldestKey);
+  }
+};
 
 const LazyRenderTurn: React.FC<LazyRenderTurnProps> = ({
   turnId,
@@ -74,6 +83,7 @@ const LazyRenderTurn: React.FC<LazyRenderTurnProps> = ({
       const h = entry.contentRect.height;
       if (h > 0) {
         heightCache.set(turnId, h);
+        pruneHeightCache();
       }
     });
     ro.observe(el);

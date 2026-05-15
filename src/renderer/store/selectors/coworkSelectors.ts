@@ -11,6 +11,7 @@ export const selectRemoteManaged = (state: RootState) => state.cowork.remoteMana
 export const selectCoworkConfig = (state: RootState) => state.cowork.config;
 export const selectDraftPrompts = (state: RootState) => state.cowork.draftPrompts;
 export const selectPendingPermissions = (state: RootState) => state.cowork.pendingPermissions;
+export const selectQueuedInputsBySessionId = (state: RootState) => state.cowork.queuedInputsBySessionId;
 export const selectUnreadSessionIds = (state: RootState) => state.cowork.unreadSessionIds;
 
 export const selectAgentEngine = createSelector(
